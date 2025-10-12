@@ -202,6 +202,10 @@
             background: #f44336;
             color: white;
         }
+        .state-tuning {
+            background: #9C27B0;
+            color: white;
+        }
     </style>
 </head>
 <body>
@@ -250,6 +254,17 @@
             <button class="btn-refresh" onclick="location.reload()">Refresh Status</button>
             <button class="btn-stop" onclick="stopProgram()">Stop Program</button>
             <button class="btn-shutdown" onclick="emergencyShutdown()">Emergency Shutdown</button>
+        </div>
+    </div>
+
+    <!-- PID Tuning -->
+    <div class="container">
+        <h2>PID Configuration</h2>
+        <p style="font-size: 14px; color: #666; margin-bottom: 15px;">
+            Use the auto-tuner to calculate optimal PID parameters for your kiln.
+        </p>
+        <div class="controls">
+            <button class="btn-start" onclick="window.location.href='/tuning'">PID Auto-Tuning</button>
         </div>
     </div>
 

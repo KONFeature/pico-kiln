@@ -243,6 +243,69 @@ def handle_api_status(conn):
     status = status_cache.get()
     send_json_response(conn, status)
 
+# === Tuning Handlers ===
+
+def handle_api_tuning_start(conn, body):
+    """POST /api/tuning/start - Start PID auto-tuning"""
+    try:
+        data = json.loads(body.decode())
+        target_temp = data.get('target_temp', 200)
+
+        # Validate target temperature
+        if target_temp < 50 or target_temp > 500:
+            send_json_response(conn, {
+                'success': False,
+                'error': 'Target temperature must be between 50°C and 500°C'
+            }, 400)
+            return
+
+        # Send tuning command to control thread
+        command = CommandMessage.start_tuning(target_temp)
+
+        if QueueHelper.put_nowait(command_queue, command):
+            print(f"[Web Server] Started tuning (target: {target_temp}°C)")
+            send_json_response(conn, {
+                'success': True,
+                'message': f'Tuning started with target {target_temp}°C'
+            })
+        else:
+            send_json_response(conn, {
+                'success': False,
+                'error': 'Command queue full, please retry'
+            }, 500)
+
+    except Exception as e:
+        print(f"[Web Server] Error starting tuning: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 400)
+
+def handle_api_tuning_stop(conn):
+    """POST /api/tuning/stop - Stop PID auto-tuning"""
+    command = CommandMessage.stop_tuning()
+
+    if QueueHelper.put_nowait(command_queue, command):
+        print("[Web Server] Tuning stop requested")
+        send_json_response(conn, {'success': True, 'message': 'Tuning stopped'})
+    else:
+        send_json_response(conn, {
+            'success': False,
+            'error': 'Command queue full, please retry'
+        }, 500)
+
+def handle_api_tuning_status(conn):
+    """GET /api/tuning/status - Get tuning status"""
+    # Return cached status (includes tuning info if in TUNING state)
+    status = status_cache.get()
+    send_json_response(conn, status)
+
+def handle_tuning_page(conn):
+    """Serve tuning.html page"""
+    try:
+        with open("static/tuning.html", "r") as f:
+            html = f.read()
+        send_html_response(conn, html)
+    except OSError:
+        send_response(conn, 404, b'Tuning page not found', 'text/plain')
+
 # === Static File Handlers ===
 
 def handle_index(conn):
@@ -337,6 +400,9 @@ async def handle_client(conn, addr):
         if path == '/' or path == '/index.html':
             handle_index(conn)
 
+        elif path == '/tuning' or path == '/tuning.html':
+            handle_tuning_page(conn)
+
         elif path == '/api/state':
             handle_api_state(conn)
 
@@ -374,6 +440,25 @@ async def handle_client(conn, addr):
         elif path == '/api/stop':
             if method == 'POST':
                 handle_api_stop(conn)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        # Tuning endpoints
+        elif path == '/api/tuning/start':
+            if method == 'POST':
+                handle_api_tuning_start(conn, body)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        elif path == '/api/tuning/stop':
+            if method == 'POST':
+                handle_api_tuning_stop(conn)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        elif path == '/api/tuning/status':
+            if method == 'GET':
+                handle_api_tuning_status(conn)
             else:
                 send_response(conn, 405, b'Method not allowed', 'text/plain')
 

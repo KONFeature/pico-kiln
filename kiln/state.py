@@ -7,6 +7,7 @@ class KilnState:
     """Kiln state constants"""
     IDLE = "IDLE"           # Not running
     RUNNING = "RUNNING"     # Actively following profile
+    TUNING = "TUNING"       # PID auto-tuning in progress
     COMPLETE = "COMPLETE"   # Profile finished
     ERROR = "ERROR"         # Fault condition
 
@@ -52,6 +53,9 @@ class KilnController:
         """
         if self.state == KilnState.RUNNING:
             raise Exception("Cannot start profile: kiln is already running")
+
+        if self.state == KilnState.TUNING:
+            raise Exception("Cannot start profile: tuning is in progress")
 
         self.active_profile = profile
         self.state = KilnState.RUNNING
@@ -109,12 +113,16 @@ class KilnController:
 
         # Safety check: max temperature
         if current_temp > self.max_temp:
-            self.set_error(f"Temperature {current_temp:.1f}°C exceeds maximum {self.max_temp}°C")
+            self.set_error(f"Temperature {current_temp:.1f}C exceeds maximum {self.max_temp}C")
             return 0
 
         # Handle different states
         if self.state == KilnState.RUNNING:
             return self._update_running()
+        elif self.state == KilnState.TUNING:
+            # Tuning is handled separately in control_thread
+            # This should not be called during tuning, but return 0 for safety
+            return 0
         else:
             # IDLE, COMPLETE, or ERROR - turn off heating
             return 0

@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PID Tuning - Pico Kiln Controller</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin: 0 0 10px 0;
+            font-size: 28px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        h2 {
+            margin: 0 0 15px 0;
+            font-size: 18px;
+            color: #333;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .info-box {
+            background: #e3f2fd;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+        .info-box h3 {
+            margin: 0 0 10px 0;
+            color: #1976d2;
+            font-size: 16px;
+        }
+        .info-box p {
+            margin: 5px 0;
+            color: #333;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .warning-box {
+            background: #fff3cd;
+            border-left: 4px solid #ff9800;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+        .warning-box h3 {
+            margin: 0 0 10px 0;
+            color: #f57c00;
+            font-size: 16px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: #333;
+        }
+        input[type="number"] {
+            width: 200px;
+            padding: 10px;
+            font-size: 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 5px;
+            transition: border-color 0.2s;
+        }
+        input[type="number"]:focus {
+            outline: none;
+            border-color: #2196F3;
+        }
+        button {
+            font-size: 14px;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            color: white;
+            transition: all 0.2s;
+            font-weight: 500;
+            margin-right: 10px;
+        }
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .btn-start {
+            background-color: #4CAF50;
+        }
+        .btn-start:hover:not(:disabled) {
+            background-color: #45a049;
+        }
+        .btn-stop {
+            background-color: #f44336;
+        }
+        .btn-stop:hover:not(:disabled) {
+            background-color: #da190b;
+        }
+        .btn-apply {
+            background-color: #2196F3;
+        }
+        .btn-apply:hover:not(:disabled) {
+            background-color: #0b7dda;
+        }
+        .btn-back {
+            background-color: #757575;
+        }
+        .btn-back:hover {
+            background-color: #616161;
+        }
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .status-item {
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 4px solid #2196F3;
+        }
+        .status-item label {
+            display: block;
+            font-size: 11px;
+            color: #666;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: normal;
+        }
+        .status-item .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+        .stage-indicator {
+            text-align: center;
+            padding: 20px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+        }
+        .stage-idle {
+            background: #757575;
+        }
+        .stage-heating {
+            background: #ff9800;
+        }
+        .stage-cooling {
+            background: #2196F3;
+        }
+        .stage-calculating {
+            background: #9C27B0;
+        }
+        .stage-complete {
+            background: #4CAF50;
+        }
+        .stage-error {
+            background: #f44336;
+        }
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        .results-table th,
+        .results-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .results-table th {
+            background: #f5f5f5;
+            font-weight: 600;
+            color: #333;
+        }
+        .results-table td {
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+        }
+        .hidden {
+            display: none;
+        }
+        .chart-container {
+            width: 100%;
+            height: 400px;
+            background: #f9f9f9;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #999;
+            font-size: 14px;
+            margin-top: 20px;
+        }
+        .footer {
+            text-align: center;
+            color: #666;
+            font-size: 11px;
+            margin-top: 20px;
+        }
+        .footer a {
+            color: #2196F3;
+            text-decoration: none;
+        }
+        .footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <h1>PID Auto-Tuning</h1>
+    <div class="subtitle">Ziegler-Nichols Method</div>
+
+    <!-- Back Button -->
+    <div style="margin-bottom: 20px;">
+        <button class="btn-back" onclick="window.location.href='/'">Back to Main</button>
+    </div>
+
+    <!-- Info Box -->
+    <div class="container">
+        <div class="info-box">
+            <h3>About PID Auto-Tuning</h3>
+            <p>This tool automatically calculates optimal PID parameters for your kiln using the Ziegler-Nichols method.</p>
+            <p><strong>How it works:</strong></p>
+            <ol style="margin: 10px 0 0 20px; line-height: 1.8;">
+                <li>The kiln heats to the target temperature at full power</li>
+                <li>Heating is turned off and the kiln cools back to the target</li>
+                <li>The temperature curve is analyzed to calculate PID values</li>
+            </ol>
+        </div>
+
+        <div class="warning-box">
+            <h3>Important Safety Notes</h3>
+            <p><strong>Before starting:</strong></p>
+            <ul style="margin: 10px 0 0 20px; line-height: 1.8;">
+                <li>Ensure the kiln is completely cool (room temperature)</li>
+                <li>Make sure no firing profile is currently running</li>
+                <li>The process will take 10-30 minutes depending on target temperature</li>
+                <li>Do not open the kiln or interrupt the process once started</li>
+                <li>Tuning will automatically stop if temperature exceeds safety limits</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Tuning Controls -->
+    <div class="container">
+        <h2>Tuning Controls</h2>
+
+        <div class="form-group">
+            <label for="targetTemp">Target Temperature (°C)</label>
+            <input type="number" id="targetTemp" value="200" min="50" max="500" step="10">
+            <p style="font-size: 12px; color: #666; margin-top: 5px;">
+                Recommended: 200°C for initial tuning. Higher temperatures provide more data but take longer.
+            </p>
+        </div>
+
+        <div id="controlButtons">
+            <button class="btn-start" id="startBtn" onclick="startTuning()">Start Tuning</button>
+            <button class="btn-stop hidden" id="stopBtn" onclick="stopTuning()">Stop Tuning</button>
+        </div>
+    </div>
+
+    <!-- Status Display -->
+    <div class="container" id="statusContainer">
+        <h2>Tuning Status</h2>
+
+        <div class="stage-indicator stage-idle" id="stageIndicator">
+            IDLE - Ready to start
+        </div>
+
+        <div class="status-grid">
+            <div class="status-item">
+                <label>Current Temperature</label>
+                <div class="value" id="currentTemp">--</div>
+            </div>
+            <div class="status-item">
+                <label>Target Temperature</label>
+                <div class="value" id="targetTempDisplay">--</div>
+            </div>
+            <div class="status-item">
+                <label>Elapsed Time</label>
+                <div class="value" id="elapsedTime">--</div>
+            </div>
+            <div class="status-item">
+                <label>Data Points</label>
+                <div class="value" id="dataPoints">--</div>
+            </div>
+        </div>
+
+        <div id="errorDisplay" class="warning-box hidden">
+            <h3>Error</h3>
+            <p id="errorMessage"></p>
+        </div>
+    </div>
+
+    <!-- Results Display -->
+    <div class="container hidden" id="resultsContainer">
+        <h2>Tuning Results</h2>
+
+        <table class="results-table">
+            <tr>
+                <th>Parameter</th>
+                <th>Value</th>
+                <th>Description</th>
+            </tr>
+            <tr>
+                <td><strong>Kp</strong></td>
+                <td id="resultKp">--</td>
+                <td>Proportional gain</td>
+            </tr>
+            <tr>
+                <td><strong>Ki</strong></td>
+                <td id="resultKi">--</td>
+                <td>Integral gain</td>
+            </tr>
+            <tr>
+                <td><strong>Kd</strong></td>
+                <td id="resultKd">--</td>
+                <td>Derivative gain</td>
+            </tr>
+        </table>
+
+        <div class="info-box" style="margin-top: 20px;">
+            <h3>Next Steps</h3>
+            <p>1. Copy the calculated PID values above</p>
+            <p>2. Edit <code>config.py</code> on the Pico and update:</p>
+            <p style="font-family: 'Courier New', monospace; background: #f5f5f5; padding: 10px; border-radius: 4px; margin: 10px 0;">
+                PID_KP = <span id="copyKp">--</span><br>
+                PID_KI = <span id="copyKi">--</span><br>
+                PID_KD = <span id="copyKd">--</span>
+            </p>
+            <p>3. Restart the controller for changes to take effect</p>
+            <p>4. Test the new values by running a firing profile</p>
+            <p>5. Fine-tune manually if needed based on performance</p>
+        </div>
+
+        <div class="info-box" style="margin-top: 20px;">
+            <h3>Results Saved</h3>
+            <p>Full analysis data saved to: <code>tuning_results.json</code></p>
+            <p>Temperature data saved to: <code>tuning_data.csv</code></p>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>Pico Kiln Controller - PID Auto-Tuning | <a href="/">Back to Main</a></p>
+    </div>
+
+    <script>
+        let pollingInterval = null;
+
+        function startTuning() {
+            const targetTemp = parseFloat(document.getElementById('targetTemp').value);
+
+            if (isNaN(targetTemp) || targetTemp < 50 || targetTemp > 500) {
+                alert('Please enter a valid target temperature between 50°C and 500°C');
+                return;
+            }
+
+            if (!confirm(`Start PID auto-tuning with target temperature ${targetTemp}°C?\n\nThis will take 10-30 minutes. The kiln will heat to ${targetTemp}°C and then cool back down.\n\nMake sure the kiln is at room temperature before starting.`)) {
+                return;
+            }
+
+            // Disable start button, enable stop button
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('stopBtn').classList.remove('hidden');
+            document.getElementById('targetTemp').disabled = true;
+
+            // Hide results if visible
+            document.getElementById('resultsContainer').classList.add('hidden');
+            document.getElementById('errorDisplay').classList.add('hidden');
+
+            // Send start command
+            fetch('/api/tuning/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target_temp: targetTemp })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log('Tuning started');
+                    startPolling();
+                } else {
+                    alert('Error starting tuning: ' + data.error);
+                    resetControls();
+                }
+            })
+            .catch(err => {
+                alert('Failed to start tuning: ' + err);
+                resetControls();
+            });
+        }
+
+        function stopTuning() {
+            if (!confirm('Stop tuning process?\n\nThis will discard any collected data.')) {
+                return;
+            }
+
+            fetch('/api/tuning/stop', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Tuning stopped');
+                    stopPolling();
+                    resetControls();
+                })
+                .catch(err => {
+                    alert('Failed to stop tuning: ' + err);
+                });
+        }
+
+        function startPolling() {
+            // Poll status every 2 seconds
+            pollingInterval = setInterval(updateStatus, 2000);
+            updateStatus(); // Immediate first update
+        }
+
+        function stopPolling() {
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+            }
+        }
+
+        function updateStatus() {
+            fetch('/api/tuning/status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.state !== 'TUNING') {
+                        // Not tuning anymore
+                        stopPolling();
+                        resetControls();
+                        return;
+                    }
+
+                    const tuning = data.tuning;
+
+                    // Update stage indicator
+                    const stageIndicator = document.getElementById('stageIndicator');
+                    stageIndicator.className = 'stage-indicator stage-' + tuning.stage;
+                    stageIndicator.textContent = tuning.stage.toUpperCase();
+
+                    // Update status values
+                    document.getElementById('currentTemp').textContent = data.current_temp.toFixed(1) + ' °C';
+                    document.getElementById('targetTempDisplay').textContent = tuning.target_temp + ' °C';
+                    document.getElementById('elapsedTime').textContent = formatTime(tuning.elapsed);
+                    document.getElementById('dataPoints').textContent = tuning.data_points;
+
+                    // Check for completion or error
+                    if (tuning.stage === 'complete') {
+                        stopPolling();
+                        displayResults(tuning.results);
+                    } else if (tuning.stage === 'error') {
+                        stopPolling();
+                        displayError(tuning.error);
+                        resetControls();
+                    }
+                })
+                .catch(err => {
+                    console.error('Error fetching status:', err);
+                });
+        }
+
+        function displayResults(results) {
+            const kp = results.kp.toFixed(2);
+            const ki = results.ki.toFixed(2);
+            const kd = results.kd.toFixed(2);
+
+            document.getElementById('resultKp').textContent = kp;
+            document.getElementById('resultKi').textContent = ki;
+            document.getElementById('resultKd').textContent = kd;
+
+            // Update copy-paste section
+            document.getElementById('copyKp').textContent = kp;
+            document.getElementById('copyKi').textContent = ki;
+            document.getElementById('copyKd').textContent = kd;
+
+            document.getElementById('resultsContainer').classList.remove('hidden');
+            resetControls();
+        }
+
+        function displayError(errorMessage) {
+            document.getElementById('errorMessage').textContent = errorMessage;
+            document.getElementById('errorDisplay').classList.remove('hidden');
+        }
+
+        function resetControls() {
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').classList.add('hidden');
+            document.getElementById('targetTemp').disabled = false;
+        }
+
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return mins + ':' + (secs < 10 ? '0' : '') + secs;
+        }
+
+        // Initial status check
+        updateStatus();
+    </script>
+</body>
+</html>

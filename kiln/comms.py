@@ -116,6 +116,8 @@ class MessageType:
     STOP = 'stop'
     SHUTDOWN = 'shutdown'
     SET_PID_GAINS = 'set_pid_gains'
+    START_TUNING = 'start_tuning'
+    STOP_TUNING = 'stop_tuning'
     PING = 'ping'  # For testing thread communication
 
 class CommandMessage:
@@ -155,6 +157,21 @@ class CommandMessage:
             'kp': kp,
             'ki': ki,
             'kd': kd
+        }
+
+    @staticmethod
+    def start_tuning(target_temp=200):
+        """Start PID auto-tuning"""
+        return {
+            'type': MessageType.START_TUNING,
+            'target_temp': target_temp
+        }
+
+    @staticmethod
+    def stop_tuning():
+        """Stop PID auto-tuning"""
+        return {
+            'type': MessageType.STOP_TUNING
         }
 
     @staticmethod
@@ -216,6 +233,31 @@ class StatusMessage:
         ssr_state = ssr_controller.get_state()
         status['ssr_is_on'] = ssr_state['is_on']
         status['ssr_duty_cycle'] = ssr_state['duty_cycle']
+
+        return status
+
+    @staticmethod
+    def build_tuning_status(controller, tuner):
+        """
+        Build tuning status message
+
+        Args:
+            controller: KilnController instance
+            tuner: ZieglerNicholsTuner instance
+
+        Returns:
+            Dictionary with tuning status
+        """
+        import time
+
+        tuner_status = tuner.get_status()
+
+        status = {
+            'timestamp': time.time(),
+            'state': controller.state,
+            'current_temp': round(controller.current_temp, 2),
+            'tuning': tuner_status
+        }
 
         return status
 

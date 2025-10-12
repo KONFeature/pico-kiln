@@ -14,6 +14,7 @@ from wrapper import DigitalInOut, SPIWrapper
 from kiln import TemperatureSensor, SSRController, PID, KilnController, Profile
 from kiln.state import KilnState
 from kiln.comms import MessageType, StatusMessage, QueueHelper
+from kiln.tuner import ZieglerNicholsTuner, TuningStage
 
 class ControlThread:
     """
@@ -43,6 +44,9 @@ class ControlThread:
         self.pid = None
         self.controller = None
         self.ssr_pin = None
+
+        # Tuning
+        self.tuner = None
 
         # Timing
         self.last_status_update = 0
@@ -143,6 +147,27 @@ class ControlThread:
                 self.pid.set_gains(kp=kp, ki=ki, kd=kd)
                 print(f"[Control Thread] PID gains updated: kp={kp}, ki={ki}, kd={kd}")
 
+            elif cmd_type == MessageType.START_TUNING:
+                # Start PID auto-tuning
+                target_temp = command.get('target_temp', 200)
+                if self.controller.state != KilnState.IDLE:
+                    print(f"[Control Thread] Cannot start tuning: kiln is in {self.controller.state} state")
+                    return
+
+                print(f"[Control Thread] Starting PID auto-tuning (target: {target_temp}°C)")
+                self.tuner = ZieglerNicholsTuner(target_temp=target_temp)
+                self.tuner.start()
+                self.controller.state = KilnState.TUNING
+                print("[Control Thread] Tuning started")
+
+            elif cmd_type == MessageType.STOP_TUNING:
+                # Stop tuning
+                if self.controller.state == KilnState.TUNING:
+                    print("[Control Thread] Tuning stopped by user")
+                    self.controller.state = KilnState.IDLE
+                    self.tuner = None
+                    self.ssr_controller.force_off()
+
             elif cmd_type == MessageType.PING:
                 # Ping message for testing
                 print("[Control Thread] Received ping")
@@ -162,7 +187,11 @@ class ControlThread:
         This is called periodically to update the web server with current status
         """
         try:
-            status = StatusMessage.build(self.controller, self.pid, self.ssr_controller)
+            # Choose status builder based on state
+            if self.controller.state == KilnState.TUNING and self.tuner:
+                status = StatusMessage.build_tuning_status(self.controller, self.tuner)
+            else:
+                status = StatusMessage.build(self.controller, self.pid, self.ssr_controller)
 
             # Try to send (non-blocking)
             if not QueueHelper.put_nowait(self.status_queue, status):
@@ -174,6 +203,82 @@ class ControlThread:
 
         except Exception as e:
             print(f"[Control Thread] Error sending status: {e}")
+
+    def tuning_loop_iteration(self):
+        """
+        Single iteration of the tuning loop
+
+        This handles PID auto-tuning logic:
+        1. Check for commands (allow stop)
+        2. Read temperature
+        3. Update tuner state
+        4. Set SSR output based on tuner
+        5. Check for completion/error
+        6. Send status update
+        """
+        try:
+            # 1. Check for commands (non-blocking)
+            command = QueueHelper.get_nowait(self.command_queue)
+            if command:
+                self.handle_command(command)
+
+            # 2. Read temperature
+            current_temp = self.temp_sensor.read()
+            self.controller.current_temp = current_temp
+
+            # 3. Safety check
+            if current_temp > self.config.MAX_TEMP:
+                self.controller.set_error(f"Temperature {current_temp:.1f}C exceeds maximum {self.config.MAX_TEMP}C")
+                self.controller.state = KilnState.ERROR
+                self.tuner = None
+                self.ssr_controller.force_off()
+                return
+
+            # 4. Update tuner and get SSR output
+            ssr_output, continue_tuning = self.tuner.update(current_temp)
+            self.ssr_controller.set_output(ssr_output)
+
+            # 5. Check if tuning is complete or errored
+            if not continue_tuning:
+                if self.tuner.stage == TuningStage.COMPLETE:
+                    # Save results
+                    try:
+                        self.tuner.save_results("tuning_results.json")
+                        self.tuner.save_csv("tuning_data.csv")
+                        print("[Control Thread] Tuning complete - results saved")
+                    except Exception as e:
+                        print(f"[Control Thread] Error saving tuning results: {e}")
+
+                    self.controller.state = KilnState.IDLE
+                elif self.tuner.stage == TuningStage.ERROR:
+                    print(f"[Control Thread] Tuning error: {self.tuner.error_message}")
+                    self.controller.state = KilnState.ERROR
+                    self.controller.error_message = self.tuner.error_message
+
+                self.tuner = None
+                self.ssr_controller.force_off()
+
+            # 6. Send status update (periodically)
+            current_time = time.time()
+            if current_time - self.last_status_update >= self.status_update_interval:
+                self.send_status_update()
+                self.last_status_update = current_time
+
+            # 7. Update SSR state multiple times during control interval
+            update_count = int(self.config.TEMP_READ_INTERVAL / 0.1)  # 10 Hz updates
+            for _ in range(update_count):
+                self.ssr_controller.update()
+                time.sleep(0.1)
+
+        except Exception as e:
+            print(f"[Control Thread] Tuning loop error: {e}")
+            # Emergency shutdown on error
+            if self.ssr_controller:
+                self.ssr_controller.force_off()
+            if self.controller:
+                self.controller.set_error(str(e))
+            self.tuner = None
+            time.sleep(1)
 
     def control_loop_iteration(self):
         """
@@ -188,6 +293,11 @@ class ControlThread:
         6. Send status update (periodically)
         """
         try:
+            # Check if we're in tuning mode
+            if self.controller.state == KilnState.TUNING:
+                self.tuning_loop_iteration()
+                return
+
             # 1. Check for commands (non-blocking)
             command = QueueHelper.get_nowait(self.command_queue)
             if command:
