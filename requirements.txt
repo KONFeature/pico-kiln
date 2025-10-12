@@ -1,0 +1,3 @@
+# List of all supported adafruit modules for thermocouples
+adafruit-circuitpython-max31856
+adafruit-circuitpython-bitbangio
