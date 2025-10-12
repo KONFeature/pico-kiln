@@ -205,18 +205,48 @@ def handle_api_status(conn):
 def handle_index(conn):
     """Serve index.html with current state"""
     try:
+        import os
         with open("static/index.html", "r") as f:
             html = f.read()
 
-        # Replace template variables
+        # Replace template variables - SSR status
         ssr_status = 'ON' if (state.ssr_pin and state.ssr_pin.value()) else 'OFF'
         status_color = '#4CAF50' if (state.ssr_pin and state.ssr_pin.value()) else '#f44336'
 
+        # Controller state
+        controller_state = str(state.controller.state)
+        state_class = controller_state.lower()
+
+        # Build profiles list HTML
+        profiles_html = '<ul class="profile-list">'
+        try:
+            # List all JSON files in profiles directory
+            profile_files = [f for f in os.listdir(config.PROFILES_DIR) if f.endswith('.json')]
+
+            if profile_files:
+                for profile_file in sorted(profile_files):
+                    profile_name = profile_file[:-5]  # Remove .json extension
+                    profiles_html += f'''
+                    <li class="profile-item">
+                        <span class="profile-name">{profile_name}</span>
+                        <button class="btn-start btn-small" onclick="startProfile('{profile_name}')">Start</button>
+                    </li>'''
+            else:
+                profiles_html += '<li class="empty-state">No profiles found. Upload a profile using the API.</li>'
+        except:
+            profiles_html += '<li class="empty-state">No profiles directory found.</li>'
+
+        profiles_html += '</ul>'
+
+        # Replace all template variables
         html = html.replace('{status}', ssr_status)
         html = html.replace('{status_color}', status_color)
         html = html.replace('{current_temp}', f'{state.controller.current_temp:.1f}')
         html = html.replace('{target_temp}', f'{state.controller.target_temp:.1f}')
         html = html.replace('{program}', state.controller.active_profile.name if state.controller.active_profile else 'None')
+        html = html.replace('{state}', controller_state)
+        html = html.replace('{state_class}', state_class)
+        html = html.replace('{profiles_list}', profiles_html)
 
         send_html_response(conn, html)
     except OSError:
