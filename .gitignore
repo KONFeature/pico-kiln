@@ -121,3 +121,16 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# MicroPython
+*.mpy
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Config (contains WiFi credentials - keep a config.example.py in the repo)
+config.py

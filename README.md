@@ -28,9 +28,33 @@ This project implements a kiln temperature controller using the Raspberry Pi Pic
 ## Setup
 
 1. Flash MicroPython on the Pico 2: https://micropython.org/download/RPI_PICO2_W/
-2. Copy the MicroPython files to the Pico 2's filesystem
-3. Wire the MAX31856 board to the Pico 2's SPI pins
-4. Connect the SSR to a GPIO pin
+2. **Configure the project**:
+   ```bash
+   cp config.example.py config.py
+   # Edit config.py with your WiFi credentials and pin settings
+   ```
+3. Copy the MicroPython files to the Pico 2's filesystem
+4. Wire the MAX31856 board to the Pico 2's SPI pins (see `config.py` for pin assignments)
+5. Connect the SSR to a GPIO pin (default: GPIO 15)
+6. Access the web interface at `http://<pico-ip-address>` (IP shown on serial console)
+
+## Project Structure
+
+```
+pico-kiln/
+├── config.py              # Hardware and WiFi configuration (not in git)
+├── config.example.py      # Configuration template
+├── main.py                # Entry point - asyncio setup and initialization
+├── web_server.py          # HTTP server for monitoring and control
+├── static/                # Static web assets (HTML, CSS, JS)
+└── CLAUDE.md              # Development guidance for Claude Code
+```
+
+## API Endpoints
+
+- `GET /` - Web interface
+- `GET /api/status` - System status (temperature, SSR state, program status)
+- `GET /api/info` - System information (version, hardware info)
 
 ## Development
 
@@ -38,3 +62,5 @@ The project includes utility scripts for:
 - Testing hardware connections
 - PID tuning and optimization
 - Simulating kiln behavior
+
+See [CLAUDE.md](CLAUDE.md) for detailed development guidelines.
