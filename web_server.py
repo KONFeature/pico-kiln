@@ -1,18 +1,24 @@
 # web_server.py
 # HTTP server for monitoring and control interface
+#
+# This module runs on Core 2 and communicates with the control thread (Core 1)
+# via thread-safe queues. It never directly accesses hardware.
 
 import asyncio
 import json
 import socket
 import config
+from kiln.comms import CommandMessage, QueueHelper, StatusCache
 
 # HTTP response templates
 HTTP_200 = "HTTP/1.1 200 OK\r\n"
 HTTP_404 = "HTTP/1.1 404 Not Found\r\n"
 HTTP_500 = "HTTP/1.1 500 Internal Server Error\r\n"
 
-# Global reference to state (passed from main)
-state = None
+# Global communication channels (initialized in start_server)
+command_queue = None
+status_queue = None
+status_cache = StatusCache()  # Thread-safe cache for latest status
 
 def parse_request(data):
     """Parse HTTP request and return method, path, headers, and body"""
@@ -55,43 +61,75 @@ def send_html_response(conn, html, status=200):
     """Send HTML response"""
     send_response(conn, status, html.encode() if isinstance(html, str) else html, 'text/html')
 
+# === Background Tasks ===
+
+async def status_updater():
+    """
+    Background task to consume status updates from control thread
+
+    This runs continuously on Core 2, reading status messages from the
+    status_queue and updating the cached status for quick API responses.
+    """
+    print("[Web Server] Status updater started")
+
+    while True:
+        # Non-blocking check for status updates
+        status = QueueHelper.get_nowait(status_queue)
+        if status:
+            status_cache.update(status)
+
+        await asyncio.sleep(0.1)  # Check 10 times per second
+
 # === API Handlers ===
 
 def handle_api_state(conn):
     """GET /api/state - Return current system state (legacy endpoint)"""
+    cached = status_cache.get()
+
     response = {
-        "ssr_state": state.ssr_pin.value() if state.ssr_pin else False,
-        "current_temp": state.controller.current_temp,
-        "target_temp": state.controller.target_temp,
-        "current_program": state.controller.active_profile.name if state.controller.active_profile else None,
-        "program_running": state.controller.state == "RUNNING"
+        "ssr_state": cached.get('ssr_is_on', False),
+        "current_temp": cached.get('current_temp', 0.0),
+        "target_temp": cached.get('target_temp', 0.0),
+        "current_program": cached.get('profile_name'),
+        "program_running": cached.get('state') == "RUNNING"
     }
     send_json_response(conn, response)
 
 def handle_api_shutdown(conn):
     """POST /api/shutdown - Emergency shutdown: turn off SSR and stop program"""
-    # Stop controller
-    state.controller.stop()
+    # Send shutdown command to control thread
+    command = CommandMessage.shutdown()
 
-    # Force SSR off
-    state.ssr_controller.force_off()
-
-    print("Emergency shutdown triggered via API")
-
-    response = {
-        "success": True,
-        "message": "System shutdown: SSR off, program stopped"
-    }
-    send_json_response(conn, response)
+    if QueueHelper.put_nowait(command_queue, command):
+        print("[Web Server] Emergency shutdown triggered via API")
+        response = {
+            "success": True,
+            "message": "System shutdown: SSR off, program stopped"
+        }
+        send_json_response(conn, response)
+    else:
+        print("[Web Server] Failed to send shutdown command (queue full)")
+        send_json_response(conn, {
+            "success": False,
+            "error": "Command queue full, please retry"
+        }, 500)
 
 def handle_api_info(conn):
     """GET /api/info - Return system info"""
+    # Import here to avoid circular dependency
+    import network
+
+    # Get IP address from WiFi interface
+    wlan = network.WLAN(network.STA_IF)
+    ip_address = wlan.ifconfig()[0] if wlan.isconnected() else "Not connected"
+
     info = {
         "name": "Pico Kiln Controller",
-        "version": "0.1.0",
-        "hardware": "Raspberry Pi Pico 2",
+        "version": "0.2.0",
+        "hardware": "Raspberry Pi Pico 2 (Dual Core)",
         "sensor": "MAX31856",
-        "ip_address": state.ip_address
+        "architecture": "Multi-threaded (Core 1: Control, Core 2: Web)",
+        "ip_address": ip_address
     }
     send_json_response(conn, info)
 
@@ -150,8 +188,6 @@ def handle_api_profile_upload(conn, body):
 def handle_api_run(conn, body):
     """POST /api/run - Start running a profile"""
     try:
-        from kiln.profile import Profile
-
         data = json.loads(body.decode())
         profile_name = data.get('profile')
 
@@ -159,46 +195,53 @@ def handle_api_run(conn, body):
             send_json_response(conn, {'success': False, 'error': 'Profile name required'}, 400)
             return
 
-        # Load profile
+        # Load profile data from file
         filename = f"{config.PROFILES_DIR}/{profile_name}.json"
-        profile = Profile.load_from_file(filename)
+        with open(filename, 'r') as f:
+            profile_data = json.load(f)
 
-        # Start kiln
-        state.controller.run_profile(profile)
+        # Send command to control thread
+        command = CommandMessage.run_profile(profile_data)
 
-        send_json_response(conn, {
-            'success': True,
-            'message': f'Started profile: {profile.name}'
-        })
+        if QueueHelper.put_nowait(command_queue, command):
+            print(f"[Web Server] Started profile: {profile_name}")
+            send_json_response(conn, {
+                'success': True,
+                'message': f'Started profile: {profile_name}'
+            })
+        else:
+            print("[Web Server] Failed to send run_profile command (queue full)")
+            send_json_response(conn, {
+                'success': False,
+                'error': 'Command queue full, please retry'
+            }, 500)
+
     except Exception as e:
-        print(f"Error starting profile: {e}")
+        print(f"[Web Server] Error starting profile: {e}")
         send_json_response(conn, {'success': False, 'error': str(e)}, 400)
 
 def handle_api_stop(conn):
     """POST /api/stop - Stop current profile"""
-    try:
-        state.controller.stop()
-        state.ssr_controller.force_off()
+    # Send stop command to control thread
+    command = CommandMessage.stop()
+
+    if QueueHelper.put_nowait(command_queue, command):
+        print("[Web Server] Profile stop requested")
         send_json_response(conn, {'success': True, 'message': 'Profile stopped'})
-    except Exception as e:
-        send_json_response(conn, {'success': False, 'error': str(e)}, 400)
+    else:
+        print("[Web Server] Failed to send stop command (queue full)")
+        send_json_response(conn, {
+            'success': False,
+            'error': 'Command queue full, please retry'
+        }, 500)
 
 # === Status Handlers ===
 
 def handle_api_status(conn):
     """GET /api/status - Get detailed kiln status with PID stats"""
-    try:
-        status = state.controller.get_status()
-
-        # Add PID statistics
-        status['pid_stats'] = state.pid.get_stats()
-
-        # Add SSR state
-        status['ssr_state'] = state.ssr_controller.get_state()
-
-        send_json_response(conn, status)
-    except Exception as e:
-        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+    # Return cached status from control thread
+    status = status_cache.get()
+    send_json_response(conn, status)
 
 # === Static File Handlers ===
 
@@ -209,12 +252,15 @@ def handle_index(conn):
         with open("static/index.html", "r") as f:
             html = f.read()
 
+        # Get cached status from control thread
+        cached = status_cache.get()
+
         # Replace template variables - SSR status
-        ssr_status = 'ON' if (state.ssr_pin and state.ssr_pin.value()) else 'OFF'
-        status_color = '#4CAF50' if (state.ssr_pin and state.ssr_pin.value()) else '#f44336'
+        ssr_status = 'ON' if cached.get('ssr_is_on', False) else 'OFF'
+        status_color = '#4CAF50' if cached.get('ssr_is_on', False) else '#f44336'
 
         # Controller state
-        controller_state = str(state.controller.state)
+        controller_state = cached.get('state', 'IDLE')
         state_class = controller_state.lower()
 
         # Build profiles list HTML
@@ -241,9 +287,9 @@ def handle_index(conn):
         # Replace all template variables
         html = html.replace('{status}', ssr_status)
         html = html.replace('{status_color}', status_color)
-        html = html.replace('{current_temp}', f'{state.controller.current_temp:.1f}')
-        html = html.replace('{target_temp}', f'{state.controller.target_temp:.1f}')
-        html = html.replace('{program}', state.controller.active_profile.name if state.controller.active_profile else 'None')
+        html = html.replace('{current_temp}', f'{cached.get("current_temp", 0.0):.1f}')
+        html = html.replace('{target_temp}', f'{cached.get("target_temp", 0.0):.1f}')
+        html = html.replace('{program}', cached.get('profile_name') or 'None')
         html = html.replace('{state}', controller_state)
         html = html.replace('{state_class}', state_class)
         html = html.replace('{profiles_list}', profiles_html)
@@ -347,12 +393,22 @@ async def handle_client(conn, addr):
         except:
             pass
 
-async def start_server(app_state):
-    """Start the HTTP server with non-blocking socket"""
-    global state
-    state = app_state
+async def start_server(cmd_queue, stat_queue):
+    """
+    Start the HTTP server with non-blocking socket
 
-    print(f"Starting HTTP server on port {config.WEB_SERVER_PORT}")
+    Args:
+        cmd_queue: ThreadSafeQueue for sending commands to control thread
+        stat_queue: ThreadSafeQueue for receiving status from control thread
+    """
+    global command_queue, status_queue
+    command_queue = cmd_queue
+    status_queue = stat_queue
+
+    print(f"[Web Server] Starting HTTP server on port {config.WEB_SERVER_PORT}")
+
+    # Start status updater task
+    asyncio.create_task(status_updater())
 
     # Create server socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -361,7 +417,7 @@ async def start_server(app_state):
     s.listen(5)
     s.setblocking(False)
 
-    print("HTTP server listening!")
+    print("[Web Server] HTTP server listening!")
 
     while True:
         try:
