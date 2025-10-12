@@ -1,0 +1,13 @@
+{
+  "name": "Test Profile",
+  "temp_units": "c",
+  "description": "Short test profile for system verification (5 minutes)",
+  "data": [
+    [0, 20],
+    [60, 50],
+    [120, 80],
+    [180, 100],
+    [240, 80],
+    [300, 50]
+  ]
+}

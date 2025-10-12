@@ -37,9 +37,14 @@ mpremote connect list || true
 echo ""
 echo "Copying Python files..."
 
-# Copy all main Python files
+# Copy main Python files (excluding test files)
 for file in *.py; do
     if [ -f "$file" ]; then
+        # Skip test files and example config
+        if [[ "$file" == "temp.py" ]] || [[ "$file" == "config.example.py" ]]; then
+            echo "  -> Skipping $file (test/example file)"
+            continue
+        fi
         echo "  -> $file"
         mpremote cp "$file" :
     fi
@@ -51,13 +56,31 @@ echo "Copying lib folder..."
 # Create lib directory on Pico if it doesn't exist
 mpremote mkdir :lib 2>/dev/null || true
 
-# Copy lib folder contents if it exists
+# Copy lib folder contents if it exists (including subdirectories)
 if [ -d "lib" ]; then
+    # First copy files directly in lib/
     for file in lib/*; do
         if [ -f "$file" ]; then
             filename=$(basename "$file")
             echo "  -> lib/$filename"
             mpremote cp "$file" :lib/
+        fi
+    done
+
+    # Then handle subdirectories (like adafruit_bus_device)
+    for dir in lib/*/; do
+        if [ -d "$dir" ]; then
+            dirname=$(basename "$dir")
+            echo "  -> lib/$dirname/"
+            mpremote mkdir :lib/$dirname 2>/dev/null || true
+
+            for file in "$dir"*; do
+                if [ -f "$file" ]; then
+                    filename=$(basename "$file")
+                    echo "     -> lib/$dirname/$filename"
+                    mpremote cp "$file" :lib/$dirname/
+                fi
+            done
         fi
     done
 else
@@ -84,19 +107,64 @@ else
 fi
 
 echo ""
+echo "Copying kiln module..."
+
+# Create kiln directory on Pico if it doesn't exist
+mpremote mkdir :kiln 2>/dev/null || true
+
+# Copy kiln folder contents if it exists
+if [ -d "kiln" ]; then
+    for file in kiln/*.py; do
+        if [ -f "$file" ]; then
+            filename=$(basename "$file")
+            echo "  -> kiln/$filename"
+            mpremote cp "$file" :kiln/
+        fi
+    done
+else
+    echo "  Warning: kiln folder not found!"
+    exit 1
+fi
+
+echo ""
+echo "Copying profiles..."
+
+# Create profiles directory on Pico if it doesn't exist
+mpremote mkdir :profiles 2>/dev/null || true
+
+# Copy profile JSON files if they exist
+if [ -d "profiles" ] && [ "$(ls -A profiles/*.json 2>/dev/null)" ]; then
+    for file in profiles/*.json; do
+        if [ -f "$file" ]; then
+            filename=$(basename "$file")
+            echo "  -> profiles/$filename"
+            mpremote cp "$file" :profiles/
+        fi
+    done
+else
+    echo "  No profile files found (add some .json profiles to the profiles/ directory)"
+fi
+
+echo ""
 echo "======================================"
 echo "Deployment complete!"
 echo "======================================"
+echo ""
+echo "Files deployed:"
+echo "  - Root: main.py, web_server.py, config.py"
+echo "  - lib/: wrapper.py, busio.py, adafruit_max31856.py, etc."
+echo "  - kiln/: __init__.py, profile.py, pid.py, state.py, hardware.py"
+echo "  - profiles/: *.json firing profiles"
+echo "  - static/: HTML/CSS/JS files (if present)"
 echo ""
 echo "To run the program:"
 echo "  mpremote run main.py"
 echo ""
 echo "Or to make it run on boot:"
-echo "  Rename main.py to main.py on the Pico (already done by this script)"
-echo "  Then reset the Pico"
+echo "  The main.py is already copied - just reset/power cycle the Pico"
 echo ""
 echo "To view serial output:"
 echo "  mpremote connect /dev/ttyACM0"
-echo "  or"
+echo "  or simply:"
 echo "  mpremote"
 echo ""

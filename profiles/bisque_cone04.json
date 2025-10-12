@@ -1,0 +1,21 @@
+{
+  "name": "Bisque Cone 04",
+  "temp_units": "c",
+  "description": "Standard bisque firing to cone 04 (~945°C). Slow ramp with holds for water smoking and burnout.",
+  "data": [
+    [0, 20],
+    [3600, 100],
+    [7200, 100],
+    [10800, 200],
+    [14400, 300],
+    [18000, 400],
+    [21600, 500],
+    [25200, 600],
+    [28800, 700],
+    [32400, 800],
+    [36000, 900],
+    [39600, 945],
+    [43200, 945],
+    [46800, 20]
+  ]
+}

@@ -28,3 +28,36 @@ TEMP_READ_INTERVAL = 1.0
 
 # PID update interval (seconds)
 PID_UPDATE_INTERVAL = 1.0
+
+# === PID Parameters ===
+# These should be tuned for your specific kiln
+# Default values are conservative starting points
+# Use auto-tuning utility to determine optimal values for your kiln
+PID_KP = 25.0      # Proportional gain
+PID_KI = 180.0     # Integral gain (inverse time constant)
+PID_KD = 160.0     # Derivative gain
+
+# === SSR Control ===
+# Time-proportional control cycle time (seconds)
+# Longer cycle = less SSR switching, but less precise control
+SSR_CYCLE_TIME = 2.0
+
+# === Safety Limits ===
+# Maximum safe temperature (°C)
+MAX_TEMP = 1300
+
+# Maximum temperature error before triggering safety shutdown (°C)
+# If actual temp deviates from target by more than this, stop firing
+MAX_TEMP_ERROR = 50
+
+# === Temperature Settings ===
+# Temperature units: "c" for Celsius, "f" for Fahrenheit
+TEMP_UNITS = "c"
+
+# Thermocouple calibration offset (°C)
+# Add this value to all temperature readings for calibration
+THERMOCOUPLE_OFFSET = 0.0
+
+# === Profile Settings ===
+# Directory for storing firing profiles
+PROFILES_DIR = "profiles"

@@ -1,0 +1,17 @@
+{
+  "name": "Cone 6 Glaze",
+  "temp_units": "c",
+  "description": "Standard cone 6 glaze firing to 1220°C with medium ramp rate and soak at peak.",
+  "data": [
+    [0, 20],
+    [3600, 200],
+    [7200, 400],
+    [10800, 600],
+    [14400, 800],
+    [18000, 1000],
+    [21600, 1150],
+    [25200, 1220],
+    [28800, 1220],
+    [32400, 20]
+  ]
+}

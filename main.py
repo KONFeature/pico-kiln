@@ -9,23 +9,22 @@ import config
 import web_server
 
 # Global state - shared between modules
+# This is a lightweight container for hardware and component references
 class State:
     def __init__(self):
-        # Hardware
+        # Hardware pins
         self.ssr_pin = None
         self.status_led = None
-
-        # Temperature
-        self.current_temp = 0.0
-        self.target_temp = 0.0
-
-        # Program
-        self.current_program = None
-        self.program_running = False
 
         # Network
         self.wifi = None
         self.ip_address = None
+
+        # Kiln components (initialized in setup)
+        self.temp_sensor = None
+        self.ssr_controller = None
+        self.pid = None
+        self.controller = None  # This holds the actual state (temps, program, etc.)
 
 # Global state instance
 state = State()
@@ -114,7 +113,7 @@ async def wifi_monitor():
         await asyncio.sleep(5)  # Check every 5 seconds
 
 def setup_hardware():
-    """Initialize hardware pins"""
+    """Initialize hardware pins and kiln components"""
     print("Initializing hardware...")
 
     # Setup status LED (onboard LED)
@@ -131,20 +130,112 @@ def setup_hardware():
     state.ssr_pin.value(0)  # Start with SSR off
     print(f"SSR pin initialized on GPIO {config.SSR_PIN}")
 
-    # TODO: Initialize MAX31856 SPI interface
-    print(f"MAX31856 SPI will use: SCK={config.MAX31856_SCK_PIN}, MOSI={config.MAX31856_MOSI_PIN}, MISO={config.MAX31856_MISO_PIN}, CS={config.MAX31856_CS_PIN}")
+    # Initialize MAX31856 SPI interface
+    print(f"Initializing MAX31856 on SPI{config.MAX31856_SPI_ID}")
+    from machine import SPI
+    from wrapper import DigitalInOut, SPIWrapper
+    from kiln import TemperatureSensor, SSRController, PID, KilnController
+
+    # Setup SPI for MAX31856
+    spi = SPIWrapper(
+        SPI(
+            config.MAX31856_SPI_ID,
+            baudrate=1000000,
+            sck=Pin(config.MAX31856_SCK_PIN),
+            mosi=Pin(config.MAX31856_MOSI_PIN),
+            miso=Pin(config.MAX31856_MISO_PIN),
+        )
+    )
+
+    cs_pin = DigitalInOut(Pin(config.MAX31856_CS_PIN, Pin.OUT))
+
+    # Initialize temperature sensor
+    state.temp_sensor = TemperatureSensor(
+        spi, cs_pin, offset=config.THERMOCOUPLE_OFFSET
+    )
+
+    # Initialize SSR controller
+    state.ssr_controller = SSRController(
+        state.ssr_pin, cycle_time=config.SSR_CYCLE_TIME
+    )
+
+    # Initialize PID controller
+    state.pid = PID(
+        kp=config.PID_KP,
+        ki=config.PID_KI,
+        kd=config.PID_KD,
+        output_limits=(0, 100)
+    )
+
+    # Initialize kiln controller
+    state.controller = KilnController(
+        max_temp=config.MAX_TEMP,
+        max_temp_error=config.MAX_TEMP_ERROR
+    )
+
+    print("All hardware initialized successfully")
 
 async def main_loop():
-    """Main async loop - temperature control and monitoring"""
+    """
+    Main control loop - runs every control interval
+
+    This implements the single-core async control strategy:
+    1. Read temperature from MAX31856
+    2. Update kiln controller state machine
+    3. Calculate PID output if running
+    4. Set SSR duty cycle
+    5. Update SSR state multiple times per interval for time-proportional control
+    """
     print("Starting main loop...")
 
-    while True:
-        # TODO: Read temperature from MAX31856
-        # TODO: Update PID controller
-        # TODO: Control SSR based on PID output
+    # Import kiln state for convenience
+    from kiln.state import KilnState
 
-        # Placeholder for now
-        await asyncio.sleep(config.TEMP_READ_INTERVAL)
+    while True:
+        try:
+            # 1. Read temperature
+            current_temp = state.temp_sensor.read()
+
+            # 2. Update controller state and get target temperature
+            target_temp = state.controller.update(current_temp)
+
+            # 3. Calculate PID output
+            if state.controller.state == KilnState.RUNNING:
+                # PID control active
+                ssr_output = state.pid.update(target_temp, current_temp)
+            else:
+                # Not running - turn off SSR
+                ssr_output = 0
+                state.pid.reset()
+
+            state.controller.ssr_output = ssr_output
+            state.ssr_controller.set_output(ssr_output)
+
+            # 4. Safety check: force SSR off in error state
+            if state.controller.state == KilnState.ERROR:
+                state.ssr_controller.force_off()
+                print(f"ERROR STATE: {state.controller.error_message}")
+
+            # Log status
+            if state.controller.state != KilnState.IDLE:
+                elapsed = state.controller.get_elapsed_time()
+                print(f"[{elapsed:.0f}s] State:{state.controller.state} Temp:{current_temp:.1f}°C Target:{target_temp:.1f}°C SSR:{ssr_output:.1f}%")
+
+            # 5. Update SSR state multiple times during control interval
+            # This provides better time-proportional control resolution
+            update_count = int(config.TEMP_READ_INTERVAL / 0.1)  # 10 Hz updates
+            for _ in range(update_count):
+                state.ssr_controller.update()
+                await asyncio.sleep(0.1)
+
+        except Exception as e:
+            print(f"Control loop error: {e}")
+            # Emergency shutdown on error
+            if state.ssr_controller:
+                state.ssr_controller.force_off()
+            if state.controller:
+                state.controller.set_error(str(e))
+            await asyncio.sleep(1)
 
 async def main():
     """Main entry point"""

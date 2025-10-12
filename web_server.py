@@ -58,26 +58,23 @@ def send_html_response(conn, html, status=200):
 # === API Handlers ===
 
 def handle_api_state(conn):
-    """GET /api/state - Return current system state"""
+    """GET /api/state - Return current system state (legacy endpoint)"""
     response = {
         "ssr_state": state.ssr_pin.value() if state.ssr_pin else False,
-        "current_temp": state.current_temp,
-        "target_temp": state.target_temp,
-        "current_program": state.current_program,
-        "program_running": state.program_running
+        "current_temp": state.controller.current_temp,
+        "target_temp": state.controller.target_temp,
+        "current_program": state.controller.active_profile.name if state.controller.active_profile else None,
+        "program_running": state.controller.state == "RUNNING"
     }
     send_json_response(conn, response)
 
 def handle_api_shutdown(conn):
     """POST /api/shutdown - Emergency shutdown: turn off SSR and stop program"""
-    # Turn off SSR
-    if state.ssr_pin:
-        state.ssr_pin.off()
+    # Stop controller
+    state.controller.stop()
 
-    # Stop current program
-    state.program_running = False
-    state.current_program = None
-    state.target_temp = 0.0
+    # Force SSR off
+    state.ssr_controller.force_off()
 
     print("Emergency shutdown triggered via API")
 
@@ -98,6 +95,111 @@ def handle_api_info(conn):
     }
     send_json_response(conn, info)
 
+# === Profile Management Handlers ===
+
+def handle_api_profile_get(conn, profile_name):
+    """GET /api/profile/<name> - Get specific profile"""
+    try:
+        from kiln.profile import Profile
+        import os
+
+        # Sanitize filename
+        filename = f"{config.PROFILES_DIR}/{profile_name}.json"
+        if not os.path.exists(filename):
+            send_json_response(conn, {'success': False, 'error': 'Profile not found'}, 404)
+            return
+
+        with open(filename, 'r') as f:
+            profile_data = json.load(f)
+
+        send_json_response(conn, {'profile': profile_data, 'success': True})
+    except Exception as e:
+        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+
+def handle_api_profile_upload(conn, body):
+    """POST /api/profile - Upload new profile"""
+    try:
+        from kiln.profile import Profile
+        import os
+
+        profile_data = json.loads(body.decode())
+
+        # Validate profile by trying to create it
+        profile = Profile(profile_data)
+
+        # Save to file
+        filename = f"{config.PROFILES_DIR}/{profile.name}.json"
+
+        # Create profiles directory if it doesn't exist
+        try:
+            os.mkdir(config.PROFILES_DIR)
+        except:
+            pass
+
+        with open(filename, 'w') as f:
+            json.dump(profile_data, f)
+
+        print(f"Profile '{profile.name}' uploaded")
+        send_json_response(conn, {'success': True, 'message': f'Profile {profile.name} saved'})
+    except Exception as e:
+        print(f"Error uploading profile: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 400)
+
+# === Control Command Handlers ===
+
+def handle_api_run(conn, body):
+    """POST /api/run - Start running a profile"""
+    try:
+        from kiln.profile import Profile
+
+        data = json.loads(body.decode())
+        profile_name = data.get('profile')
+
+        if not profile_name:
+            send_json_response(conn, {'success': False, 'error': 'Profile name required'}, 400)
+            return
+
+        # Load profile
+        filename = f"{config.PROFILES_DIR}/{profile_name}.json"
+        profile = Profile.load_from_file(filename)
+
+        # Start kiln
+        state.controller.run_profile(profile)
+
+        send_json_response(conn, {
+            'success': True,
+            'message': f'Started profile: {profile.name}'
+        })
+    except Exception as e:
+        print(f"Error starting profile: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 400)
+
+def handle_api_stop(conn):
+    """POST /api/stop - Stop current profile"""
+    try:
+        state.controller.stop()
+        state.ssr_controller.force_off()
+        send_json_response(conn, {'success': True, 'message': 'Profile stopped'})
+    except Exception as e:
+        send_json_response(conn, {'success': False, 'error': str(e)}, 400)
+
+# === Status Handlers ===
+
+def handle_api_status(conn):
+    """GET /api/status - Get detailed kiln status with PID stats"""
+    try:
+        status = state.controller.get_status()
+
+        # Add PID statistics
+        status['pid_stats'] = state.pid.get_stats()
+
+        # Add SSR state
+        status['ssr_state'] = state.ssr_controller.get_state()
+
+        send_json_response(conn, status)
+    except Exception as e:
+        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+
 # === Static File Handlers ===
 
 def handle_index(conn):
@@ -112,9 +214,9 @@ def handle_index(conn):
 
         html = html.replace('{status}', ssr_status)
         html = html.replace('{status_color}', status_color)
-        html = html.replace('{current_temp}', f'{state.current_temp:.1f}')
-        html = html.replace('{target_temp}', f'{state.target_temp:.1f}')
-        html = html.replace('{program}', state.current_program or 'None')
+        html = html.replace('{current_temp}', f'{state.controller.current_temp:.1f}')
+        html = html.replace('{target_temp}', f'{state.controller.target_temp:.1f}')
+        html = html.replace('{program}', state.controller.active_profile.name if state.controller.active_profile else 'None')
 
         send_html_response(conn, html)
     except OSError:
@@ -162,11 +264,42 @@ async def handle_client(conn, addr):
         elif path == '/api/state':
             handle_api_state(conn)
 
+        elif path == '/api/status':
+            handle_api_status(conn)
+
         elif path == '/api/info':
             handle_api_info(conn)
 
         elif path == '/api/shutdown':
             handle_api_shutdown(conn)
+
+        # Profile management
+        elif path == '/api/profile':
+            if method == 'POST':
+                handle_api_profile_upload(conn, body)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        elif path.startswith('/api/profile/'):
+            # Extract profile name from path: GET /api/profile/<name>
+            profile_name = path.split('/')[-1]
+            if method == 'GET':
+                handle_api_profile_get(conn, profile_name)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        # Control commands
+        elif path == '/api/run':
+            if method == 'POST':
+                handle_api_run(conn, body)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        elif path == '/api/stop':
+            if method == 'POST':
+                handle_api_stop(conn)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
 
         else:
             send_response(conn, 404, b'Not found', 'text/plain')
