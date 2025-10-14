@@ -72,6 +72,8 @@ class ControlThread:
             SPI(
                 self.config.MAX31856_SPI_ID,
                 baudrate=1000000,
+                polarity=0,  # MAX31856 requires SPI Mode 1
+                phase=1,     # CPOL=0, CPHA=1
                 sck=Pin(self.config.MAX31856_SCK_PIN),
                 mosi=Pin(self.config.MAX31856_MOSI_PIN),
                 miso=Pin(self.config.MAX31856_MISO_PIN),

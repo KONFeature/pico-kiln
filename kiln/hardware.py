@@ -37,7 +37,24 @@ class TemperatureSensor:
             self.fault_count = 0
             self.max_fault_count = 3  # Allow some transient faults
 
-            print("Temperature sensor initialized")
+            # Perform initial conversion to clear power-up faults
+            # The chip needs ~160ms to complete first conversion
+            print("Temperature sensor initialized, waiting for first conversion...")
+            time.sleep(0.2)  # Wait for first conversion to complete
+
+            # Read and discard first temperature to clear any power-up faults
+            # Try a few times in case of transient power-up issues
+            for attempt in range(3):
+                try:
+                    _ = self.sensor.temperature
+                    print("Temperature sensor ready")
+                    break
+                except Exception as e:
+                    if attempt < 2:
+                        print(f"Temperature read attempt {attempt+1} failed: {e}, retrying...")
+                        time.sleep(0.5)
+                    else:
+                        print(f"Temperature read failed after 3 attempts (may work later): {e}")
 
         except Exception as e:
             print(f"Error initializing temperature sensor: {e}")

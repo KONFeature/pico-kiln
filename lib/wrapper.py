@@ -41,10 +41,20 @@ class SPIWrapper(Lockable):
         )
 
     def write(self, buf, start=0, end=None):
-        self._spi.write(buf)
+        # Respect start/end parameters for slice writing
+        if end is None:
+            end = len(buf)
+        self._spi.write(buf[start:end])
 
     def readinto(self, buf, start=0, end=None):
-        self._spi.readinto(buf)
+        # Respect start/end parameters for slice reading
+        if end is None:
+            end = len(buf)
+        # Create a temporary buffer for the slice
+        temp = bytearray(end - start)
+        self._spi.readinto(temp)
+        # Copy into the target buffer at the correct position
+        buf[start:end] = temp
 
     def write_readinto(self, buffer_out, buffer_in):
         self._spi.write_readinto(buffer_out, buffer_in)
