@@ -108,6 +108,23 @@ class StatusReceiver:
         """
         return self.status_cache.get_field(field, default)
 
+    def get_status_fields(self, *fields):
+        """
+        Get multiple specific fields from cached status
+
+        More memory-efficient than get_status() when you only need a few fields.
+
+        Args:
+            *fields: Field names to retrieve
+
+        Returns:
+            Dictionary with only requested fields
+
+        Example:
+            receiver.get_status_fields('current_temp', 'target_temp', 'ssr_is_on')
+        """
+        return self.status_cache.get_fields(*fields)
+
     async def run(self):
         """
         Main async task that consumes status updates

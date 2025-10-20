@@ -7,9 +7,9 @@
 <body>
 <h1>Pico Kiln Controller</h1>
 
-<h2>SSR: {status}</h2>
-<p>Current: {current_temp}C | Target: {target_temp}C | State: {state}</p>
-<p>Program: {program}</p>
+<h2>SSR: <span id="status">--</span></h2>
+<p>Current: <span id="current_temp">--</span>C | Target: <span id="target_temp">--</span>C | State: <span id="state">--</span></p>
+<p>Program: <span id="program">--</span></p>
 
 <h2>Profiles</h2>
 {profiles_list}
@@ -29,6 +29,16 @@
 </small></p>
 
 <script>
+// Injected data from server (single JSON replacement)
+const data = {DATA};
+
+// Populate status fields on page load
+document.getElementById('status').textContent = data.status;
+document.getElementById('current_temp').textContent = data.current_temp.toFixed(1);
+document.getElementById('target_temp').textContent = data.target_temp.toFixed(1);
+document.getElementById('program').textContent = data.program;
+document.getElementById('state').textContent = data.state;
+
 function startProfile(profileName) {
 if (confirm('Start: ' + profileName + '?')) {
 fetch('/api/run', {

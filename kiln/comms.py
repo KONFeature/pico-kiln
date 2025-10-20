@@ -5,6 +5,8 @@
 # between the control thread (Core 1) and the web server thread (Core 2)
 # using a custom ThreadSafeQueue implementation.
 
+import gc
+
 try:
     from _thread import allocate_lock
 except ImportError:
@@ -344,6 +346,9 @@ class StatusCache:
 
     Used by web server (Core 2) to quickly serve status requests
     without blocking on queue operations
+
+    MEMORY OPTIMIZED: Added get_fields() method to fetch multiple fields without
+    full dictionary copy, and added periodic GC trigger to clean up old copies.
     """
 
     def __init__(self):
@@ -359,6 +364,7 @@ class StatusCache:
             'profile_name': None,
             'error': None
         }
+        self._copy_count = 0  # Track copies for periodic GC
 
     def update(self, status):
         """Update cached status (thread-safe)"""
@@ -366,11 +372,51 @@ class StatusCache:
             self._status = status
 
     def get(self):
-        """Get cached status (thread-safe)"""
+        """
+        Get cached status (thread-safe)
+
+        MEMORY NOTE: Creates a copy for thread safety. For frequently accessed
+        fields, consider using get_field() or get_fields() to avoid copying.
+        """
         with self.lock:
-            return self._status.copy()
+            copy = self._status.copy()
+
+            # Trigger GC every 10 copies to clean up old dictionaries
+            self._copy_count += 1
+            if self._copy_count >= 10:
+                self._copy_count = 0
+                gc.collect()
+
+            return copy
 
     def get_field(self, field, default=None):
-        """Get specific field from cached status"""
+        """
+        Get specific field from cached status without copying entire dict
+
+        Args:
+            field: Field name to retrieve
+            default: Default value if field doesn't exist
+
+        Returns:
+            Field value or default
+        """
         with self.lock:
             return self._status.get(field, default)
+
+    def get_fields(self, *fields):
+        """
+        Get multiple specific fields from cached status without full copy
+
+        More memory-efficient than get() when you only need a few fields.
+
+        Args:
+            *fields: Field names to retrieve
+
+        Returns:
+            Dictionary with only requested fields
+
+        Example:
+            cache.get_fields('current_temp', 'target_temp', 'ssr_is_on')
+        """
+        with self.lock:
+            return {field: self._status.get(field) for field in fields}

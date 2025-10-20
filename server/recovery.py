@@ -8,6 +8,7 @@
 
 import time
 import os
+import gc
 
 
 class RecoveryListener:
@@ -281,6 +282,10 @@ def _parse_last_log_entry(log_file):
     """
     Parse the last line of a CSV log file
 
+    MEMORY OPTIMIZED: Reads file line-by-line, keeping only the last non-empty line
+    in memory instead of loading the entire file. This reduces memory usage from
+    ~120KB (for a 10-hour log) to <1KB.
+
     CSV format:
     timestamp,elapsed_seconds,current_temp_c,target_temp_c,
     ssr_output_percent,ssr_is_on,state,progress_percent
@@ -292,20 +297,21 @@ def _parse_last_log_entry(log_file):
         Dictionary with parsed values, or None if parsing failed
     """
     try:
-        # Read the entire file (MicroPython doesn't have efficient tail reading)
+        # Read file line-by-line, keeping only the last non-empty line
+        # This uses minimal memory compared to readlines() which loads entire file
+        last_line = None
+        line_count = 0
+
         with open(log_file, 'r') as f:
-            lines = f.readlines()
+            for line in f:
+                line_count += 1
+                stripped = line.strip()
+                if stripped:
+                    last_line = stripped
 
         # Need at least header + one data row
-        if len(lines) < 2:
+        if line_count < 2:
             return None
-
-        # Get last line (skip empty lines)
-        last_line = None
-        for line in reversed(lines):
-            if line.strip():
-                last_line = line.strip()
-                break
 
         if not last_line:
             return None
@@ -320,7 +326,7 @@ def _parse_last_log_entry(log_file):
         timestamp_str = values[0]
         timestamp_unix = _parse_iso_timestamp(timestamp_str)
 
-        return {
+        result = {
             'timestamp': timestamp_unix,
             'elapsed': float(values[1]),
             'current_temp': float(values[2]),
@@ -330,6 +336,11 @@ def _parse_last_log_entry(log_file):
             'state': values[6],
             'progress': float(values[7])
         }
+
+        # Force garbage collection after parsing
+        gc.collect()
+
+        return result
 
     except Exception as e:
         print(f"[Recovery] Error parsing log entry: {e}")

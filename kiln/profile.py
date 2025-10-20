@@ -2,6 +2,7 @@
 # Kiln firing profile management
 
 import json
+import gc
 
 class Profile:
     """
@@ -130,7 +131,7 @@ class Profile:
                         with open(filepath, 'r') as f:
                             data = json.load(f)
 
-                        # Return metadata only (not full data array)
+                        # Extract metadata only (not full data array)
                         profiles.append({
                             'name': data.get('name', filename),
                             'description': data.get('description', ''),
@@ -138,6 +139,10 @@ class Profile:
                             'duration': data['data'][-1][0] if data.get('data') else 0,
                             'filename': filename
                         })
+
+                        # MEMORY OPTIMIZED: Free memory immediately after loading each profile
+                        gc.collect()
+
                     except Exception as e:
                         print(f"Error loading profile {filename}: {e}")
         except OSError:

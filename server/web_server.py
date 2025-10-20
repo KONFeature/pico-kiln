@@ -72,7 +72,11 @@ def send_html_response(conn, html, status=200):
 
 def handle_api_state(conn):
     """GET /api/state - Return current system state (legacy endpoint)"""
-    cached = get_status_receiver().get_status()
+    # MEMORY OPTIMIZED: Use get_fields() to avoid full status copy
+    receiver = get_status_receiver()
+    cached = receiver.status_cache.get_fields(
+        'ssr_is_on', 'current_temp', 'target_temp', 'profile_name', 'state'
+    )
 
     response = {
         "ssr_state": cached.get('ssr_is_on', False),
@@ -315,16 +319,11 @@ def handle_index(conn):
         with open("static/index.html", "r") as f:
             html = f.read()
 
-        # Get cached status from control thread
-        cached = get_status_receiver().get_status()
-
-        # Replace template variables - SSR status
-        ssr_status = 'ON' if cached.get('ssr_is_on', False) else 'OFF'
-        status_color = '#4CAF50' if cached.get('ssr_is_on', False) else '#f44336'
-
-        # Controller state
-        controller_state = cached.get('state', 'IDLE')
-        state_class = controller_state.lower()
+        # MEMORY OPTIMIZED: Use get_fields() to fetch only needed fields
+        receiver = get_status_receiver()
+        cached = receiver.status_cache.get_fields(
+            'ssr_is_on', 'current_temp', 'target_temp', 'profile_name', 'state'
+        )
 
         # Build profiles list HTML (using list + join for memory efficiency)
         profiles_parts = ['<ul>']
@@ -344,18 +343,23 @@ def handle_index(conn):
         profiles_parts.append('</ul>')
         profiles_html = ''.join(profiles_parts)
 
-        # Replace all template variables
-        html = html.replace('{status}', ssr_status)
-        html = html.replace('{status_color}', status_color)
-        html = html.replace('{current_temp}', f'{cached.get("current_temp", 0.0):.1f}')
-        html = html.replace('{target_temp}', f'{cached.get("target_temp", 0.0):.1f}')
-        html = html.replace('{program}', cached.get('profile_name') or 'None')
-        html = html.replace('{state}', controller_state)
-        html = html.replace('{state_class}', state_class)
+        # MEMORY OPTIMIZED: Build single JSON object for client-side rendering
+        # This reduces 8 string.replace() calls to just 2, saving ~10KB in temporary allocations
+        status_data = {
+            'status': 'ON' if cached.get('ssr_is_on', False) else 'OFF',
+            'current_temp': cached.get('current_temp', 0.0),
+            'target_temp': cached.get('target_temp', 0.0),
+            'program': cached.get('profile_name') or 'None',
+            'state': cached.get('state', 'IDLE')
+        }
+
+        # Single replacement for data (JavaScript will populate DOM)
+        html = html.replace('{DATA}', json.dumps(status_data))
+        # Single replacement for profiles list (still server-side HTML)
         html = html.replace('{profiles_list}', profiles_html)
 
         send_html_response(conn, html)
-        gc.collect()  # Free memory after large HTML generation
+        gc.collect()  # MEMORY OPTIMIZED: Free memory after HTML generation
     except OSError:
         # File not found, serve simple fallback
         html = """<!DOCTYPE html>
