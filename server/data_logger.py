@@ -104,6 +104,9 @@ class DataLogger:
         Only logs if logging_interval seconds have passed since last log.
         This reduces memory usage by limiting the number of data points.
 
+        For TUNING state, uses a shorter interval (2s) to capture detailed data
+        needed for PID analysis.
+
         Args:
             status: Status dictionary from StatusMessage.build()
                     Expected fields: timestamp, elapsed, current_temp,
@@ -114,7 +117,12 @@ class DataLogger:
 
         # Check if enough time has passed since last log
         current_time = time.time()
-        if current_time - self.last_log_time < self.logging_interval:
+        current_state = status.get('state')
+
+        # Use shorter interval for TUNING to capture detailed response curve
+        interval = 2.0 if current_state == 'TUNING' else self.logging_interval
+
+        if current_time - self.last_log_time < interval:
             return  # Skip this log entry
 
         self.last_log_time = current_time
@@ -238,9 +246,9 @@ class DataLogger:
         Callback for StatusReceiver - called when status updates arrive
 
         Handles state transitions and logging:
-        - Starts logging when entering RUNNING state
-        - Logs data during RUNNING state (respecting logging interval)
-        - Stops logging when leaving RUNNING state
+        - Starts logging when entering RUNNING or TUNING state
+        - Logs data during RUNNING or TUNING state (respecting logging interval)
+        - Stops logging when leaving RUNNING or TUNING state
 
         Args:
             status: Status dictionary from StatusMessage.build()
@@ -265,12 +273,18 @@ class DataLogger:
                     # Normal start - create new log file
                     self.start_logging(profile_name)
 
-        # Log data during RUNNING state
-        if current_state == 'RUNNING' and self.is_logging:
+        # Start logging when entering TUNING state
+        if current_state == 'TUNING' and self.previous_state != 'TUNING':
+            # Use "tuning" as profile name for tuning sessions
+            tuning_name = "tuning"
+            self.start_logging(tuning_name)
+
+        # Log data during RUNNING or TUNING state
+        if current_state in ['RUNNING', 'TUNING'] and self.is_logging:
             self.log_status(status)
 
-        # Stop logging when leaving RUNNING state
-        if self.previous_state == 'RUNNING' and current_state != 'RUNNING':
+        # Stop logging when leaving RUNNING or TUNING state
+        if self.previous_state in ['RUNNING', 'TUNING'] and current_state not in ['RUNNING', 'TUNING']:
             self.stop_logging()
 
         self.previous_state = current_state

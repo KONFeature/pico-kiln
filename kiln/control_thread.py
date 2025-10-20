@@ -288,14 +288,9 @@ class ControlThread:
             # 5. Check if tuning is complete or errored
             if not continue_tuning:
                 if self.tuner.stage == TuningStage.COMPLETE:
-                    # Save results
-                    try:
-                        self.tuner.save_results("tuning_results.json")
-                        self.tuner.save_csv("tuning_data.csv")
-                        print("[Control Thread] Tuning complete - results saved")
-                    except Exception as e:
-                        print(f"[Control Thread] Error saving tuning results: {e}")
-
+                    # Tuning complete - data has been streamed to CSV on Core 2
+                    print("[Control Thread] Tuning complete - data saved to CSV")
+                    print("[Control Thread] Use analyze_tuning.py to calculate PID parameters")
                     self.controller.state = KilnState.IDLE
                 elif self.tuner.stage == TuningStage.ERROR:
                     print(f"[Control Thread] Tuning error: {self.tuner.error_message}")
