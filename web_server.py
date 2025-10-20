@@ -9,6 +9,7 @@ import json
 import socket
 import config
 from kiln.comms import CommandMessage, QueueHelper, StatusCache
+from kiln.data_logger import DataLogger
 
 # HTTP response templates
 HTTP_200 = "HTTP/1.1 200 OK\r\n"
@@ -19,6 +20,7 @@ HTTP_500 = "HTTP/1.1 500 Internal Server Error\r\n"
 command_queue = None
 status_queue = None
 status_cache = StatusCache()  # Thread-safe cache for latest status
+data_logger = DataLogger(config.LOGS_DIR)  # CSV data logger for kiln runs
 
 def parse_request(data):
     """Parse HTTP request and return method, path, headers, and body"""
@@ -69,14 +71,36 @@ async def status_updater():
 
     This runs continuously on Core 2, reading status messages from the
     status_queue and updating the cached status for quick API responses.
+    Also handles CSV data logging during kiln runs.
     """
     print("[Web Server] Status updater started")
+
+    previous_state = None
 
     while True:
         # Non-blocking check for status updates
         status = QueueHelper.get_nowait(status_queue)
         if status:
             status_cache.update(status)
+
+            # Handle data logging based on state transitions
+            current_state = status.get('state')
+            profile_name = status.get('profile_name')
+
+            # Start logging when entering RUNNING state
+            if current_state == 'RUNNING' and previous_state != 'RUNNING':
+                if profile_name:
+                    data_logger.start_logging(profile_name)
+
+            # Log data during RUNNING state
+            if current_state == 'RUNNING' and data_logger.is_logging:
+                data_logger.log_status(status)
+
+            # Stop logging when leaving RUNNING state
+            if previous_state == 'RUNNING' and current_state != 'RUNNING':
+                data_logger.stop_logging()
+
+            previous_state = current_state
 
         await asyncio.sleep(0.1)  # Check 10 times per second
 

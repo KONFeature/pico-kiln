@@ -61,3 +61,7 @@ THERMOCOUPLE_OFFSET = 0.0
 # === Profile Settings ===
 # Directory for storing firing profiles
 PROFILES_DIR = "profiles"
+
+# === Data Logging Settings ===
+# Directory for storing kiln run data logs (CSV files)
+LOGS_DIR = "logs"
