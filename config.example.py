@@ -85,3 +85,40 @@ MAX_RECOVERY_DURATION = 300
 # If current temperature differs by more than this, recovery is considered unsafe
 # Default: 30°C
 MAX_RECOVERY_TEMP_DELTA = 30
+
+# === Watchdog Timer Settings ===
+# Hardware watchdog timer for automatic recovery from control loop hangs
+#
+# The watchdog runs on Core 1 (control thread) and monitors the critical control loop.
+# If the control loop hangs or crashes, the watchdog will automatically reset the Pico
+# after WATCHDOG_TIMEOUT milliseconds. The recovery system will then automatically
+# resume the interrupted kiln program (if within recovery time window).
+#
+# ENABLE_WATCHDOG: Set to True to enable watchdog protection
+# WATCHDOG_TIMEOUT: Time in milliseconds before watchdog resets (default: 8000ms = 8s)
+#
+# How it works:
+# 1. Control loop iteration completes successfully → watchdog is fed
+# 2. Control loop hangs or crashes → watchdog NOT fed
+# 3. After WATCHDOG_TIMEOUT ms → Pico resets automatically
+# 4. On boot → Recovery system detects interrupted program
+# 5. If within MAX_RECOVERY_DURATION → Program resumes automatically
+#
+# Safety notes:
+# - Watchdog timeout (8000ms) must be longer than control loop interval (1000ms)
+# - Current settings: 8x safety margin (8s timeout / 1s loop = 8x)
+# - Core 2 failures (web server, WiFi) do NOT trigger watchdog - kiln keeps firing
+# - Only critical control loop hangs will cause reset
+#
+# When to enable:
+# ✓ After thorough testing of your kiln profiles
+# ✓ For unattended operation (no laptop connected)
+# ✓ When MAX_RECOVERY_DURATION and MAX_RECOVERY_TEMP_DELTA are properly configured
+#
+# When to disable:
+# ✗ During development and debugging
+# ✗ When connected to REPL/laptop (watchdog prevents debugging)
+# ✗ If control loop legitimately takes >8 seconds (increase WATCHDOG_TIMEOUT instead)
+#
+ENABLE_WATCHDOG = False
+WATCHDOG_TIMEOUT = 8000  # milliseconds (8 seconds)

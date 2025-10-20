@@ -9,7 +9,7 @@
 # and must receive ThreadSafeQueue instances for communication.
 
 import time
-from machine import Pin, SPI
+from machine import Pin, SPI, WDT
 from wrapper import DigitalInOut, SPIWrapper
 from kiln import TemperatureSensor, SSRController, PID, KilnController, Profile
 from kiln.state import KilnState
@@ -44,6 +44,7 @@ class ControlThread:
         self.pid = None
         self.controller = None
         self.ssr_pin = None
+        self.wdt = None  # Watchdog timer
 
         # Tuning
         self.tuner = None
@@ -105,6 +106,19 @@ class ControlThread:
             max_temp=self.config.MAX_TEMP,
             max_temp_error=self.config.MAX_TEMP_ERROR
         )
+
+        # Initialize watchdog timer (if enabled)
+        if self.config.ENABLE_WATCHDOG:
+            try:
+                # Initialize hardware watchdog with configured timeout
+                self.wdt = WDT(timeout=self.config.WATCHDOG_TIMEOUT)
+                print(f"[Control Thread] Watchdog ENABLED with {self.config.WATCHDOG_TIMEOUT}ms timeout")
+                print(f"[Control Thread] WARNING: Device will auto-reset if control loop hangs!")
+            except Exception as e:
+                print(f"[Control Thread] WARNING: Failed to enable watchdog: {e}")
+                self.wdt = None
+        else:
+            print("[Control Thread] Watchdog DISABLED")
 
         print("[Control Thread] All hardware initialized successfully")
 
@@ -203,6 +217,16 @@ class ControlThread:
             # Set error state on controller
             self.controller.set_error(f"Command error: {e}")
 
+    def feed_watchdog(self):
+        """
+        Feed the watchdog timer to prevent system reset
+
+        This should be called at the end of each successful control loop iteration.
+        If not called within WATCHDOG_TIMEOUT milliseconds, the device will reset.
+        """
+        if self.wdt:
+            self.wdt.feed()
+
     def send_status_update(self):
         """
         Build and send status update to Core 2
@@ -293,6 +317,9 @@ class ControlThread:
                 self.ssr_controller.update()
                 time.sleep(0.1)
 
+            # 8. Feed watchdog - tuning loop iteration completed successfully
+            self.feed_watchdog()
+
         except Exception as e:
             print(f"[Control Thread] Tuning loop error: {e}")
             # Emergency shutdown on error
@@ -301,6 +328,7 @@ class ControlThread:
             if self.controller:
                 self.controller.set_error(str(e))
             self.tuner = None
+            # NOTE: Do NOT feed watchdog on error - let it reset if we're stuck in error loop
             time.sleep(1)
 
     def control_loop_iteration(self):
@@ -367,6 +395,9 @@ class ControlThread:
                 self.ssr_controller.update()
                 time.sleep(0.1)
 
+            # 9. Feed watchdog - control loop iteration completed successfully
+            self.feed_watchdog()
+
         except Exception as e:
             print(f"[Control Thread] Control loop error: {e}")
             # Emergency shutdown on error
@@ -374,6 +405,7 @@ class ControlThread:
                 self.ssr_controller.force_off()
             if self.controller:
                 self.controller.set_error(str(e))
+            # NOTE: Do NOT feed watchdog on error - let it reset if we're stuck in error loop
             time.sleep(1)
 
     def run(self):
