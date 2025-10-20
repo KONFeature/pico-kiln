@@ -113,6 +113,7 @@ class ThreadSafeQueue:
 class MessageType:
     """Command message types (Core 2 -> Core 1)"""
     RUN_PROFILE = 'run_profile'
+    RESUME_PROFILE = 'resume_profile'
     STOP = 'stop'
     SHUTDOWN = 'shutdown'
     SET_PID_GAINS = 'set_pid_gains'
@@ -128,11 +129,29 @@ class CommandMessage:
     """
 
     @staticmethod
-    def run_profile(profile_data):
-        """Start running a firing profile"""
+    def run_profile(profile_filename):
+        """Start running a firing profile
+
+        Args:
+            profile_filename: Filename of the profile to run (e.g., "cone6_glaze.json")
+        """
         return {
             'type': MessageType.RUN_PROFILE,
-            'profile_data': profile_data
+            'profile_filename': profile_filename
+        }
+
+    @staticmethod
+    def resume_profile(profile_filename, elapsed_seconds):
+        """Resume a previously interrupted firing profile
+
+        Args:
+            profile_filename: Filename of the profile to resume (e.g., "cone6_glaze.json")
+            elapsed_seconds: How far through the profile execution to resume from
+        """
+        return {
+            'type': MessageType.RESUME_PROFILE,
+            'profile_filename': profile_filename,
+            'elapsed_seconds': elapsed_seconds
         }
 
     @staticmethod

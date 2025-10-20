@@ -175,13 +175,16 @@ def handle_api_run(conn, body):
             send_json_response(conn, {'success': False, 'error': 'Profile name required'}, 400)
             return
 
-        # Load profile data from file
+        # Verify profile exists before sending command
+        import os
         filename = f"{config.PROFILES_DIR}/{profile_name}.json"
-        with open(filename, 'r') as f:
-            profile_data = json.load(f)
+        if not os.path.exists(filename):
+            send_json_response(conn, {'success': False, 'error': f'Profile not found: {profile_name}'}, 404)
+            return
 
-        # Send command to control thread
-        command = CommandMessage.run_profile(profile_data)
+        # Send command to control thread (Core 1 will load the profile)
+        profile_filename = f"{profile_name}.json"
+        command = CommandMessage.run_profile(profile_filename)
 
         if QueueHelper.put_nowait(command_queue, command):
             print(f"[Web Server] Started profile: {profile_name}")

@@ -64,6 +64,35 @@ class KilnController:
 
         print(f"Starting profile: {profile.name}")
 
+    def resume_profile(self, profile, elapsed_seconds):
+        """
+        Resume a previously interrupted firing profile
+
+        Similar to run_profile(), but adjusts start_time to account for
+        time that has already elapsed in the profile execution.
+
+        Args:
+            profile: Profile instance to resume
+            elapsed_seconds: How far through the profile to resume from
+        """
+        if self.state == KilnState.RUNNING:
+            raise Exception("Cannot resume profile: kiln is already running")
+
+        if self.state == KilnState.TUNING:
+            raise Exception("Cannot resume profile: tuning is in progress")
+
+        self.active_profile = profile
+        self.state = KilnState.RUNNING
+
+        # Adjust start time to account for elapsed progress
+        # This makes get_elapsed_time() return the correct value
+        current_time = time.time()
+        self.start_time = current_time - elapsed_seconds
+
+        self.error_message = None
+
+        print(f"Resuming profile: {profile.name} at {elapsed_seconds:.1f}s elapsed")
+
     def stop(self):
         """
         Emergency stop - immediately halt profile

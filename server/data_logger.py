@@ -41,21 +41,33 @@ class DataLogger:
         self.last_log_time = 0
         self.previous_state = None
 
-    def start_logging(self, profile_name):
-        """
-        Start logging data to a new CSV file
+        # Recovery context
+        self.recovery_log_file = None
+        self.recovery_info = None
 
-        Creates a new CSV file with timestamp and profile name.
+    def start_logging(self, profile_name, recovery_log_file=None):
+        """
+        Start logging data to a new CSV file, or resume to existing file
+
+        Creates a new CSV file with timestamp and profile name, unless
+        recovery_log_file is specified (for program recovery).
         Format: {profile_name}_{YYYY-MM-DD_HH-MM-SS}.csv
 
         Args:
             profile_name: Name of the kiln profile being run
+            recovery_log_file: Optional path to existing log file to append to (for recovery)
         """
-        # Generate filename with timestamp
-        timestamp_str = self._format_timestamp_filename(time.time())
-        # Sanitize profile name for filename
-        safe_profile_name = profile_name.replace(' ', '_').replace('/', '_')
-        filename = f"{self.log_dir}/{safe_profile_name}_{timestamp_str}.csv"
+        if recovery_log_file:
+            # Resume logging to existing file (program recovery)
+            filename = recovery_log_file
+            mode = 'a'  # Append mode
+        else:
+            # Generate filename with timestamp for new run
+            timestamp_str = self._format_timestamp_filename(time.time())
+            # Sanitize profile name for filename
+            safe_profile_name = profile_name.replace(' ', '_').replace('/', '_')
+            filename = f"{self.log_dir}/{safe_profile_name}_{timestamp_str}.csv"
+            mode = 'w'  # Write mode
 
         try:
             # Create log directory if it doesn't exist
@@ -65,16 +77,19 @@ class DataLogger:
             except OSError:
                 pass  # Directory already exists
 
-            # Open file for writing
-            self.file = open(filename, 'w')
+            # Open file for writing or appending
+            self.file = open(filename, mode)
             self.is_logging = True
             self.current_profile_name = profile_name
             self.last_log_time = 0  # Reset to force first log immediately
 
-            # Write CSV header
-            self._write_header()
+            # Write CSV header only for new files
+            if mode == 'w':
+                self._write_header()
+                print(f"[DataLogger] Started logging to {filename}")
+            else:
+                print(f"[DataLogger] Resumed logging to {filename}")
 
-            print(f"[DataLogger] Started logging to {filename}")
             print(f"[DataLogger] Logging interval: {self.logging_interval}s")
 
         except Exception as e:
@@ -137,6 +152,54 @@ class DataLogger:
         except Exception as e:
             print(f"[DataLogger] Error writing log entry: {e}")
 
+    def log_recovery_event(self, recovery_info, current_status):
+        """
+        Log a recovery event to CSV file
+
+        Writes a special log entry marking when program recovery occurred.
+        Should be called immediately after recovery is initiated.
+
+        Args:
+            recovery_info: RecoveryInfo object with recovery details
+            current_status: Current status dictionary with system state
+        """
+        if not self.is_logging or not self.file:
+            return
+
+        try:
+            # Extract fields from status message
+            timestamp = current_status.get('timestamp', time.time())
+            elapsed = recovery_info.elapsed_seconds
+            current_temp = current_status.get('current_temp', recovery_info.last_temp)
+            target_temp = current_status.get('target_temp', recovery_info.last_target_temp)
+            ssr_output = current_status.get('ssr_output', 0.0)
+            ssr_is_on = current_status.get('ssr_is_on', False)
+            progress = current_status.get('progress', 0.0)
+
+            # Format row with RECOVERY marker in state column
+            timestamp_iso = self._format_timestamp_iso(timestamp)
+            ssr_on_int = 1 if ssr_is_on else 0
+
+            row = (
+                f"{timestamp_iso},"
+                f"{elapsed:.1f},"
+                f"{current_temp:.2f},"
+                f"{target_temp:.2f},"
+                f"{ssr_output:.2f},"
+                f"{ssr_on_int},"
+                f"RECOVERY,"  # Special state marker
+                f"{progress:.1f}\n"
+            )
+
+            # Write to file
+            self.file.write(row)
+            self.file.flush()  # Ensure data is written to disk
+
+            print(f"[DataLogger] Recovery event logged at {elapsed:.1f}s")
+
+        except Exception as e:
+            print(f"[DataLogger] Error writing recovery event: {e}")
+
     def stop_logging(self):
         """
         Stop logging and close the CSV file
@@ -156,6 +219,20 @@ class DataLogger:
         except Exception as e:
             print(f"[DataLogger] Error closing log file: {e}")
 
+    def set_recovery_context(self, recovery_info):
+        """
+        Set recovery context for resuming logging to existing file
+
+        Should be called before the program resumes to tell the logger
+        to append to the existing log file instead of creating a new one.
+
+        Args:
+            recovery_info: RecoveryInfo object with recovery details
+        """
+        self.recovery_log_file = recovery_info.log_file
+        self.recovery_info = recovery_info
+        print(f"[DataLogger] Recovery context set: will resume to {recovery_info.log_file}")
+
     def on_status_update(self, status):
         """
         Callback for StatusReceiver - called when status updates arrive
@@ -174,7 +251,19 @@ class DataLogger:
         # Start logging when entering RUNNING state
         if current_state == 'RUNNING' and self.previous_state != 'RUNNING':
             if profile_name:
-                self.start_logging(profile_name)
+                # Check if we're in recovery mode
+                if self.recovery_log_file:
+                    # Resume logging to existing file
+                    self.start_logging(profile_name, self.recovery_log_file)
+                    # Write recovery event
+                    if self.recovery_info:
+                        self.log_recovery_event(self.recovery_info, status)
+                    # Clear recovery context
+                    self.recovery_log_file = None
+                    self.recovery_info = None
+                else:
+                    # Normal start - create new log file
+                    self.start_logging(profile_name)
 
         # Log data during RUNNING state
         if current_state == 'RUNNING' and self.is_logging:

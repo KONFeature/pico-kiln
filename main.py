@@ -63,6 +63,18 @@ async def main():
     data_logger = DataLogger(config.LOGS_DIR, config.LOGGING_INTERVAL)
     status_receiver.register_listener(data_logger.on_status_update)
 
+    # Initialize and register recovery listener
+    print("[Main] Initializing recovery listener...")
+    from server.recovery import RecoveryListener
+    recovery_listener = RecoveryListener(command_queue, data_logger, config)
+    recovery_listener.set_status_receiver(status_receiver)
+    status_receiver.register_listener(recovery_listener.on_status_update)
+    print("[Main] Recovery listener will check on first valid temperature reading")
+
+    # Start status receiver
+    print("[Main] Starting status receiver...")
+    receiver_task = asyncio.create_task(status_receiver.run())
+
     # Initialize WiFi manager
     wifi_mgr = WiFiManager(config.WIFI_SSID, config.WIFI_PASSWORD)
 
@@ -77,9 +89,6 @@ async def main():
         ip_address = "N/A"
 
     # Start async tasks on Core 2
-    print("[Main] Starting status receiver...")
-    receiver_task = asyncio.create_task(status_receiver.run())
-
     print("[Main] Starting web server...")
     server_task = asyncio.create_task(web_server.start_server(command_queue))
 

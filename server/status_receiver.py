@@ -86,6 +86,15 @@ class StatusReceiver:
         """
         return self.status_cache.get()
 
+    def get_cached_status(self):
+        """
+        Alias for get_status() - get current cached status
+
+        Returns:
+            Dictionary with current system status
+        """
+        return self.get_status()
+
     def get_status_field(self, field, default=None):
         """
         Get specific field from cached status

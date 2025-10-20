@@ -120,14 +120,35 @@ class ControlThread:
         try:
             if cmd_type == MessageType.RUN_PROFILE:
                 # Start running a profile
-                profile_data = command.get('profile_data')
-                if not profile_data:
-                    print("[Control Thread] Error: No profile data in run_profile command")
+                profile_filename = command.get('profile_filename')
+                if not profile_filename:
+                    print("[Control Thread] Error: No profile filename in run_profile command")
                     return
 
-                profile = Profile(profile_data)
-                self.controller.run_profile(profile)
-                print(f"[Control Thread] Started profile: {profile.name}")
+                try:
+                    profile = Profile.load_from_file(f"profiles/{profile_filename}")
+                    self.controller.run_profile(profile)
+                    print(f"[Control Thread] Started profile: {profile.name}")
+                except Exception as e:
+                    print(f"[Control Thread] Error loading profile '{profile_filename}': {e}")
+                    self.controller.set_error(f"Failed to load profile: {e}")
+
+            elif cmd_type == MessageType.RESUME_PROFILE:
+                # Resume a previously interrupted profile
+                profile_filename = command.get('profile_filename')
+                elapsed_seconds = command.get('elapsed_seconds', 0)
+
+                if not profile_filename:
+                    print("[Control Thread] Error: No profile filename in resume_profile command")
+                    return
+
+                try:
+                    profile = Profile.load_from_file(f"profiles/{profile_filename}")
+                    self.controller.resume_profile(profile, elapsed_seconds)
+                    print(f"[Control Thread] Resumed profile: {profile.name} at {elapsed_seconds:.1f}s")
+                except Exception as e:
+                    print(f"[Control Thread] Error loading profile '{profile_filename}': {e}")
+                    self.controller.set_error(f"Failed to load profile: {e}")
 
             elif cmd_type == MessageType.STOP:
                 # Stop current profile

@@ -70,3 +70,18 @@ LOGS_DIR = "logs"
 # Lower values = more data points but more memory usage
 # Default: 30 seconds (saves ~120 data points for a 1-hour firing)
 LOGGING_INTERVAL = 30
+
+# === Program Recovery Settings ===
+# Automatic program recovery after unexpected reboot/crash
+# If a kiln program was running when the device rebooted, it will attempt
+# to resume automatically if the conditions below are met
+#
+# MAX_RECOVERY_DURATION: Maximum time since last log entry to attempt recovery (seconds)
+# If more time has passed, recovery is considered unsafe and program is abandoned
+# Default: 300 seconds (5 minutes)
+MAX_RECOVERY_DURATION = 300
+
+# MAX_RECOVERY_TEMP_DELTA: Maximum temperature deviation from last logged value (°C)
+# If current temperature differs by more than this, recovery is considered unsafe
+# Default: 30°C
+MAX_RECOVERY_TEMP_DELTA = 30
