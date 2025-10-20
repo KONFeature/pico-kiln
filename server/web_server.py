@@ -7,6 +7,7 @@
 import asyncio
 import json
 import socket
+import gc
 import config
 from kiln.comms import CommandMessage, QueueHelper
 from server.status_receiver import get_status_receiver
@@ -18,6 +19,13 @@ HTTP_500 = "HTTP/1.1 500 Internal Server Error\r\n"
 
 # Global communication channels (initialized in start_server)
 command_queue = None
+
+# Connection limiting to prevent memory exhaustion
+active_connections = 0
+MAX_CONCURRENT_CONNECTIONS = 2  # Limit to 2 concurrent connections on Pico
+
+# Request size limits
+MAX_PROFILE_SIZE = 10240  # 10KB max for profile uploads
 
 def parse_request(data):
     """Parse HTTP request and return method, path, headers, and body"""
@@ -139,6 +147,14 @@ def handle_api_profile_upload(conn, body):
     try:
         from kiln.profile import Profile
         import os
+
+        # Check profile size limit to prevent memory exhaustion
+        if len(body) > MAX_PROFILE_SIZE:
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Profile too large (max {MAX_PROFILE_SIZE} bytes)'
+            }, 400)
+            return
 
         profile_data = json.loads(body.decode())
 
@@ -286,6 +302,7 @@ def handle_tuning_page(conn):
         with open("static/tuning.html", "r") as f:
             html = f.read()
         send_html_response(conn, html)
+        gc.collect()  # Free memory after large HTML (18KB) serving
     except OSError:
         send_response(conn, 404, b'Tuning page not found', 'text/plain')
 
@@ -309,8 +326,8 @@ def handle_index(conn):
         controller_state = cached.get('state', 'IDLE')
         state_class = controller_state.lower()
 
-        # Build profiles list HTML
-        profiles_html = '<ul class="profile-list">'
+        # Build profiles list HTML (using list + join for memory efficiency)
+        profiles_parts = ['<ul class="profile-list">']
         try:
             # List all JSON files in profiles directory
             profile_files = [f for f in os.listdir(config.PROFILES_DIR) if f.endswith('.json')]
@@ -318,17 +335,18 @@ def handle_index(conn):
             if profile_files:
                 for profile_file in sorted(profile_files):
                     profile_name = profile_file[:-5]  # Remove .json extension
-                    profiles_html += f'''
+                    profiles_parts.append(f'''
                     <li class="profile-item">
                         <span class="profile-name">{profile_name}</span>
                         <button class="btn-start btn-small" onclick="startProfile('{profile_name}')">Start</button>
-                    </li>'''
+                    </li>''')
             else:
-                profiles_html += '<li class="empty-state">No profiles found. Upload a profile using the API.</li>'
+                profiles_parts.append('<li class="empty-state">No profiles found. Upload a profile using the API.</li>')
         except:
-            profiles_html += '<li class="empty-state">No profiles directory found.</li>'
+            profiles_parts.append('<li class="empty-state">No profiles directory found.</li>')
 
-        profiles_html += '</ul>'
+        profiles_parts.append('</ul>')
+        profiles_html = ''.join(profiles_parts)
 
         # Replace all template variables
         html = html.replace('{status}', ssr_status)
@@ -341,6 +359,7 @@ def handle_index(conn):
         html = html.replace('{profiles_list}', profiles_html)
 
         send_html_response(conn, html)
+        gc.collect()  # Free memory after large HTML generation
     except OSError:
         # File not found, serve simple fallback
         html = """<!DOCTYPE html>
@@ -369,6 +388,9 @@ def handle_index(conn):
 
 async def handle_client(conn, addr):
     """Handle individual client connection"""
+    global active_connections
+    active_connections += 1
+
     try:
         # Keep socket non-blocking and add timeout
         conn.setblocking(False)
@@ -469,6 +491,7 @@ async def handle_client(conn, addr):
             pass
 
     finally:
+        active_connections -= 1
         try:
             conn.close()
         except:
@@ -501,6 +524,11 @@ async def start_server(cmd_queue):
 
     while True:
         try:
+            # Check if we're at connection limit before accepting
+            if active_connections >= MAX_CONCURRENT_CONNECTIONS:
+                await asyncio.sleep(0.1)
+                continue
+
             conn, addr = s.accept()
             # Handle each client in a separate task
             asyncio.create_task(handle_client(conn, addr))
