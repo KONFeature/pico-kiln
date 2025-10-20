@@ -22,8 +22,51 @@ from kiln.control_thread import start_control_thread
 wifi = None
 status_led = None
 
-def connect_wifi():
-    """Connect to WiFi network with AP selection"""
+async def wait_for_wifi_connection(timeout=30):
+    """
+    Wait for WiFi connection with LED blinking and timeout
+
+    Args:
+        timeout: Maximum time to wait (seconds)
+
+    Returns:
+        True if connected, False if timeout
+    """
+    global wifi, status_led
+
+    start_time = time.time()
+    led_state = False
+
+    while not wifi.isconnected():
+        # Check timeout
+        if time.time() - start_time > timeout:
+            if status_led:
+                status_led.off()
+            return False
+
+        # Blink LED (non-blocking)
+        if status_led:
+            led_state = not led_state
+            status_led.value(1 if led_state else 0)
+
+        # Yield to event loop
+        await asyncio.sleep(0.5)
+
+    # Connected successfully
+    if status_led:
+        status_led.on()
+    return True
+
+async def connect_wifi_async(timeout=30):
+    """
+    Connect to WiFi network with AP selection (async, non-blocking)
+
+    Args:
+        timeout: Maximum time to wait for connection (seconds)
+
+    Returns:
+        IP address if connected, None if timeout/failure
+    """
     global wifi, status_led
 
     print("[Main] Scanning for WiFi networks...")
@@ -31,7 +74,12 @@ def connect_wifi():
     wifi.active(True)
 
     # Scan and find best AP with matching SSID
-    networks = wifi.scan()
+    try:
+        networks = wifi.scan()
+    except Exception as e:
+        print(f"[Main] WiFi scan failed: {e}")
+        return None
+
     best_bssid = None
     best_rssi = -100
 
@@ -52,15 +100,13 @@ def connect_wifi():
         print(f"[Main] Connecting to {config.WIFI_SSID} (no specific AP)")
         wifi.connect(config.WIFI_SSID, config.WIFI_PASSWORD)
 
-    # Wait for connection with LED blink
-    print("[Main] Waiting for WiFi connection...")
-    while not wifi.isconnected():
-        if status_led:
-            status_led.on()
-        time.sleep(0.5)
-        if status_led:
-            status_led.off()
-        time.sleep(0.5)
+    # Wait for connection (non-blocking with timeout)
+    print(f"[Main] Waiting for WiFi connection (timeout: {timeout}s)...")
+    connected = await wait_for_wifi_connection(timeout)
+
+    if not connected:
+        print(f"[Main] WiFi connection timeout after {timeout}s")
+        return None
 
     # Connected!
     status = wifi.ifconfig()
@@ -71,9 +117,6 @@ def connect_wifi():
     print(f"[Main] Gateway: {status[2]}")
     print(f"[Main] DNS: {status[3]}")
 
-    if status_led:
-        status_led.on()
-
     return ip_address
 
 async def wifi_monitor():
@@ -81,30 +124,30 @@ async def wifi_monitor():
     global wifi, status_led
 
     while True:
-        if not wifi.isconnected():
+        if wifi and not wifi.isconnected():
             print("[Main] WiFi disconnected, reconnecting...")
             if status_led:
                 status_led.off()
 
+            # Attempt reconnection
             wifi.disconnect()
             wifi.active(True)
             wifi.connect(config.WIFI_SSID, config.WIFI_PASSWORD)
 
-            # Wait for connection with blinking LED
-            while not wifi.isconnected():
-                if status_led:
-                    status_led.on()
-                await asyncio.sleep(0.5)
-                if status_led:
-                    status_led.off()
-                await asyncio.sleep(0.5)
+            # Wait for connection (with timeout)
+            timeout = 30  # 30 second timeout for reconnection
+            connected = await wait_for_wifi_connection(timeout)
 
-            status = wifi.ifconfig()
-            print("[Main] WiFi reconnected")
-            print(f"[Main] IP Address: {status[0]}")
-
-            if status_led:
-                status_led.on()
+            if connected:
+                # Successfully reconnected
+                status = wifi.ifconfig()
+                print("[Main] WiFi reconnected")
+                print(f"[Main] IP Address: {status[0]}")
+            else:
+                # Reconnection failed
+                print(f"[Main] WiFi reconnection timeout after {timeout}s")
+                print("[Main] Will retry in 60 seconds...")
+                await asyncio.sleep(60)
 
         await asyncio.sleep(5)  # Check every 5 seconds
 
@@ -160,8 +203,18 @@ async def main():
     # Give control thread time to initialize hardware
     await asyncio.sleep(2)
 
-    # Connect to WiFi (Core 2)
-    ip_address = connect_wifi()
+    # Connect to WiFi (Core 2) - non-blocking with timeout
+    print("[Main] Attempting WiFi connection...")
+    ip_address = await connect_wifi_async(timeout=30)
+
+    if ip_address:
+        print(f"[Main] WiFi connected successfully: {ip_address}")
+    else:
+        print("[Main] WARNING: WiFi connection failed!")
+        print("[Main] System will continue without WiFi")
+        print("[Main] - Control thread is still running")
+        print("[Main] - WiFi monitor will keep trying to connect")
+        ip_address = "N/A"
 
     # Start async tasks on Core 2
     print("[Main] Starting web server...")
@@ -174,7 +227,11 @@ async def main():
     print(f"System ready!")
     print(f"Core 1: Control thread (temp, PID, SSR)")
     print(f"Core 2: Web server + WiFi")
-    print(f"Access web interface at: http://{ip_address}")
+    if ip_address != "N/A":
+        print(f"Access web interface at: http://{ip_address}")
+    else:
+        print(f"Web interface unavailable (no WiFi)")
+        print(f"REPL/USB should be responsive")
     print("=" * 50)
 
     # Run all async tasks on Core 2
