@@ -126,6 +126,23 @@ else
     exit 1
 fi
 
+# Create server directory on Pico if it doesn't exist
+mpremote mkdir :server 2>/dev/null || true
+
+# Copy server folder contents if it exists
+if [ -d "server" ]; then
+    for file in server/*.py; do
+        if [ -f "$file" ]; then
+            filename=$(basename "$file")
+            echo "  -> server/$filename"
+            mpremote cp "$file" :server/
+        fi
+    done
+else
+    echo "  Warning: server folder not found!"
+    exit 1
+fi
+
 echo ""
 echo "Copying profiles..."
 

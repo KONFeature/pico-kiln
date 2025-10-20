@@ -13,6 +13,8 @@ import _thread
 import config
 from server import web_server
 from server.wifi_manager import WiFiManager
+from server.status_receiver import get_status_receiver
+from server.data_logger import DataLogger
 
 # Import control thread
 from kiln.control_thread import start_control_thread
@@ -51,6 +53,16 @@ async def main():
     # Give control thread time to initialize hardware
     await asyncio.sleep(2)
 
+    # Initialize status receiver (singleton) for Core 2
+    print("[Main] Initializing status receiver...")
+    status_receiver = get_status_receiver()
+    status_receiver.initialize(status_queue)
+
+    # Initialize and register data logger
+    print("[Main] Initializing data logger...")
+    data_logger = DataLogger(config.LOGS_DIR, config.LOGGING_INTERVAL)
+    status_receiver.register_listener(data_logger.on_status_update)
+
     # Initialize WiFi manager
     wifi_mgr = WiFiManager(config.WIFI_SSID, config.WIFI_PASSWORD)
 
@@ -65,8 +77,11 @@ async def main():
         ip_address = "N/A"
 
     # Start async tasks on Core 2
+    print("[Main] Starting status receiver...")
+    receiver_task = asyncio.create_task(status_receiver.run())
+
     print("[Main] Starting web server...")
-    server_task = asyncio.create_task(web_server.start_server(command_queue, status_queue))
+    server_task = asyncio.create_task(web_server.start_server(command_queue))
 
     print("[Main] Starting WiFi monitor...")
     wifi_task = asyncio.create_task(wifi_mgr.monitor())
@@ -74,7 +89,7 @@ async def main():
     print("=" * 50)
     print(f"System ready!")
     print(f"Core 1: Control thread (temp, PID, SSR)")
-    print(f"Core 2: Web server + WiFi")
+    print(f"Core 2: Web server + WiFi + Status receiver + Data logger")
     if ip_address != "N/A":
         print(f"Access web interface at: http://{ip_address}")
     else:
@@ -83,7 +98,7 @@ async def main():
     print("=" * 50)
 
     # Run all async tasks on Core 2
-    await asyncio.gather(server_task, wifi_task)
+    await asyncio.gather(receiver_task, server_task, wifi_task)
 
 if __name__ == "__main__":
     try:

@@ -8,8 +8,8 @@ import asyncio
 import json
 import socket
 import config
-from kiln.comms import CommandMessage, QueueHelper, StatusCache
-from server.data_logger import DataLogger
+from kiln.comms import CommandMessage, QueueHelper
+from server.status_receiver import get_status_receiver
 
 # HTTP response templates
 HTTP_200 = "HTTP/1.1 200 OK\r\n"
@@ -18,9 +18,6 @@ HTTP_500 = "HTTP/1.1 500 Internal Server Error\r\n"
 
 # Global communication channels (initialized in start_server)
 command_queue = None
-status_queue = None
-status_cache = StatusCache()  # Thread-safe cache for latest status
-data_logger = DataLogger(config.LOGS_DIR, config.LOGGING_INTERVAL)  # CSV data logger for kiln runs
 
 def parse_request(data):
     """Parse HTTP request and return method, path, headers, and body"""
@@ -63,52 +60,11 @@ def send_html_response(conn, html, status=200):
     """Send HTML response"""
     send_response(conn, status, html.encode() if isinstance(html, str) else html, 'text/html')
 
-# === Background Tasks ===
-
-async def status_updater():
-    """
-    Background task to consume status updates from control thread
-
-    This runs continuously on Core 2, reading status messages from the
-    status_queue and updating the cached status for quick API responses.
-    Also handles CSV data logging during kiln runs.
-    """
-    print("[Web Server] Status updater started")
-
-    previous_state = None
-
-    while True:
-        # Non-blocking check for status updates
-        status = QueueHelper.get_nowait(status_queue)
-        if status:
-            status_cache.update(status)
-
-            # Handle data logging based on state transitions
-            current_state = status.get('state')
-            profile_name = status.get('profile_name')
-
-            # Start logging when entering RUNNING state
-            if current_state == 'RUNNING' and previous_state != 'RUNNING':
-                if profile_name:
-                    data_logger.start_logging(profile_name)
-
-            # Log data during RUNNING state
-            if current_state == 'RUNNING' and data_logger.is_logging:
-                data_logger.log_status(status)
-
-            # Stop logging when leaving RUNNING state
-            if previous_state == 'RUNNING' and current_state != 'RUNNING':
-                data_logger.stop_logging()
-
-            previous_state = current_state
-
-        await asyncio.sleep(0.1)  # Check 10 times per second
-
 # === API Handlers ===
 
 def handle_api_state(conn):
     """GET /api/state - Return current system state (legacy endpoint)"""
-    cached = status_cache.get()
+    cached = get_status_receiver().get_status()
 
     response = {
         "ssr_state": cached.get('ssr_is_on', False),
@@ -264,7 +220,7 @@ def handle_api_stop(conn):
 def handle_api_status(conn):
     """GET /api/status - Get detailed kiln status with PID stats"""
     # Return cached status from control thread
-    status = status_cache.get()
+    status = get_status_receiver().get_status()
     send_json_response(conn, status)
 
 # === Tuning Handlers ===
@@ -318,7 +274,7 @@ def handle_api_tuning_stop(conn):
 def handle_api_tuning_status(conn):
     """GET /api/tuning/status - Get tuning status"""
     # Return cached status (includes tuning info if in TUNING state)
-    status = status_cache.get()
+    status = get_status_receiver().get_status()
     send_json_response(conn, status)
 
 def handle_tuning_page(conn):
@@ -340,7 +296,7 @@ def handle_index(conn):
             html = f.read()
 
         # Get cached status from control thread
-        cached = status_cache.get()
+        cached = get_status_receiver().get_status()
 
         # Replace template variables - SSR status
         ssr_status = 'ON' if cached.get('ssr_is_on', False) else 'OFF'
@@ -502,22 +458,21 @@ async def handle_client(conn, addr):
         except:
             pass
 
-async def start_server(cmd_queue, stat_queue):
+async def start_server(cmd_queue):
     """
     Start the HTTP server with non-blocking socket
 
     Args:
         cmd_queue: ThreadSafeQueue for sending commands to control thread
-        stat_queue: ThreadSafeQueue for receiving status from control thread
+
+    Note:
+        Status updates are handled by StatusReceiver singleton, which should
+        be initialized and started separately in main.py
     """
-    global command_queue, status_queue
+    global command_queue
     command_queue = cmd_queue
-    status_queue = stat_queue
 
     print(f"[Web Server] Starting HTTP server on port {config.WEB_SERVER_PORT}")
-
-    # Start status updater task
-    asyncio.create_task(status_updater())
 
     # Create server socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

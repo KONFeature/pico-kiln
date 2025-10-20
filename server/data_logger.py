@@ -4,6 +4,9 @@
 # This module handles CSV logging of temperature and control data during
 # kiln program runs. Runs on Core 2 (web server thread) to avoid blocking
 # time-critical control operations on Core 1.
+#
+# Works as a listener for StatusReceiver - registers a callback to receive
+# status updates independently from web server.
 
 import time
 
@@ -16,6 +19,10 @@ class DataLogger:
     separate from time-critical control loop on Core 1.
 
     Uses configurable logging interval to limit memory usage on Pico.
+
+    Register with StatusReceiver to automatically receive status updates:
+        receiver = get_status_receiver()
+        receiver.register_listener(data_logger.on_status_update)
     """
 
     def __init__(self, log_dir="logs", logging_interval=30):
@@ -32,6 +39,7 @@ class DataLogger:
         self.is_logging = False
         self.current_profile_name = None
         self.last_log_time = 0
+        self.previous_state = None
 
     def start_logging(self, profile_name):
         """
@@ -147,6 +155,36 @@ class DataLogger:
 
         except Exception as e:
             print(f"[DataLogger] Error closing log file: {e}")
+
+    def on_status_update(self, status):
+        """
+        Callback for StatusReceiver - called when status updates arrive
+
+        Handles state transitions and logging:
+        - Starts logging when entering RUNNING state
+        - Logs data during RUNNING state (respecting logging interval)
+        - Stops logging when leaving RUNNING state
+
+        Args:
+            status: Status dictionary from StatusMessage.build()
+        """
+        current_state = status.get('state')
+        profile_name = status.get('profile_name')
+
+        # Start logging when entering RUNNING state
+        if current_state == 'RUNNING' and self.previous_state != 'RUNNING':
+            if profile_name:
+                self.start_logging(profile_name)
+
+        # Log data during RUNNING state
+        if current_state == 'RUNNING' and self.is_logging:
+            self.log_status(status)
+
+        # Stop logging when leaving RUNNING state
+        if self.previous_state == 'RUNNING' and current_state != 'RUNNING':
+            self.stop_logging()
+
+        self.previous_state = current_state
 
     def _write_header(self):
         """Write CSV header row"""
