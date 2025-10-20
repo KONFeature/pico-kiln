@@ -1,17 +1,38 @@
-# wifi_manager.py
+# server/wifi_manager.py
 # Simple WiFi management for pico-kiln
-# Handles connection to best available AP and automatic reconnection
+# Handles connection to best available AP, automatic reconnection, and NTP time sync
 
 import asyncio
 import network
 import time
 from machine import Pin
 
+try:
+    import ntptime
+except ImportError:
+    ntptime = None
+    print("[WiFi] Warning: ntptime module not available, time sync disabled")
+
 
 class WiFiManager:
-    """Simplified WiFi manager - connects to best AP and maintains connection"""
+    """
+    Simplified WiFi manager - connects to best AP and maintains connection
+
+    Features:
+    - Automatic NTP time synchronization after connection
+    - Connection monitoring and auto-reconnection
+    - Status LED indication
+    """
 
     def __init__(self, ssid, password, status_led_pin="LED"):
+        """
+        Initialize WiFi manager
+
+        Args:
+            ssid: WiFi network name
+            password: WiFi password
+            status_led_pin: Pin for status LED (default: "LED")
+        """
         self.ssid = ssid
         self.password = password
         self.wlan = None
@@ -43,6 +64,31 @@ class WiFiManager:
             print(f"[WiFi] Scan failed: {e}")
 
         return None, None
+
+    def sync_time_ntp(self):
+        """
+        Synchronize time with NTP server (simple version)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if ntptime is None:
+            print("[WiFi] NTP sync skipped - ntptime module not available")
+            return False
+
+        try:
+            print("[WiFi] Syncing time with NTP server...")
+            ntptime.settime()
+
+            # Print synchronized time
+            local_time = time.localtime()
+            time_str = f"{local_time[0]:04d}-{local_time[1]:02d}-{local_time[2]:02d} {local_time[3]:02d}:{local_time[4]:02d}:{local_time[5]:02d}"
+            print(f"[WiFi] Time synchronized: {time_str} UTC")
+            return True
+
+        except Exception as e:
+            print(f"[WiFi] NTP sync failed: {e}")
+            return False
 
     async def connect(self, timeout=30):
         """Connect to the best available AP"""
@@ -85,6 +131,10 @@ class WiFiManager:
 
         ip = self.wlan.ifconfig()[0]
         print(f"[WiFi] Connected! IP: {ip}")
+
+        # Sync time with NTP server
+        self.sync_time_ntp()
+
         return ip
 
     async def monitor(self, check_interval=5):
