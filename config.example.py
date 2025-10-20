@@ -65,3 +65,8 @@ PROFILES_DIR = "profiles"
 # === Data Logging Settings ===
 # Directory for storing kiln run data logs (CSV files)
 LOGS_DIR = "logs"
+
+# Logging interval (seconds) - how often to write data to CSV
+# Lower values = more data points but more memory usage
+# Default: 30 seconds (saves ~120 data points for a 1-hour firing)
+LOGGING_INTERVAL = 30

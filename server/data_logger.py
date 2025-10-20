@@ -1,4 +1,4 @@
-# kiln/data_logger.py
+# server/data_logger.py
 # Data logging for kiln firing programs
 #
 # This module handles CSV logging of temperature and control data during
@@ -14,19 +14,24 @@ class DataLogger:
     Records temperature, SSR state, and program progress data to CSV files
     during kiln program runs. Designed to run on Core 2 to keep file I/O
     separate from time-critical control loop on Core 1.
+
+    Uses configurable logging interval to limit memory usage on Pico.
     """
 
-    def __init__(self, log_dir="logs"):
+    def __init__(self, log_dir="logs", logging_interval=30):
         """
         Initialize data logger
 
         Args:
             log_dir: Directory to store log files (default: "logs")
+            logging_interval: Seconds between log entries (default: 30)
         """
         self.log_dir = log_dir
+        self.logging_interval = logging_interval
         self.file = None
         self.is_logging = False
         self.current_profile_name = None
+        self.last_log_time = 0
 
     def start_logging(self, profile_name):
         """
@@ -56,11 +61,13 @@ class DataLogger:
             self.file = open(filename, 'w')
             self.is_logging = True
             self.current_profile_name = profile_name
+            self.last_log_time = 0  # Reset to force first log immediately
 
             # Write CSV header
             self._write_header()
 
             print(f"[DataLogger] Started logging to {filename}")
+            print(f"[DataLogger] Logging interval: {self.logging_interval}s")
 
         except Exception as e:
             print(f"[DataLogger] Error starting log file: {e}")
@@ -71,6 +78,9 @@ class DataLogger:
         """
         Log a status update to CSV file
 
+        Only logs if logging_interval seconds have passed since last log.
+        This reduces memory usage by limiting the number of data points.
+
         Args:
             status: Status dictionary from StatusMessage.build()
                     Expected fields: timestamp, elapsed, current_temp,
@@ -78,6 +88,13 @@ class DataLogger:
         """
         if not self.is_logging or not self.file:
             return
+
+        # Check if enough time has passed since last log
+        current_time = time.time()
+        if current_time - self.last_log_time < self.logging_interval:
+            return  # Skip this log entry
+
+        self.last_log_time = current_time
 
         try:
             # Extract fields from status message

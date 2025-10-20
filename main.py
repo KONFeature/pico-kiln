@@ -11,8 +11,8 @@ import asyncio
 import time
 import _thread
 import config
-import web_server
-from wifi_manager import WiFiManager
+from server import web_server
+from server.wifi_manager import WiFiManager
 
 # Import control thread
 from kiln.control_thread import start_control_thread

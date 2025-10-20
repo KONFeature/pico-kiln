@@ -1,4 +1,4 @@
-# web_server.py
+# server/web_server.py
 # HTTP server for monitoring and control interface
 #
 # This module runs on Core 2 and communicates with the control thread (Core 1)
@@ -9,7 +9,7 @@ import json
 import socket
 import config
 from kiln.comms import CommandMessage, QueueHelper, StatusCache
-from kiln.data_logger import DataLogger
+from server.data_logger import DataLogger
 
 # HTTP response templates
 HTTP_200 = "HTTP/1.1 200 OK\r\n"
@@ -20,7 +20,7 @@ HTTP_500 = "HTTP/1.1 500 Internal Server Error\r\n"
 command_queue = None
 status_queue = None
 status_cache = StatusCache()  # Thread-safe cache for latest status
-data_logger = DataLogger(config.LOGS_DIR)  # CSV data logger for kiln runs
+data_logger = DataLogger(config.LOGS_DIR, config.LOGGING_INTERVAL)  # CSV data logger for kiln runs
 
 def parse_request(data):
     """Parse HTTP request and return method, path, headers, and body"""
