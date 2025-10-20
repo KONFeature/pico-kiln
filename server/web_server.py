@@ -327,7 +327,7 @@ def handle_index(conn):
         state_class = controller_state.lower()
 
         # Build profiles list HTML (using list + join for memory efficiency)
-        profiles_parts = ['<ul class="profile-list">']
+        profiles_parts = ['<ul>']
         try:
             # List all JSON files in profiles directory
             profile_files = [f for f in os.listdir(config.PROFILES_DIR) if f.endswith('.json')]
@@ -335,15 +335,11 @@ def handle_index(conn):
             if profile_files:
                 for profile_file in sorted(profile_files):
                     profile_name = profile_file[:-5]  # Remove .json extension
-                    profiles_parts.append(f'''
-                    <li class="profile-item">
-                        <span class="profile-name">{profile_name}</span>
-                        <button class="btn-start btn-small" onclick="startProfile('{profile_name}')">Start</button>
-                    </li>''')
+                    profiles_parts.append(f'<li>{profile_name} <button onclick="startProfile(\'{profile_name}\')">Start</button></li>')
             else:
-                profiles_parts.append('<li class="empty-state">No profiles found. Upload a profile using the API.</li>')
+                profiles_parts.append('<li>No profiles found</li>')
         except:
-            profiles_parts.append('<li class="empty-state">No profiles directory found.</li>')
+            profiles_parts.append('<li>No profiles directory</li>')
 
         profiles_parts.append('</ul>')
         profiles_html = ''.join(profiles_parts)

@@ -1,339 +1,75 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Pico Kiln Controller</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * {
-            box-sizing: border-box;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-            background: #f5f5f5;
-        }
-        h1 {
-            color: #333;
-            text-align: center;
-            margin: 0 0 30px 0;
-            font-size: 28px;
-        }
-        h2 {
-            margin: 0 0 15px 0;
-            font-size: 18px;
-            color: #333;
-        }
-        .container {
-            background: white;
-            border-radius: 8px;
-            padding: 20px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-        }
-        .status-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 15px;
-            margin-bottom: 15px;
-        }
-        .status-item {
-            background: #f9f9f9;
-            padding: 15px;
-            border-radius: 6px;
-            border-left: 4px solid #2196F3;
-        }
-        .status-item label {
-            display: block;
-            font-size: 11px;
-            color: #666;
-            margin-bottom: 5px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .status-item .value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #333;
-        }
-        .ssr-status {
-            text-align: center;
-            padding: 20px;
-            border-radius: 6px;
-            margin-bottom: 15px;
-            color: white;
-        }
-        .ssr-status h2 {
-            color: white;
-            margin: 0 0 10px 0;
-        }
-        .ssr-status .indicator {
-            font-size: 36px;
-            font-weight: bold;
-        }
-        .current-program {
-            background: #e3f2fd;
-            border-left: 4px solid #2196F3;
-            padding: 15px;
-            border-radius: 6px;
-        }
-        .current-program h3 {
-            margin: 0 0 5px 0;
-            color: #1976d2;
-            font-size: 14px;
-        }
-        .current-program .program-name {
-            font-size: 18px;
-            font-weight: bold;
-            color: #333;
-        }
-        .profile-list {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-        }
-        .profile-item {
-            background: #f9f9f9;
-            padding: 12px 15px;
-            margin-bottom: 10px;
-            border-radius: 6px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border: 1px solid #e0e0e0;
-        }
-        .profile-item:hover {
-            background: #f0f0f0;
-        }
-        .profile-name {
-            font-weight: 500;
-            color: #333;
-        }
-        .controls {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        button {
-            font-size: 14px;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            color: white;
-            transition: all 0.2s;
-            font-weight: 500;
-        }
-        button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-        }
-        button:active {
-            transform: translateY(0);
-        }
-        button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        .btn-start {
-            background-color: #4CAF50;
-        }
-        .btn-start:hover {
-            background-color: #45a049;
-        }
-        .btn-stop {
-            background-color: #ff9800;
-        }
-        .btn-stop:hover {
-            background-color: #f57c00;
-        }
-        .btn-shutdown {
-            background-color: #f44336;
-        }
-        .btn-shutdown:hover {
-            background-color: #da190b;
-        }
-        .btn-refresh {
-            background-color: #2196F3;
-        }
-        .btn-refresh:hover {
-            background-color: #0b7dda;
-        }
-        .btn-small {
-            font-size: 12px;
-            padding: 6px 12px;
-        }
-        .footer {
-            text-align: center;
-            color: #666;
-            font-size: 11px;
-            margin-top: 20px;
-        }
-        .footer a {
-            color: #2196F3;
-            text-decoration: none;
-        }
-        .footer a:hover {
-            text-decoration: underline;
-        }
-        .empty-state {
-            text-align: center;
-            padding: 30px;
-            color: #999;
-        }
-        .state-badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-        }
-        .state-idle {
-            background: #e0e0e0;
-            color: #666;
-        }
-        .state-running {
-            background: #4CAF50;
-            color: white;
-        }
-        .state-error {
-            background: #f44336;
-            color: white;
-        }
-        .state-tuning {
-            background: #9C27B0;
-            color: white;
-        }
-    </style>
+<title>Pico Kiln</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 </head>
 <body>
-    <h1>Pico Kiln Controller</h1>
+<h1>Pico Kiln Controller</h1>
 
-    <!-- Status Overview -->
-    <div class="container">
-        <div class="ssr-status" style="background: {status_color};">
-            <h2>SSR Status</h2>
-            <div class="indicator">{status}</div>
-        </div>
+<h2>SSR: {status}</h2>
+<p>Current: {current_temp}C | Target: {target_temp}C | State: {state}</p>
+<p>Program: {program}</p>
 
-        <div class="status-grid">
-            <div class="status-item">
-                <label>Current Temperature</label>
-                <div class="value">{current_temp} C</div>
-            </div>
-            <div class="status-item">
-                <label>Target Temperature</label>
-                <div class="value">{target_temp} C</div>
-            </div>
-            <div class="status-item">
-                <label>Controller State</label>
-                <div class="value" style="font-size: 18px;">
-                    <span class="state-badge state-{state_class}">{state}</span>
-                </div>
-            </div>
-        </div>
+<h2>Profiles</h2>
+{profiles_list}
 
-        <div class="current-program">
-            <h3>CURRENT PROGRAM</h3>
-            <div class="program-name">{program}</div>
-        </div>
-    </div>
+<h2>Controls</h2>
+<button onclick="location.reload()">Refresh</button>
+<button onclick="stopProgram()">Stop Program</button>
+<button onclick="emergencyShutdown()">Emergency Shutdown</button>
+<br><br>
+<button onclick="location.href='/tuning'">PID Tuning</button>
 
-    <!-- Available Profiles -->
-    <div class="container">
-        <h2>Available Firing Profiles</h2>
-        {profiles_list}
-    </div>
+<hr>
+<p><small>
+<a href="/api/status">API Status</a> |
+<a href="/api/state">API State</a> |
+<a href="/api/info">API Info</a>
+</small></p>
 
-    <!-- Controls -->
-    <div class="container">
-        <h2>System Controls</h2>
-        <div class="controls">
-            <button class="btn-refresh" onclick="location.reload()">Refresh Status</button>
-            <button class="btn-stop" onclick="stopProgram()">Stop Program</button>
-            <button class="btn-shutdown" onclick="emergencyShutdown()">Emergency Shutdown</button>
-        </div>
-    </div>
+<script>
+function startProfile(profileName) {
+if (confirm('Start: ' + profileName + '?')) {
+fetch('/api/run', {
+method: 'POST',
+headers: {'Content-Type': 'application/json'},
+body: JSON.stringify({profile: profileName})
+})
+.then(r => r.json())
+.then(d => {
+alert(d.success ? 'Started: ' + profileName : 'Error: ' + d.error);
+location.reload();
+})
+.catch(e => alert('Failed: ' + e));
+}
+}
 
-    <!-- PID Tuning -->
-    <div class="container">
-        <h2>PID Configuration</h2>
-        <p style="font-size: 14px; color: #666; margin-bottom: 15px;">
-            Use the auto-tuner to calculate optimal PID parameters for your kiln.
-        </p>
-        <div class="controls">
-            <button class="btn-start" onclick="window.location.href='/tuning'">PID Auto-Tuning</button>
-        </div>
-    </div>
+function stopProgram() {
+if (confirm('Stop current program?')) {
+fetch('/api/stop', {method: 'POST'})
+.then(r => r.json())
+.then(d => {
+alert(d.success ? 'Stopped' : 'Error: ' + d.error);
+location.reload();
+})
+.catch(e => alert('Failed: ' + e));
+}
+}
 
-    <div class="footer">
-        <p>Pico Kiln Controller v0.1.0 | Raspberry Pi Pico 2 | MAX31856 Thermocouple</p>
-        <p>
-            <a href="/api/status">API Status</a> |
-            <a href="/api/state">API State</a> |
-            <a href="/api/info">API Info</a>
-        </p>
-    </div>
+function emergencyShutdown() {
+if (confirm('EMERGENCY SHUTDOWN?')) {
+fetch('/api/shutdown', {method: 'POST'})
+.then(r => r.json())
+.then(d => {
+alert(d.message);
+location.reload();
+})
+.catch(e => alert('Failed: ' + e));
+}
+}
 
-    <script>
-        function startProfile(profileName) {
-            if (confirm('Start firing profile: ' + profileName + '?')) {
-                fetch('/api/run', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ profile: profileName })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        alert('Profile started: ' + profileName);
-                        location.reload();
-                    } else {
-                        alert('Error: ' + data.error);
-                    }
-                })
-                .catch(err => {
-                    alert('Failed to start profile: ' + err);
-                });
-            }
-        }
-
-        function stopProgram() {
-            if (confirm('Stop the current program?')) {
-                fetch('/api/stop', { method: 'POST' })
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.success) {
-                            alert('Program stopped');
-                            location.reload();
-                        } else {
-                            alert('Error: ' + data.error);
-                        }
-                    })
-                    .catch(err => {
-                        alert('Stop request failed: ' + err);
-                    });
-            }
-        }
-
-        function emergencyShutdown() {
-            if (confirm('EMERGENCY SHUTDOWN?\n\nThis will immediately:\n- Turn off the SSR\n- Stop the current program\n- Reset target temperature\n\nContinue?')) {
-                fetch('/api/shutdown', { method: 'POST' })
-                    .then(response => response.json())
-                    .then(data => {
-                        alert(data.message);
-                        location.reload();
-                    })
-                    .catch(err => {
-                        alert('Shutdown request failed: ' + err);
-                    });
-            }
-        }
-
-        // Auto-refresh every 5 seconds
-        setTimeout(() => location.reload(), 5000);
-    </script>
+setTimeout(() => location.reload(), 5000);
+</script>
 </body>
 </html>
