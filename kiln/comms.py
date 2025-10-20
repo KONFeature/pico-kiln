@@ -256,13 +256,14 @@ class StatusMessage:
         return status
 
     @staticmethod
-    def build_tuning_status(controller, tuner):
+    def build_tuning_status(controller, tuner, ssr_controller):
         """
         Build tuning status message
 
         Args:
             controller: KilnController instance
             tuner: ZieglerNicholsTuner instance
+            ssr_controller: SSRController instance
 
         Returns:
             Dictionary with tuning status
@@ -277,6 +278,11 @@ class StatusMessage:
             'current_temp': round(controller.current_temp, 2),
             'tuning': tuner_status
         }
+
+        # Add SSR state (needed for web UI display)
+        ssr_state = ssr_controller.get_state()
+        status['ssr_is_on'] = ssr_state['is_on']
+        status['ssr_duty_cycle'] = ssr_state['duty_cycle']
 
         return status
 

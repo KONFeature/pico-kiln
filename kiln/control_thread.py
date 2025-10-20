@@ -236,16 +236,21 @@ class ControlThread:
         try:
             # Choose status builder based on state
             if self.controller.state == KilnState.TUNING and self.tuner:
-                status = StatusMessage.build_tuning_status(self.controller, self.tuner)
+                status = StatusMessage.build_tuning_status(self.controller, self.tuner, self.ssr_controller)
             else:
                 status = StatusMessage.build(self.controller, self.pid, self.ssr_controller)
+
+            # Check queue size before sending (monitor Core 2 health)
+            queue_size = self.status_queue.qsize()
+            if queue_size > 50:  # Queue is over 50% full (maxsize=100)
+                print(f"[Control Thread] WARNING: Status queue is {queue_size}/100 - Core 2 may be frozen!")
 
             # Try to send (non-blocking)
             if not QueueHelper.put_nowait(self.status_queue, status):
                 # Queue full - clear old statuses and try again
                 cleared = QueueHelper.clear(self.status_queue)
                 if cleared > 0:
-                    print(f"[Control Thread] Cleared {cleared} old status messages")
+                    print(f"[Control Thread] CRITICAL: Cleared {cleared} old status messages - Core 2 is not consuming status!")
                 QueueHelper.put_nowait(self.status_queue, status)
 
         except Exception as e:

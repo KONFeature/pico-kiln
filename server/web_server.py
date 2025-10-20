@@ -370,9 +370,22 @@ def handle_index(conn):
 async def handle_client(conn, addr):
     """Handle individual client connection"""
     try:
-        # Set socket to blocking for recv
-        conn.setblocking(True)
-        req = conn.recv(4096)
+        # Keep socket non-blocking and add timeout
+        conn.setblocking(False)
+        conn.settimeout(5.0)  # 5 second timeout for recv
+
+        # Try to receive data with timeout
+        try:
+            req = conn.recv(4096)
+        except OSError as e:
+            # Timeout or no data available
+            print(f"[Web Server] Timeout/error receiving from {addr}: {e}")
+            return
+
+        if not req:
+            # Client disconnected
+            return
+
         print(f"Request from {addr}")
 
         # Parse request
