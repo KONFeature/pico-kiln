@@ -1,72 +1,45 @@
 <!DOCTYPE html>
 <html>
 <head>
+<meta charset="UTF-8">
 <title>PID Tuning</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 .hidden{display:none}
 body{font-family:Arial,sans-serif;margin:20px;max-width:800px}
-.mode-card{border:2px solid #ccc;padding:15px;margin:10px 0;border-radius:5px;cursor:pointer;background:#f9f9f9}
+.mode-card{border:2px solid #ccc;padding:10px;margin:5px 0;cursor:pointer}
 .mode-card.selected{border-color:#007bff;background:#e7f3ff}
-.mode-card h3{margin:0 0 10px 0}
-.mode-card p{margin:5px 0;font-size:14px}
-.progress-bar{background:#e0e0e0;height:20px;border-radius:10px;margin:10px 0;overflow:hidden}
-.progress-fill{background:#4caf50;height:100%;transition:width 0.3s}
-.step-indicator{display:flex;margin:15px 0;gap:5px}
-.step{flex:1;height:30px;background:#e0e0e0;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:12px}
+.step{display:inline-block;width:40px;height:25px;background:#ddd;margin:2px;text-align:center;line-height:25px;font-size:11px}
 .step.active{background:#2196f3;color:white}
 .step.complete{background:#4caf50;color:white}
-.status-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:15px 0}
-.status-item{background:#f5f5f5;padding:10px;border-radius:5px}
-.status-label{font-size:12px;color:#666}
-.status-value{font-size:18px;font-weight:bold}
+.status-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
+.status-item{background:#f5f5f5;padding:8px}
 </style>
 </head>
 <body>
 <h1>PID Auto-Tuning</h1>
 <p><button onclick="location.href='/'">Back</button></p>
 
-<h2>About</h2>
-<p>Multi-mode tuning system that characterizes kiln thermal response at different power levels.</p>
-<p><b>How it works:</b> Applies step sequences of controlled power levels, then cools. Data is saved to CSV for analysis.</p>
-
 <h2>Select Tuning Mode</h2>
 <div id="modeSelector">
 <div class="mode-card" onclick="selectMode('SAFE')" id="modeSAFE">
-<h3>SAFE</h3>
-<p><b>Duration:</b> 30-45 minutes</p>
-<p><b>Max Temp:</b> 100°C (default)</p>
-<p><b>Power:</b> 30% max</p>
-<p><b>Purpose:</b> Verify new kiln safety, first-time operation</p>
+<b>SAFE</b> (30-45 min, 100°C, 30% power) - First-time safety verification
 </div>
-
 <div class="mode-card selected" onclick="selectMode('STANDARD')" id="modeSTANDARD">
-<h3>STANDARD</h3>
-<p><b>Duration:</b> 1-2 hours</p>
-<p><b>Max Temp:</b> 150°C (default)</p>
-<p><b>Power:</b> 25%, 50%, 75% steps</p>
-<p><b>Purpose:</b> Good PID characterization for normal use</p>
+<b>STANDARD</b> (1-2 hours, 150°C, 25/50/75% steps) - Normal tuning
 </div>
-
 <div class="mode-card" onclick="selectMode('THOROUGH')" id="modeTHOROUGH">
-<h3>THOROUGH</h3>
-<p><b>Duration:</b> 3-4 hours</p>
-<p><b>Max Temp:</b> 200°C (default)</p>
-<p><b>Power:</b> 20%, 40%, 60%, 80% steps</p>
-<p><b>Purpose:</b> Comprehensive thermal model, fine-tuned control</p>
+<b>THOROUGH</b> (3-4 hours, 200°C, 20/40/60/80% steps) - Comprehensive
 </div>
 </div>
 
-<h2>Settings</h2>
-<label>Max Temperature Override (°C): <input type="number" id="maxTemp" placeholder="Use mode default" min="50" max="500"></label>
-<p><small>Leave blank to use mode default. Custom values allow testing at specific temperatures.</small></p>
+<p>Max Temp Override (°C): <input type="number" id="maxTemp" size="5" min="50" max="500"></p>
 
-<h2>Safety</h2>
+<h3>Safety Checklist</h3>
 <ul>
-<li>Ensure kiln is cool (room temperature)</li>
-<li>No profile should be running</li>
-<li>Do not interrupt the tuning sequence</li>
-<li>Monitor the first tuning session closely</li>
+<li>Kiln is cool (room temperature)</li>
+<li>No profile running</li>
+<li>Do not interrupt tuning</li>
 </ul>
 
 <div id="controlButtons">
@@ -77,43 +50,27 @@ body{font-family:Arial,sans-serif;margin:20px;max-width:800px}
 <h2>Status</h2>
 <div id="progressSection" class="hidden">
 <p><b>Mode:</b> <span id="tuningMode">--</span> | <b>Step:</b> <span id="stepIndicator">--</span></p>
-<div class="step-indicator" id="stepProgress"></div>
-<div class="progress-bar">
-<div class="progress-fill" id="progressFill" style="width:0%"></div>
-</div>
+<div id="stepProgress"></div>
+<p>Progress: <span id="progressPercent">0</span>%</p>
 </div>
 
 <div class="status-grid">
-<div class="status-item">
-<div class="status-label">Current Temp</div>
-<div class="status-value" id="currentTemp">--</div>
-</div>
-<div class="status-item">
-<div class="status-label">Max Temp</div>
-<div class="status-value" id="maxTempDisplay">--</div>
-</div>
-<div class="status-item">
-<div class="status-label">SSR Output</div>
-<div class="status-value" id="ssrOutput">--</div>
-</div>
-<div class="status-item">
-<div class="status-label">Elapsed Time</div>
-<div class="status-value" id="elapsedTime">--</div>
-</div>
+<div class="status-item"><small>Current Temp</small><br><b id="currentTemp">--</b></div>
+<div class="status-item"><small>Max Temp</small><br><b id="maxTempDisplay">--</b></div>
+<div class="status-item"><small>SSR Output</small><br><b id="ssrOutput">--</b></div>
+<div class="status-item"><small>Elapsed</small><br><b id="elapsedTime">--</b></div>
 </div>
 
 <div id="stepDetails" class="hidden">
-<p><b>Current Step:</b> <span id="stepName">--</span></p>
-<p><b>Step Duration:</b> <span id="stepTime">--</span></p>
-<p><b>Plateau Status:</b> <span id="plateauStatus">--</span></p>
+<p><b>Step:</b> <span id="stepName">--</span> | <b>Time:</b> <span id="stepTime">--</span></p>
+<p><b>Plateau:</b> <span id="plateauStatus">--</span></p>
 </div>
 
 <div id="errorDisplay" class="hidden">
 <p style="color:red"><b>Error:</b> <span id="errorMessage"></span></p>
 </div>
 <div id="completeDisplay" class="hidden">
-<p style="color:green"><b>Tuning Complete!</b></p>
-<p>Data saved to CSV file. Use analyze_tuning.py to calculate PID values.</p>
+<p style="color:green"><b>Complete!</b> Data saved to CSV. Use analyze_tuning.py to calculate PID.</p>
 </div>
 
 <script>
@@ -137,19 +94,10 @@ alert('Max temperature must be between 50-500°C or left blank');
 return;
 }
 
-const modeNames = {
-'SAFE': '30-45 min',
-'STANDARD': '1-2 hours',
-'THOROUGH': '3-4 hours'
-};
-const duration = modeNames[selectedMode] || 'variable';
+const duration = {'SAFE': '30-45 min', 'STANDARD': '1-2 hours', 'THOROUGH': '3-4 hours'}[selectedMode];
+if (!confirm(`Start ${selectedMode} tuning?\n\nDuration: ${duration}\nKiln must be cool.`)) return;
 
-if (!confirm(`Start ${selectedMode} tuning?\n\nDuration: ${duration}\nKiln must be cool and empty.`)) return;
-
-document.getElementById('startBtn').disabled = true;
-document.getElementById('stopBtn').classList.remove('hidden');
-document.getElementById('maxTemp').disabled = true;
-document.querySelectorAll('.mode-card').forEach(card => card.style.pointerEvents = 'none');
+setTuningActive(true);
 document.getElementById('completeDisplay').classList.add('hidden');
 document.getElementById('errorDisplay').classList.add('hidden');
 document.getElementById('progressSection').classList.remove('hidden');
@@ -165,12 +113,12 @@ if (d.success) {
 startPolling();
 } else {
 alert('Error: ' + d.error);
-resetControls();
+setTuningActive(false);
 }
 })
 .catch(e => {
 alert('Failed: ' + e);
-resetControls();
+setTuningActive(false);
 });
 }
 
@@ -180,7 +128,7 @@ fetch('/api/tuning/stop', {method: 'POST'})
 .then(r => r.json())
 .then(d => {
 stopPolling();
-resetControls();
+setTuningActive(false);
 })
 .catch(e => alert('Failed: ' + e));
 }
@@ -197,23 +145,30 @@ pollingInterval = null;
 }
 }
 
+function setTuningActive(active) {
+document.getElementById('startBtn').classList.toggle('hidden', active);
+document.getElementById('startBtn').disabled = active;
+document.getElementById('stopBtn').classList.toggle('hidden', !active);
+document.getElementById('maxTemp').disabled = active;
+document.querySelectorAll('.mode-card').forEach(card => card.style.pointerEvents = active ? 'none' : 'auto');
+}
+
 function buildStepIndicator(tuning) {
 const container = document.getElementById('stepProgress');
 container.innerHTML = '';
-const totalSteps = tuning.total_steps + 1; // +1 for cooling
 const currentIndex = tuning.stage === 'cooling' ? tuning.total_steps : tuning.step_index;
 
 for (let i = 0; i < tuning.total_steps; i++) {
-const step = document.createElement('div');
+const step = document.createElement('span');
 step.className = 'step';
-step.textContent = `${i + 1}`;
+step.textContent = i + 1;
 if (i < currentIndex) step.classList.add('complete');
 else if (i === currentIndex) step.classList.add('active');
 container.appendChild(step);
 }
 
 // Add cooling step
-const coolStep = document.createElement('div');
+const coolStep = document.createElement('span');
 coolStep.className = 'step';
 coolStep.textContent = 'Cool';
 if (tuning.stage === 'cooling') coolStep.classList.add('active');
@@ -225,13 +180,20 @@ function updateStatus() {
 fetch('/api/tuning/status')
 .then(r => r.json())
 .then(d => {
-if (d.state !== 'TUNING') {
+const isTuning = d.state === 'TUNING';
+
+// Update button states based on actual tuning state
+setTuningActive(isTuning);
+
+if (!isTuning) {
 stopPolling();
-resetControls();
 return;
 }
 
 const t = d.tuning;
+
+// Show progress section
+document.getElementById('progressSection').classList.remove('hidden');
 
 // Update mode and step
 document.getElementById('tuningMode').textContent = t.mode;
@@ -243,13 +205,13 @@ buildStepIndicator(t);
 // Calculate progress percentage
 let progress = 0;
 if (t.stage === 'cooling') {
-progress = 90; // Cooling is final 10%
+progress = 90;
 } else if (t.total_steps > 0) {
 const stepProgress = (t.step_index / t.total_steps) * 90;
 const withinStepProgress = t.step_duration ? (t.step_elapsed / t.step_duration) * (90 / t.total_steps) : 0;
 progress = stepProgress + withinStepProgress;
 }
-document.getElementById('progressFill').style.width = Math.min(progress, 100) + '%';
+document.getElementById('progressPercent').textContent = Math.min(Math.round(progress), 100);
 
 // Update status grid
 document.getElementById('currentTemp').textContent = d.current_temp.toFixed(1) + '°C';
@@ -279,23 +241,16 @@ if (t.stage === 'complete') {
 stopPolling();
 document.getElementById('completeDisplay').classList.remove('hidden');
 document.getElementById('progressSection').classList.add('hidden');
-resetControls();
+setTuningActive(false);
 } else if (t.stage === 'error') {
 stopPolling();
 document.getElementById('errorMessage').textContent = t.error;
 document.getElementById('errorDisplay').classList.remove('hidden');
 document.getElementById('progressSection').classList.add('hidden');
-resetControls();
+setTuningActive(false);
 }
 })
 .catch(e => console.error('Status error:', e));
-}
-
-function resetControls() {
-document.getElementById('startBtn').disabled = false;
-document.getElementById('stopBtn').classList.add('hidden');
-document.getElementById('maxTemp').disabled = false;
-document.querySelectorAll('.mode-card').forEach(card => card.style.pointerEvents = 'auto');
 }
 
 function formatTime(seconds) {
@@ -304,6 +259,7 @@ const s = Math.floor(seconds % 60);
 return m + ':' + (s < 10 ? '0' : '') + s;
 }
 
+// Check status on page load
 updateStatus();
 </script>
 </body>
