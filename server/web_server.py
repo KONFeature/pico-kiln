@@ -130,14 +130,15 @@ def handle_api_info(conn):
 def handle_api_profile_get(conn, profile_name):
     """GET /api/profile/<name> - Get specific profile"""
     try:
-        from kiln.profile import Profile
-        import os
-
-        # Sanitize filename
-        filename = f"{config.PROFILES_DIR}/{profile_name}.json"
-        if not os.path.exists(filename):
+        # Verify profile exists in cache first (fast check)
+        from server.profile_cache import get_profile_cache
+        if not get_profile_cache().exists(profile_name):
             send_json_response(conn, {'success': False, 'error': 'Profile not found'}, 404)
             return
+
+        # Read profile data from disk (acceptable since downloads are infrequent)
+        import os
+        filename = f"{config.PROFILES_DIR}/{profile_name}.json"
 
         with open(filename, 'r') as f:
             profile_data = json.load(f)
@@ -177,6 +178,10 @@ def handle_api_profile_upload(conn, body):
         with open(filename, 'w') as f:
             json.dump(profile_data, f)
 
+        # Add filename to cache so it appears in profile list immediately
+        from server.profile_cache import get_profile_cache
+        get_profile_cache().add(profile.name)
+
         print(f"Profile '{profile.name}' uploaded")
         send_json_response(conn, {'success': True, 'message': f'Profile {profile.name} saved'})
     except Exception as e:
@@ -195,14 +200,13 @@ def handle_api_run(conn, body):
             send_json_response(conn, {'success': False, 'error': 'Profile name required'}, 400)
             return
 
-        # Verify profile exists before sending command
-        import os
-        filename = f"{config.PROFILES_DIR}/{profile_name}.json"
-        if not os.path.exists(filename):
+        # PERFORMANCE: Verify profile exists using cache instead of blocking filesystem check
+        from server.profile_cache import get_profile_cache
+        if not get_profile_cache().exists(profile_name):
             send_json_response(conn, {'success': False, 'error': f'Profile not found: {profile_name}'}, 404)
             return
 
-        # Send command to control thread (Core 1 will load the profile)
+        # Send command to control thread (Core 1 will load the profile from disk)
         profile_filename = f"{profile_name}.json"
         command = CommandMessage.run_profile(profile_filename)
 
@@ -302,22 +306,33 @@ def handle_api_tuning_status(conn):
 
 def handle_tuning_page(conn):
     """Serve tuning.html page"""
-    try:
-        with open("static/tuning.html", "r") as f:
-            html = f.read()
+    # PERFORMANCE: Use cached HTML instead of blocking file I/O
+    from server.html_cache import get_html_cache
+    html = get_html_cache().get('tuning')
+
+    if html:
         send_html_response(conn, html)
-        gc.collect()  # Free memory after large HTML (18KB) serving
-    except OSError:
+        gc.collect()  # Free memory after large HTML serving
+    else:
+        # Fallback: cache miss
         send_response(conn, 404, b'Tuning page not found', 'text/plain')
 
 # === Static File Handlers ===
 
-def handle_index(conn):
+async def handle_index(conn):
     """Serve index.html with current state"""
     try:
-        import os
-        with open("static/index.html", "r") as f:
-            html = f.read()
+        # PERFORMANCE: Use cached HTML instead of blocking file I/O
+        from server.html_cache import get_html_cache
+        html = get_html_cache().get('index')
+
+        if not html:
+            # Fallback: cache miss (shouldn't happen if preload succeeded)
+            send_response(conn, 500, b'HTML cache miss', 'text/plain')
+            return
+
+        # Yield to event loop immediately after getting cache
+        await asyncio.sleep(0)
 
         # MEMORY OPTIMIZED: Use get_fields() to fetch only needed fields
         receiver = get_status_receiver()
@@ -325,23 +340,27 @@ def handle_index(conn):
             'ssr_is_on', 'current_temp', 'target_temp', 'profile_name', 'state'
         )
 
-        # Build profiles list HTML (using list + join for memory efficiency)
-        profiles_parts = ['<ul>']
-        try:
-            # List all JSON files in profiles directory
-            profile_files = [f for f in os.listdir(config.PROFILES_DIR) if f.endswith('.json')]
+        # Yield before building profiles list
+        await asyncio.sleep(0)
 
-            if profile_files:
-                for profile_file in sorted(profile_files):
-                    profile_name = profile_file[:-5]  # Remove .json extension
-                    profiles_parts.append(f'<li>{profile_name} <button onclick="startProfile(\'{profile_name}\')">Start</button></li>')
-            else:
-                profiles_parts.append('<li>No profiles found</li>')
-        except:
-            profiles_parts.append('<li>No profiles directory</li>')
+        # Build profiles list HTML (using list + join for memory efficiency)
+        # PERFORMANCE: Use cached profile list instead of blocking os.listdir()
+        from server.profile_cache import get_profile_cache
+        profiles_parts = ['<ul>']
+
+        profile_names = get_profile_cache().list_profiles()
+
+        if profile_names:
+            for profile_name in profile_names:
+                profiles_parts.append(f'<li>{profile_name} <button onclick="startProfile(\'{profile_name}\')">Start</button></li>')
+        else:
+            profiles_parts.append('<li>No profiles found</li>')
 
         profiles_parts.append('</ul>')
         profiles_html = ''.join(profiles_parts)
+
+        # Yield before JSON serialization
+        await asyncio.sleep(0)
 
         # MEMORY OPTIMIZED: Build single JSON object for client-side rendering
         # This reduces 8 string.replace() calls to just 2, saving ~10KB in temporary allocations
@@ -353,10 +372,11 @@ def handle_index(conn):
             'state': cached.get('state', 'IDLE')
         }
 
-        # Single replacement for data (JavaScript will populate DOM)
-        html = html.replace('{DATA}', json.dumps(status_data))
-        # Single replacement for profiles list (still server-side HTML)
-        html = html.replace('{profiles_list}', profiles_html)
+        # MEMORY OPTIMIZED: Combine replacements to reduce string allocations
+        html = html.replace('{DATA}', json.dumps(status_data)).replace('{profiles_list}', profiles_html)
+
+        # Yield before sending response
+        await asyncio.sleep(0)
 
         send_html_response(conn, html)
         gc.collect()  # MEMORY OPTIMIZED: Free memory after HTML generation
@@ -416,7 +436,7 @@ async def handle_client(conn, addr):
 
         # Route request
         if path == '/' or path == '/index.html':
-            handle_index(conn)
+            await handle_index(conn)
 
         elif path == '/tuning' or path == '/tuning.html':
             handle_tuning_page(conn)

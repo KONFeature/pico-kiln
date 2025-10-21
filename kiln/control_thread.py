@@ -241,9 +241,15 @@ class ControlThread:
                 status = StatusMessage.build(self.controller, self.pid, self.ssr_controller)
 
             # Check queue size before sending (monitor Core 2 health)
+            # Only warn if queue is completely full to minimize USB contention
             queue_size = self.status_queue.qsize()
-            if queue_size > 50:  # Queue is over 50% full (maxsize=100)
-                print(f"[Control Thread] WARNING: Status queue is {queue_size}/100 - Core 2 may be frozen!")
+            if queue_size >= 95:  # Queue is 95%+ full - very bad
+                try:
+                    # Minimal print to avoid USB contention between cores
+                    print("[Control Thread] Queue near full!")
+                except Exception:
+                    # If printing fails, just continue - don't crash
+                    pass
 
             # Try to send (non-blocking)
             if not QueueHelper.put_nowait(self.status_queue, status):

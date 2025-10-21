@@ -26,7 +26,7 @@ class ThreadSafeQueue:
     Compatible with the expected ThreadSafeQueue API (put_sync/get_sync).
     """
 
-    def __init__(self, maxsize=0):
+    def __init__(self, maxsize=10):
         """
         Initialize thread-safe queue
 
@@ -34,7 +34,9 @@ class ThreadSafeQueue:
             maxsize: Maximum queue size (0 = unlimited)
         """
         self.maxsize = maxsize
-        self._queue = deque()
+        # MicroPython's deque requires (iterable, maxlen) as positional arguments
+        # Use maxsize if specified, otherwise use a large value for "unlimited"
+        self._queue = deque((), maxsize)
         self._lock = allocate_lock()
 
     def put_sync(self, item):

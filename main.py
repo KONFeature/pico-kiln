@@ -75,6 +75,21 @@ async def main():
     print("[Main] Starting status receiver...")
     receiver_task = asyncio.create_task(status_receiver.run())
 
+    # Pre-load HTML files into cache (eliminates blocking file I/O during requests)
+    print("[Main] Pre-loading HTML files into cache...")
+    from server.html_cache import get_html_cache
+    html_cache = get_html_cache()
+    html_cache.preload({
+        'index': 'static/index.html',
+        'tuning': 'static/tuning.html'
+    })
+
+    # Pre-load profiles into cache (eliminates blocking file I/O during requests)
+    print("[Main] Pre-loading profiles into cache...")
+    from server.profile_cache import get_profile_cache
+    profile_cache = get_profile_cache()
+    profile_cache.preload(config.PROFILES_DIR)
+
     # Initialize WiFi manager
     wifi_mgr = WiFiManager(config.WIFI_SSID, config.WIFI_PASSWORD)
 
