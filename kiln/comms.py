@@ -184,18 +184,18 @@ class CommandMessage:
         }
 
     @staticmethod
-    def start_tuning(target_temp=200, cooling_delta=20):
+    def start_tuning(mode='STANDARD', max_temp=None):
         """
         Start PID auto-tuning
 
         Args:
-            target_temp: Target temperature for tuning (°C)
-            cooling_delta: How far below target to cool (°C) - default 20°C
+            mode: Tuning mode (SAFE, STANDARD, or THOROUGH)
+            max_temp: Maximum temperature (°C), uses mode default if None
         """
         return {
             'type': MessageType.START_TUNING,
-            'target_temp': target_temp,
-            'cooling_delta': cooling_delta
+            'mode': mode,
+            'max_temp': max_temp
         }
 
     @staticmethod

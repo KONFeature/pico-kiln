@@ -256,24 +256,35 @@ def handle_api_tuning_start(conn, body):
     """POST /api/tuning/start - Start PID auto-tuning"""
     try:
         data = json.loads(body.decode())
-        target_temp = data.get('target_temp', 200)
+        mode = data.get('mode', 'STANDARD')
+        max_temp = data.get('max_temp')  # None = use mode default
 
-        # Validate target temperature
-        if target_temp < 50 or target_temp > 500:
+        # Validate mode
+        valid_modes = ['SAFE', 'STANDARD', 'THOROUGH']
+        if mode not in valid_modes:
             send_json_response(conn, {
                 'success': False,
-                'error': 'Target temperature must be between 50°C and 500°C'
+                'error': f'Invalid mode. Must be one of: {", ".join(valid_modes)}'
             }, 400)
             return
 
+        # Validate max_temp if provided
+        if max_temp is not None:
+            if max_temp < 50 or max_temp > 500:
+                send_json_response(conn, {
+                    'success': False,
+                    'error': 'Maximum temperature must be between 50°C and 500°C'
+                }, 400)
+                return
+
         # Send tuning command to control thread
-        command = CommandMessage.start_tuning(target_temp)
+        command = CommandMessage.start_tuning(mode=mode, max_temp=max_temp)
 
         if QueueHelper.put_nowait(command_queue, command):
-            print(f"[Web Server] Started tuning (target: {target_temp}°C)")
+            print(f"[Web Server] Started tuning (mode: {mode}, max_temp: {max_temp}°C)")
             send_json_response(conn, {
                 'success': True,
-                'message': f'Tuning started with target {target_temp}°C'
+                'message': f'Tuning started in {mode} mode'
             })
         else:
             send_json_response(conn, {

@@ -3,73 +3,161 @@
 <head>
 <title>PID Tuning</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>.hidden{display:none}</style>
+<style>
+.hidden{display:none}
+body{font-family:Arial,sans-serif;margin:20px;max-width:800px}
+.mode-card{border:2px solid #ccc;padding:15px;margin:10px 0;border-radius:5px;cursor:pointer;background:#f9f9f9}
+.mode-card.selected{border-color:#007bff;background:#e7f3ff}
+.mode-card h3{margin:0 0 10px 0}
+.mode-card p{margin:5px 0;font-size:14px}
+.progress-bar{background:#e0e0e0;height:20px;border-radius:10px;margin:10px 0;overflow:hidden}
+.progress-fill{background:#4caf50;height:100%;transition:width 0.3s}
+.step-indicator{display:flex;margin:15px 0;gap:5px}
+.step{flex:1;height:30px;background:#e0e0e0;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:12px}
+.step.active{background:#2196f3;color:white}
+.step.complete{background:#4caf50;color:white}
+.status-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:15px 0}
+.status-item{background:#f5f5f5;padding:10px;border-radius:5px}
+.status-label{font-size:12px;color:#666}
+.status-value{font-size:18px;font-weight:bold}
+</style>
 </head>
 <body>
 <h1>PID Auto-Tuning</h1>
 <p><button onclick="location.href='/'">Back</button></p>
 
 <h2>About</h2>
-<p>Calculates optimal PID parameters using Ziegler-Nichols method.</p>
-<p><b>How it works:</b></p>
-<ol>
-<li>Kiln heats to target at full power</li>
-<li>Heating turns off, kiln cools to target</li>
-<li>Data saved to CSV for external analysis</li>
-</ol>
+<p>Multi-mode tuning system that characterizes kiln thermal response at different power levels.</p>
+<p><b>How it works:</b> Applies step sequences of controlled power levels, then cools. Data is saved to CSV for analysis.</p>
+
+<h2>Select Tuning Mode</h2>
+<div id="modeSelector">
+<div class="mode-card" onclick="selectMode('SAFE')" id="modeSAFE">
+<h3>SAFE</h3>
+<p><b>Duration:</b> 30-45 minutes</p>
+<p><b>Max Temp:</b> 100°C (default)</p>
+<p><b>Power:</b> 30% max</p>
+<p><b>Purpose:</b> Verify new kiln safety, first-time operation</p>
+</div>
+
+<div class="mode-card selected" onclick="selectMode('STANDARD')" id="modeSTANDARD">
+<h3>STANDARD</h3>
+<p><b>Duration:</b> 1-2 hours</p>
+<p><b>Max Temp:</b> 150°C (default)</p>
+<p><b>Power:</b> 25%, 50%, 75% steps</p>
+<p><b>Purpose:</b> Good PID characterization for normal use</p>
+</div>
+
+<div class="mode-card" onclick="selectMode('THOROUGH')" id="modeTHOROUGH">
+<h3>THOROUGH</h3>
+<p><b>Duration:</b> 3-4 hours</p>
+<p><b>Max Temp:</b> 200°C (default)</p>
+<p><b>Power:</b> 20%, 40%, 60%, 80% steps</p>
+<p><b>Purpose:</b> Comprehensive thermal model, fine-tuned control</p>
+</div>
+</div>
+
+<h2>Settings</h2>
+<label>Max Temperature Override (°C): <input type="number" id="maxTemp" placeholder="Use mode default" min="50" max="500"></label>
+<p><small>Leave blank to use mode default. Custom values allow testing at specific temperatures.</small></p>
 
 <h2>Safety</h2>
 <ul>
-<li>Ensure kiln is cool (room temp)</li>
+<li>Ensure kiln is cool (room temperature)</li>
 <li>No profile should be running</li>
-<li>Takes 10-30 minutes</li>
-<li>Do not interrupt</li>
+<li>Do not interrupt the tuning sequence</li>
+<li>Monitor the first tuning session closely</li>
 </ul>
 
-<h2>Controls</h2>
-<label>Target Temp (C): <input type="number" id="targetTemp" value="200" min="50" max="500"></label>
-<p><small>Recommended: 200C for initial tuning</small></p>
 <div id="controlButtons">
 <button id="startBtn" onclick="startTuning()">Start Tuning</button>
 <button class="hidden" id="stopBtn" onclick="stopTuning()">Stop Tuning</button>
 </div>
 
 <h2>Status</h2>
-<p><b>Stage:</b> <span id="stageIndicator">IDLE</span></p>
-<p>Current Temp: <span id="currentTemp">--</span></p>
-<p>Target Temp: <span id="targetTempDisplay">--</span></p>
-<p>Elapsed: <span id="elapsedTime">--</span></p>
-<p>Data Points: <span id="dataPoints">--</span></p>
+<div id="progressSection" class="hidden">
+<p><b>Mode:</b> <span id="tuningMode">--</span> | <b>Step:</b> <span id="stepIndicator">--</span></p>
+<div class="step-indicator" id="stepProgress"></div>
+<div class="progress-bar">
+<div class="progress-fill" id="progressFill" style="width:0%"></div>
+</div>
+</div>
+
+<div class="status-grid">
+<div class="status-item">
+<div class="status-label">Current Temp</div>
+<div class="status-value" id="currentTemp">--</div>
+</div>
+<div class="status-item">
+<div class="status-label">Max Temp</div>
+<div class="status-value" id="maxTempDisplay">--</div>
+</div>
+<div class="status-item">
+<div class="status-label">SSR Output</div>
+<div class="status-value" id="ssrOutput">--</div>
+</div>
+<div class="status-item">
+<div class="status-label">Elapsed Time</div>
+<div class="status-value" id="elapsedTime">--</div>
+</div>
+</div>
+
+<div id="stepDetails" class="hidden">
+<p><b>Current Step:</b> <span id="stepName">--</span></p>
+<p><b>Step Duration:</b> <span id="stepTime">--</span></p>
+<p><b>Plateau Status:</b> <span id="plateauStatus">--</span></p>
+</div>
+
 <div id="errorDisplay" class="hidden">
-<p><b>Error:</b> <span id="errorMessage"></span></p>
+<p style="color:red"><b>Error:</b> <span id="errorMessage"></span></p>
 </div>
 <div id="completeDisplay" class="hidden">
-<p><b>Tuning Complete!</b></p>
-<p>Data saved to: <b>tuning_data.csv</b></p>
-<p>Process the data externally to calculate PID values.</p>
+<p style="color:green"><b>Tuning Complete!</b></p>
+<p>Data saved to CSV file. Use analyze_tuning.py to calculate PID values.</p>
 </div>
 
 <script>
 let pollingInterval = null;
+let selectedMode = 'STANDARD';
+
+function selectMode(mode) {
+selectedMode = mode;
+document.querySelectorAll('.mode-card').forEach(card => {
+card.classList.remove('selected');
+});
+document.getElementById('mode' + mode).classList.add('selected');
+}
 
 function startTuning() {
-const targetTemp = parseFloat(document.getElementById('targetTemp').value);
-if (isNaN(targetTemp) || targetTemp < 50 || targetTemp > 500) {
-alert('Enter valid temp (50-500C)');
+const maxTempInput = document.getElementById('maxTemp').value;
+const maxTemp = maxTempInput ? parseFloat(maxTempInput) : null;
+
+if (maxTemp !== null && (isNaN(maxTemp) || maxTemp < 50 || maxTemp > 500)) {
+alert('Max temperature must be between 50-500°C or left blank');
 return;
 }
-if (!confirm(`Start tuning at ${targetTemp}C?\n\nTakes 10-30 min. Kiln must be cool.`)) return;
+
+const modeNames = {
+'SAFE': '30-45 min',
+'STANDARD': '1-2 hours',
+'THOROUGH': '3-4 hours'
+};
+const duration = modeNames[selectedMode] || 'variable';
+
+if (!confirm(`Start ${selectedMode} tuning?\n\nDuration: ${duration}\nKiln must be cool and empty.`)) return;
 
 document.getElementById('startBtn').disabled = true;
 document.getElementById('stopBtn').classList.remove('hidden');
-document.getElementById('targetTemp').disabled = true;
+document.getElementById('maxTemp').disabled = true;
+document.querySelectorAll('.mode-card').forEach(card => card.style.pointerEvents = 'none');
 document.getElementById('completeDisplay').classList.add('hidden');
 document.getElementById('errorDisplay').classList.add('hidden');
+document.getElementById('progressSection').classList.remove('hidden');
 
 fetch('/api/tuning/start', {
 method: 'POST',
 headers: {'Content-Type': 'application/json'},
-body: JSON.stringify({target_temp: targetTemp})
+body: JSON.stringify({mode: selectedMode, max_temp: maxTemp})
 })
 .then(r => r.json())
 .then(d => {
@@ -109,6 +197,30 @@ pollingInterval = null;
 }
 }
 
+function buildStepIndicator(tuning) {
+const container = document.getElementById('stepProgress');
+container.innerHTML = '';
+const totalSteps = tuning.total_steps + 1; // +1 for cooling
+const currentIndex = tuning.stage === 'cooling' ? tuning.total_steps : tuning.step_index;
+
+for (let i = 0; i < tuning.total_steps; i++) {
+const step = document.createElement('div');
+step.className = 'step';
+step.textContent = `${i + 1}`;
+if (i < currentIndex) step.classList.add('complete');
+else if (i === currentIndex) step.classList.add('active');
+container.appendChild(step);
+}
+
+// Add cooling step
+const coolStep = document.createElement('div');
+coolStep.className = 'step';
+coolStep.textContent = 'Cool';
+if (tuning.stage === 'cooling') coolStep.classList.add('active');
+else if (tuning.stage === 'complete') coolStep.classList.add('complete');
+container.appendChild(coolStep);
+}
+
 function updateStatus() {
 fetch('/api/tuning/status')
 .then(r => r.json())
@@ -120,20 +232,59 @@ return;
 }
 
 const t = d.tuning;
-document.getElementById('stageIndicator').textContent = t.stage.toUpperCase();
-document.getElementById('currentTemp').textContent = d.current_temp.toFixed(1) + ' C';
-document.getElementById('targetTempDisplay').textContent = t.target_temp + ' C';
-document.getElementById('elapsedTime').textContent = formatTime(t.elapsed);
-document.getElementById('dataPoints').textContent = t.data_points;
 
+// Update mode and step
+document.getElementById('tuningMode').textContent = t.mode;
+document.getElementById('stepIndicator').textContent = `${t.step_index + 1}/${t.total_steps + 1}`;
+
+// Build step progress indicator
+buildStepIndicator(t);
+
+// Calculate progress percentage
+let progress = 0;
+if (t.stage === 'cooling') {
+progress = 90; // Cooling is final 10%
+} else if (t.total_steps > 0) {
+const stepProgress = (t.step_index / t.total_steps) * 90;
+const withinStepProgress = t.step_duration ? (t.step_elapsed / t.step_duration) * (90 / t.total_steps) : 0;
+progress = stepProgress + withinStepProgress;
+}
+document.getElementById('progressFill').style.width = Math.min(progress, 100) + '%';
+
+// Update status grid
+document.getElementById('currentTemp').textContent = d.current_temp.toFixed(1) + '°C';
+document.getElementById('maxTempDisplay').textContent = t.max_temp + '°C';
+document.getElementById('ssrOutput').textContent = d.ssr_output.toFixed(0) + '%';
+document.getElementById('elapsedTime').textContent = formatTime(t.elapsed);
+
+// Update step details
+if (t.stage === 'heating') {
+document.getElementById('stepDetails').classList.remove('hidden');
+document.getElementById('stepName').textContent = t.step_name;
+document.getElementById('stepTime').textContent =
+`${formatTime(t.step_elapsed)} / ${formatTime(t.step_duration)}`;
+
+if (t.plateau) {
+document.getElementById('plateauStatus').textContent =
+`Detecting (${formatTime(t.plateau.elapsed)} / ${formatTime(t.plateau.required)})`;
+} else {
+document.getElementById('plateauStatus').textContent = 'Monitoring';
+}
+} else {
+document.getElementById('stepDetails').classList.add('hidden');
+}
+
+// Check for completion or error
 if (t.stage === 'complete') {
 stopPolling();
 document.getElementById('completeDisplay').classList.remove('hidden');
+document.getElementById('progressSection').classList.add('hidden');
 resetControls();
 } else if (t.stage === 'error') {
 stopPolling();
 document.getElementById('errorMessage').textContent = t.error;
 document.getElementById('errorDisplay').classList.remove('hidden');
+document.getElementById('progressSection').classList.add('hidden');
 resetControls();
 }
 })
@@ -143,7 +294,8 @@ resetControls();
 function resetControls() {
 document.getElementById('startBtn').disabled = false;
 document.getElementById('stopBtn').classList.add('hidden');
-document.getElementById('targetTemp').disabled = false;
+document.getElementById('maxTemp').disabled = false;
+document.querySelectorAll('.mode-card').forEach(card => card.style.pointerEvents = 'auto');
 }
 
 function formatTime(seconds) {

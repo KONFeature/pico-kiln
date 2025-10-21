@@ -14,7 +14,7 @@ from wrapper import DigitalInOut, SPIWrapper
 from kiln import TemperatureSensor, SSRController, PID, KilnController, Profile
 from kiln.state import KilnState
 from kiln.comms import MessageType, StatusMessage, QueueHelper
-from kiln.tuner import ZieglerNicholsTuner, TuningStage
+from kiln.tuner import ZieglerNicholsTuner, TuningStage, TuningMode
 
 class ControlThread:
     """
@@ -186,14 +186,15 @@ class ControlThread:
 
             elif cmd_type == MessageType.START_TUNING:
                 # Start PID auto-tuning
-                target_temp = command.get('target_temp', 200)
-                cooling_delta = command.get('cooling_delta', 20)
+                mode = command.get('mode', 'STANDARD')
+                max_temp = command.get('max_temp')  # None = use mode default
+
                 if self.controller.state != KilnState.IDLE:
                     print(f"[Control Thread] Cannot start tuning: kiln is in {self.controller.state} state")
                     return
 
-                print(f"[Control Thread] Starting PID auto-tuning (target: {target_temp}°C, cooling to: {target_temp - cooling_delta}°C)")
-                self.tuner = ZieglerNicholsTuner(target_temp=target_temp, cooling_delta=cooling_delta)
+                print(f"[Control Thread] Starting PID auto-tuning (mode: {mode}, max_temp: {max_temp}°C)")
+                self.tuner = ZieglerNicholsTuner(mode=mode, max_temp=max_temp)
                 self.tuner.start()
                 self.controller.state = KilnState.TUNING
                 print("[Control Thread] Tuning started")
