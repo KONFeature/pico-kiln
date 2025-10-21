@@ -6,6 +6,7 @@
 # using a custom ThreadSafeQueue implementation.
 
 import gc
+from collections import deque
 
 try:
     from _thread import allocate_lock
@@ -19,8 +20,8 @@ class ThreadSafeQueue:
     Thread-safe FIFO queue implementation using _thread.allocate_lock()
 
     This is a custom implementation since ThreadSafeQueue is not available
-    in the standard MicroPython _thread module. Uses a simple list with
-    lock-based synchronization.
+    in the standard MicroPython _thread module. Uses collections.deque with
+    lock-based synchronization for O(1) pop operations.
 
     Compatible with the expected ThreadSafeQueue API (put_sync/get_sync).
     """
@@ -33,7 +34,7 @@ class ThreadSafeQueue:
             maxsize: Maximum queue size (0 = unlimited)
         """
         self.maxsize = maxsize
-        self._queue = []
+        self._queue = deque()
         self._lock = allocate_lock()
 
     def put_sync(self, item):
@@ -74,7 +75,7 @@ class ThreadSafeQueue:
         try:
             if len(self._queue) == 0:
                 raise Exception("Queue empty")
-            return self._queue.pop(0)
+            return self._queue.popleft()
         finally:
             self._lock.release()
 

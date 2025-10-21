@@ -8,6 +8,12 @@
 import asyncio
 from kiln.comms import QueueHelper, StatusCache
 
+try:
+    from _thread import allocate_lock
+except ImportError:
+    # Fallback for testing on CPython
+    from threading import Lock as allocate_lock
+
 
 class StatusReceiver:
     """
@@ -23,13 +29,18 @@ class StatusReceiver:
     """
 
     _instance = None
+    _lock = allocate_lock()
 
     def __new__(cls):
-        """Singleton pattern - only one instance allowed"""
-        if cls._instance is None:
-            cls._instance = super(StatusReceiver, cls).__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
+        """Singleton pattern - only one instance allowed (thread-safe)"""
+        cls._lock.acquire()
+        try:
+            if cls._instance is None:
+                cls._instance = super(StatusReceiver, cls).__new__(cls)
+                cls._instance._initialized = False
+            return cls._instance
+        finally:
+            cls._lock.release()
 
     def __init__(self):
         """Initialize the status receiver (only runs once due to singleton)"""
@@ -149,7 +160,7 @@ class StatusReceiver:
                 self.status_cache.update(status)
 
                 # Notify all listeners
-                for listener in self.listeners:
+                for listener in list(self.listeners):
                     try:
                         listener(status)
                     except Exception as e:
