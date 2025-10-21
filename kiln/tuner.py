@@ -7,7 +7,7 @@
 #
 # The tuning sequence:
 # 1. Heat kiln at maximum output to target temperature
-# 2. Turn off heating and let cool back to target temperature
+# 2. Turn off heating and let cool to (target - cooling_delta)°C
 # 3. Complete - data is saved to CSV for offline analysis
 #
 # Use the included analyze_tuning.py script to calculate PID parameters
@@ -37,16 +37,18 @@ class ZieglerNicholsTuner:
     from the saved CSV file.
     """
 
-    def __init__(self, target_temp=200, max_time=3600):
+    def __init__(self, target_temp=200, max_time=3600, cooling_delta=20):
         """
         Initialize tuner
 
         Args:
             target_temp: Target temperature for tuning (°C)
             max_time: Maximum tuning time before timeout (seconds)
+            cooling_delta: How far below target to cool (°C) - default 20°C
         """
         self.target_temp = target_temp
         self.max_time = max_time
+        self.cooling_delta = cooling_delta
 
         # Tuning state
         self.stage = TuningStage.HEATING
@@ -103,9 +105,10 @@ class ZieglerNicholsTuner:
                 return 100, True  # Full power
 
         elif self.stage == TuningStage.COOLING:
-            # Cool until temperature drops back to target
-            if current_temp <= self.target_temp:
-                print(f"[Tuner] Cooled back to target at {elapsed:.1f}s")
+            # Cool until temperature drops significantly below target
+            cooling_target = self.target_temp - self.cooling_delta
+            if current_temp <= cooling_target:
+                print(f"[Tuner] Cooled to {current_temp:.1f}°C (target was {cooling_target:.1f}°C) at {elapsed:.1f}s")
                 print(f"[Tuner] Tuning complete! Data saved to CSV.")
                 print(f"[Tuner] Use analyze_tuning.py to calculate PID parameters from the CSV file.")
                 self.stage = TuningStage.COMPLETE
@@ -113,7 +116,7 @@ class ZieglerNicholsTuner:
             else:
                 # Print status less frequently to avoid spam
                 if int(elapsed) % 10 == 0:
-                    print(f"[Tuner] Cooling: {current_temp:.1f}°C / {self.target_temp:.1f}°C")
+                    print(f"[Tuner] Cooling: {current_temp:.1f}°C / {cooling_target:.1f}°C (target - {self.cooling_delta}°C)")
                 return 0, True  # Keep SSR off
 
         # ERROR or COMPLETE - should not reach here

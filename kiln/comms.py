@@ -184,11 +184,18 @@ class CommandMessage:
         }
 
     @staticmethod
-    def start_tuning(target_temp=200):
-        """Start PID auto-tuning"""
+    def start_tuning(target_temp=200, cooling_delta=20):
+        """
+        Start PID auto-tuning
+
+        Args:
+            target_temp: Target temperature for tuning (°C)
+            cooling_delta: How far below target to cool (°C) - default 20°C
+        """
         return {
             'type': MessageType.START_TUNING,
-            'target_temp': target_temp
+            'target_temp': target_temp,
+            'cooling_delta': cooling_delta
         }
 
     @staticmethod
@@ -276,11 +283,17 @@ class StatusMessage:
         import time
 
         tuner_status = tuner.get_status()
+        elapsed = controller.get_elapsed_time()
 
         status = {
             'timestamp': time.time(),
             'state': controller.state,
             'current_temp': round(controller.current_temp, 2),
+            'target_temp': round(controller.target_temp, 2),
+            'elapsed': round(elapsed, 1),
+            'ssr_output': round(controller.ssr_output, 2),
+            'progress': 0,
+            'profile_name': None,
             'tuning': tuner_status
         }
 
