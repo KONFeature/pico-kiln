@@ -52,7 +52,7 @@ class ControlThread:
 
         # Timing
         self.last_status_update = 0
-        self.status_update_interval = 0.5  # Send status updates every 0.5s
+        self.status_update_interval = 2.0  # Send status updates every 2s
 
     def setup_hardware(self):
         """

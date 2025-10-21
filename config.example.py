@@ -39,8 +39,25 @@ PID_KD = 160.0     # Derivative gain
 
 # === SSR Control ===
 # Time-proportional control cycle time (seconds)
-# Longer cycle = less SSR switching, but less precise control
-SSR_CYCLE_TIME = 2.0
+#
+# This is the time window for PWM control of the SSR.
+# For example, at 30% duty cycle with 20s cycle time:
+#   - SSR is ON for 6 seconds
+#   - SSR is OFF for 14 seconds
+#   - Total: 3 switches per minute
+#
+# Why 20 seconds is appropriate for kilns:
+# - Kilns have huge thermal mass and respond slowly to power changes
+# - Short cycles (2s) = 30 switches/minute → excessive SSR wear + light flickering
+# - Long cycles (20-30s) = 3 switches/minute → minimal wear + no flickering
+# - Temperature precision is NOT affected (kiln responds over minutes, not seconds)
+#
+# Recommended values:
+# - Small kilns (test kilns): 20 seconds
+# - Medium/large kilns: 20-30 seconds
+# - DO NOT use values < 10 seconds (causes flickering and SSR wear)
+#
+SSR_CYCLE_TIME = 20.0
 
 # === Safety Limits ===
 # Maximum safe temperature (°C)
