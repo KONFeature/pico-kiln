@@ -10,6 +10,7 @@ import socket
 import gc
 import config
 from kiln.comms import CommandMessage, QueueHelper
+from kiln.tuner import MODE_SAFE, MODE_STANDARD, MODE_THOROUGH
 from server.status_receiver import get_status_receiver
 
 # HTTP response templates
@@ -256,11 +257,11 @@ def handle_api_tuning_start(conn, body):
     """POST /api/tuning/start - Start PID auto-tuning"""
     try:
         data = json.loads(body.decode())
-        mode = data.get('mode', 'STANDARD')
+        mode = data.get('mode', MODE_STANDARD)
         max_temp = data.get('max_temp')  # None = use mode default
 
         # Validate mode
-        valid_modes = ['SAFE', 'STANDARD', 'THOROUGH']
+        valid_modes = [MODE_SAFE, MODE_STANDARD, MODE_THOROUGH]
         if mode not in valid_modes:
             send_json_response(conn, {
                 'success': False,

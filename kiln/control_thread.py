@@ -14,7 +14,7 @@ from wrapper import DigitalInOut, SPIWrapper
 from kiln import TemperatureSensor, SSRController, PID, PIDGainScheduler, KilnController, Profile
 from kiln.state import KilnState
 from kiln.comms import MessageType, StatusMessage, QueueHelper
-from kiln.tuner import ZieglerNicholsTuner, TuningStage, TuningMode
+from kiln.tuner import ZieglerNicholsTuner, TuningStage
 
 class ControlThread:
     """
