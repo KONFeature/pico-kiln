@@ -161,14 +161,6 @@ Communication between cores uses **ThreadSafeQueue** - a custom thread-safe FIFO
 {
     'type': 'shutdown'
 }
-
-# Update PID gains (runtime tuning)
-{
-    'type': 'set_pid_gains',
-    'kp': 25.0,
-    'ki': 180.0,
-    'kd': 160.0
-}
 ```
 
 ### Status Queue (Core 1 → Core 2)

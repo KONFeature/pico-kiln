@@ -176,14 +176,6 @@ class ControlThread:
                 self.ssr_controller.force_off()
                 print("[Control Thread] Emergency shutdown executed")
 
-            elif cmd_type == MessageType.SET_PID_GAINS:
-                # Update PID gains
-                kp = command.get('kp')
-                ki = command.get('ki')
-                kd = command.get('kd')
-                self.pid.set_gains(kp=kp, ki=ki, kd=kd)
-                print(f"[Control Thread] PID gains updated: kp={kp}, ki={ki}, kd={kd}")
-
             elif cmd_type == MessageType.START_TUNING:
                 # Start PID auto-tuning
                 mode = command.get('mode', 'STANDARD')

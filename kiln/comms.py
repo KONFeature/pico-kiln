@@ -121,7 +121,6 @@ class MessageType:
     RESUME_PROFILE = 'resume_profile'
     STOP = 'stop'
     SHUTDOWN = 'shutdown'
-    SET_PID_GAINS = 'set_pid_gains'
     START_TUNING = 'start_tuning'
     STOP_TUNING = 'stop_tuning'
     PING = 'ping'  # For testing thread communication
@@ -171,16 +170,6 @@ class CommandMessage:
         """Emergency shutdown - stop and turn off SSR"""
         return {
             'type': MessageType.SHUTDOWN
-        }
-
-    @staticmethod
-    def set_pid_gains(kp=None, ki=None, kd=None):
-        """Update PID gains (for runtime tuning)"""
-        return {
-            'type': MessageType.SET_PID_GAINS,
-            'kp': kp,
-            'ki': ki,
-            'kd': kd
         }
 
     @staticmethod
