@@ -247,7 +247,13 @@ class StatusMessage:
             status['profile_duration'] = controller.active_profile.duration
 
         # Add PID statistics
-        status['pid_stats'] = pid.get_stats()
+        pid_stats = pid.get_stats()
+        status['pid_stats'] = pid_stats
+
+        # Add current PID gains at top level for easy access
+        status['pid_kp'] = pid_stats.get('kp', 0)
+        status['pid_ki'] = pid_stats.get('ki', 0)
+        status['pid_kd'] = pid_stats.get('kd', 0)
 
         # Add SSR state
         ssr_state = ssr_controller.get_state()

@@ -11,7 +11,7 @@
 import time
 from machine import Pin, SPI, WDT
 from wrapper import DigitalInOut, SPIWrapper
-from kiln import TemperatureSensor, SSRController, PID, KilnController, Profile
+from kiln import TemperatureSensor, SSRController, PID, PIDGainScheduler, KilnController, Profile
 from kiln.state import KilnState
 from kiln.comms import MessageType, StatusMessage, QueueHelper
 from kiln.tuner import ZieglerNicholsTuner, TuningStage, TuningMode
@@ -42,6 +42,7 @@ class ControlThread:
         self.temp_sensor = None
         self.ssr_controller = None
         self.pid = None
+        self.pid_scheduler = None  # Gain scheduling
         self.controller = None
         self.ssr_pin = None
         self.wdt = None  # Watchdog timer
@@ -99,6 +100,15 @@ class ControlThread:
             ki=self.config.PID_KI,
             kd=self.config.PID_KD,
             output_limits=(0, 100)
+        )
+
+        # Initialize PID gain scheduler
+        thermal_model = getattr(self.config, 'THERMAL_MODEL', None)
+        self.pid_scheduler = PIDGainScheduler(
+            thermal_model=thermal_model,
+            default_kp=self.config.PID_KP,
+            default_ki=self.config.PID_KI,
+            default_kd=self.config.PID_KD
         )
 
         # Initialize kiln controller
@@ -362,6 +372,12 @@ class ControlThread:
 
             # 4. Calculate PID output
             if self.controller.state == KilnState.RUNNING:
+                # Update PID gains based on current temperature (gain scheduling)
+                kp, ki, kd = self.pid_scheduler.get_gains(current_temp)
+                if self.pid_scheduler.gains_changed():
+                    self.pid.set_gains(kp, ki, kd)
+                    print(f"[Control Thread] PID gains updated: Kp={kp:.3f} Ki={ki:.4f} Kd={kd:.3f} @ {current_temp:.1f}°C")
+
                 # PID control active
                 ssr_output = self.pid.update(target_temp, current_temp)
             else:
