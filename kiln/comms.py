@@ -246,6 +246,29 @@ class StatusMessage:
             status['progress'] = round(controller.active_profile.get_progress(elapsed), 1)
             status['profile_duration'] = controller.active_profile.duration
 
+            # Add step info (segment between data points)
+            profile = controller.active_profile
+            status['total_steps'] = len(profile.data) - 1
+
+            # Find current segment
+            current_segment = 0
+            for i in range(len(profile.data) - 1):
+                t1, _ = profile.data[i]
+                t2, _ = profile.data[i + 1]
+                if t1 <= elapsed < t2:
+                    current_segment = i
+                    break
+                elif elapsed >= t2:
+                    current_segment = i + 1
+
+            status['step_index'] = current_segment
+            status['step_name'] = ''  # Profiles don't have named steps
+        else:
+            # No active profile - set step fields to None
+            status['step_index'] = None
+            status['step_name'] = None
+            status['total_steps'] = None
+
         # Add PID statistics
         pid_stats = pid.get_stats()
         status['pid_stats'] = pid_stats
@@ -257,7 +280,6 @@ class StatusMessage:
 
         # Add SSR state
         ssr_state = ssr_controller.get_state()
-        status['ssr_is_on'] = ssr_state['is_on']
         status['ssr_duty_cycle'] = ssr_state['duty_cycle']
 
         return status
@@ -289,12 +311,15 @@ class StatusMessage:
             'ssr_output': round(controller.ssr_output, 2),
             'progress': 0,
             'profile_name': None,
-            'tuning': tuner_status
+            'tuning': tuner_status,
+            # Expose step fields at top level for easy logging
+            'step_name': tuner_status.get('step_name'),
+            'step_index': tuner_status.get('step_index'),
+            'total_steps': tuner_status.get('total_steps'),
         }
 
         # Add SSR state (needed for web UI display)
         ssr_state = ssr_controller.get_state()
-        status['ssr_is_on'] = ssr_state['is_on']
         status['ssr_duty_cycle'] = ssr_state['duty_cycle']
 
         return status
@@ -370,7 +395,6 @@ class StatusCache:
             'current_temp': 0.0,
             'target_temp': 0.0,
             'ssr_output': 0.0,
-            'ssr_is_on': False,
             'elapsed': 0,
             'profile_name': None,
             'error': None
@@ -427,7 +451,7 @@ class StatusCache:
             Dictionary with only requested fields
 
         Example:
-            cache.get_fields('current_temp', 'target_temp', 'ssr_is_on')
+            cache.get_fields('current_temp', 'target_temp', 'ssr_output')
         """
         with self.lock:
             return {field: self._status.get(field) for field in fields}

@@ -110,7 +110,8 @@ class DataLogger:
         Args:
             status: Status dictionary from StatusMessage.build()
                     Expected fields: timestamp, elapsed, current_temp,
-                    target_temp, ssr_output, ssr_is_on, state, progress
+                    target_temp, ssr_output, state, progress
+                    Step fields (optional): step_name, step_index, total_steps
         """
         if not self.is_logging or not self.file:
             return
@@ -134,13 +135,16 @@ class DataLogger:
             current_temp = status.get('current_temp', 0.0)
             target_temp = status.get('target_temp', 0.0)
             ssr_output = status.get('ssr_output', 0.0)
-            ssr_is_on = status.get('ssr_is_on', False)
             state = status.get('state', 'UNKNOWN')
             progress = status.get('progress', 0.0)
 
+            # Extract step info (populated for both tuning and profile runs)
+            step_name = status.get('step_name', '')
+            step_index = status.get('step_index', '')
+            total_steps = status.get('total_steps', '')
+
             # Format row
             timestamp_iso = self._format_timestamp_iso(timestamp)
-            ssr_on_int = 1 if ssr_is_on else 0
 
             row = (
                 f"{timestamp_iso},"
@@ -148,9 +152,11 @@ class DataLogger:
                 f"{current_temp:.2f},"
                 f"{target_temp:.2f},"
                 f"{ssr_output:.2f},"
-                f"{ssr_on_int},"
                 f"{state},"
-                f"{progress:.1f}\n"
+                f"{progress:.1f},"
+                f"{step_name if step_name else ''},"
+                f"{step_index if step_index is not None and step_index != '' else ''},"
+                f"{total_steps if total_steps is not None and total_steps != '' else ''}\n"
             )
 
             # Write to file
@@ -181,12 +187,10 @@ class DataLogger:
             current_temp = current_status.get('current_temp', recovery_info.last_temp)
             target_temp = current_status.get('target_temp', recovery_info.last_target_temp)
             ssr_output = current_status.get('ssr_output', 0.0)
-            ssr_is_on = current_status.get('ssr_is_on', False)
             progress = current_status.get('progress', 0.0)
 
             # Format row with RECOVERY marker in state column
             timestamp_iso = self._format_timestamp_iso(timestamp)
-            ssr_on_int = 1 if ssr_is_on else 0
 
             row = (
                 f"{timestamp_iso},"
@@ -194,9 +198,10 @@ class DataLogger:
                 f"{current_temp:.2f},"
                 f"{target_temp:.2f},"
                 f"{ssr_output:.2f},"
-                f"{ssr_on_int},"
                 f"RECOVERY,"  # Special state marker
-                f"{progress:.1f}\n"
+                f"{progress:.1f},"
+                f",,"  # Empty step fields for recovery events
+                f"\n"
             )
 
             # Write to file
@@ -297,9 +302,11 @@ class DataLogger:
             "current_temp_c,"
             "target_temp_c,"
             "ssr_output_percent,"
-            "ssr_is_on,"
             "state,"
-            "progress_percent\n"
+            "progress_percent,"
+            "step_name,"
+            "step_index,"
+            "total_steps\n"
         )
         self.file.write(header)
         self.file.flush()

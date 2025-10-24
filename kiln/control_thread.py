@@ -311,6 +311,14 @@ class ControlThread:
 
             # 4. Update tuner and get SSR output
             ssr_output, continue_tuning = self.tuner.update(current_temp)
+
+            # Store SSR output and target temp in controller for status reporting
+            self.controller.ssr_output = ssr_output
+            if self.tuner.current_step and self.tuner.current_step.target_temp:
+                self.controller.target_temp = self.tuner.current_step.target_temp
+            else:
+                self.controller.target_temp = 0
+
             self.ssr_controller.set_output(ssr_output)
 
             # 5. Check if tuning is complete or errored
