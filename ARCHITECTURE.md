@@ -175,12 +175,14 @@ Communication between cores uses **ThreadSafeQueue** - a custom thread-safe FIFO
     'current_temp': 750.5,         # Current measured temperature (°C)
     'target_temp': 800.0,          # Target temperature from profile (°C)
     'ssr_output': 65.2,            # PID output (0-100%)
-    'ssr_is_on': True,             # Current SSR state
     'ssr_duty_cycle': 65.2,        # SSR duty cycle (0-100%)
     'elapsed': 1234.5,             # Time since profile start (seconds)
     'remaining': 5432.1,           # Time until profile end (seconds)
     'progress': 18.5,              # Profile progress (0-100%)
     'profile_name': 'Cone 6 Glaze',
+    'step_name': '',               # Step name (tuning only)
+    'step_index': 2,               # Current step/segment index
+    'total_steps': 5,              # Total steps/segments
     'error': None,                 # Error message if in ERROR state
     'pid_stats': {
         'p_term': 10.2,

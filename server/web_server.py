@@ -76,11 +76,11 @@ def handle_api_state(conn):
     # MEMORY OPTIMIZED: Use get_fields() to avoid full status copy
     receiver = get_status_receiver()
     cached = receiver.status_cache.get_fields(
-        'ssr_is_on', 'current_temp', 'target_temp', 'profile_name', 'state'
+        'ssr_output', 'current_temp', 'target_temp', 'profile_name', 'state'
     )
 
     response = {
-        "ssr_state": cached.get('ssr_is_on', False),
+        "ssr_state": cached.get('ssr_output', 0.0) > 0,  # True if SSR has any output
         "current_temp": cached.get('current_temp', 0.0),
         "target_temp": cached.get('target_temp', 0.0),
         "current_program": cached.get('profile_name'),
@@ -349,7 +349,7 @@ async def handle_index(conn):
         # MEMORY OPTIMIZED: Use get_fields() to fetch only needed fields
         receiver = get_status_receiver()
         cached = receiver.status_cache.get_fields(
-            'ssr_is_on', 'current_temp', 'target_temp', 'profile_name', 'state'
+            'ssr_output', 'current_temp', 'target_temp', 'profile_name', 'state'
         )
 
         # Yield before building profiles list
@@ -376,8 +376,9 @@ async def handle_index(conn):
 
         # MEMORY OPTIMIZED: Build single JSON object for client-side rendering
         # This reduces 8 string.replace() calls to just 2, saving ~10KB in temporary allocations
+        ssr_output = cached.get('ssr_output', 0.0)
         status_data = {
-            'status': 'ON' if cached.get('ssr_is_on', False) else 'OFF',
+            'status': f'{ssr_output:.0f}%' if ssr_output > 0 else 'OFF',
             'current_temp': cached.get('current_temp', 0.0),
             'target_temp': cached.get('target_temp', 0.0),
             'program': cached.get('profile_name') or 'None',

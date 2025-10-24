@@ -41,12 +41,11 @@ def load_tuning_data(csv_file: str) -> Dict:
         csv_file: Path to CSV file with tuning data
 
     Returns:
-        Dictionary with all data arrays: time, temp, ssr_output, ssr_is_on, etc.
+        Dictionary with all data arrays: time, temp, ssr_output, etc.
     """
     time_data = []
     temp_data = []
     ssr_output_data = []
-    ssr_is_on_data = []
     timestamps = []
 
     with open(csv_file, 'r') as f:
@@ -55,7 +54,6 @@ def load_tuning_data(csv_file: str) -> Dict:
             time_data.append(float(row['elapsed_seconds']))
             temp_data.append(float(row['current_temp_c']))
             ssr_output_data.append(float(row['ssr_output_percent']))
-            ssr_is_on_data.append(int(row['ssr_is_on']))
             timestamps.append(row['timestamp'])
 
     # Fallback: if all elapsed_seconds are 0, calculate from timestamps
@@ -76,7 +74,6 @@ def load_tuning_data(csv_file: str) -> Dict:
         'time': time_data,
         'temp': temp_data,
         'ssr_output': ssr_output_data,
-        'ssr_is_on': ssr_is_on_data,
         'timestamps': timestamps
     }
 
@@ -490,7 +487,6 @@ def calculate_temperature_range_pids(data: Dict, phases: List[Phase],
             'time': [data['time'][i] for i in range_indices],
             'temp': [data['temp'][i] for i in range_indices],
             'ssr_output': [data['ssr_output'][i] for i in range_indices],
-            'ssr_is_on': [data['ssr_is_on'][i] for i in range_indices],
             'timestamps': [data['timestamps'][i] for i in range_indices]
         }
 

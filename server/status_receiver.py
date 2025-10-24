@@ -132,7 +132,7 @@ class StatusReceiver:
             Dictionary with only requested fields
 
         Example:
-            receiver.get_status_fields('current_temp', 'target_temp', 'ssr_is_on')
+            receiver.get_status_fields('current_temp', 'target_temp', 'ssr_output')
         """
         return self.status_cache.get_fields(*fields)
 

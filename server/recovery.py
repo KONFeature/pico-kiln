@@ -286,9 +286,9 @@ def _parse_last_log_entry(log_file):
     in memory instead of loading the entire file. This reduces memory usage from
     ~120KB (for a 10-hour log) to <1KB.
 
-    CSV format:
+    CSV format (new):
     timestamp,elapsed_seconds,current_temp_c,target_temp_c,
-    ssr_output_percent,ssr_is_on,state,progress_percent
+    ssr_output_percent,state,progress_percent,step_name,step_index,total_steps
 
     Args:
         log_file: Path to CSV log file
@@ -319,7 +319,8 @@ def _parse_last_log_entry(log_file):
         # Parse CSV values
         values = last_line.split(',')
 
-        if len(values) < 8:
+        # Need at least 7 core columns (step columns are optional)
+        if len(values) < 7:
             return None
 
         # Parse timestamp (ISO format: YYYY-MM-DD HH:MM:SS)
@@ -332,9 +333,8 @@ def _parse_last_log_entry(log_file):
             'current_temp': float(values[2]),
             'target_temp': float(values[3]),
             'ssr_output': float(values[4]),
-            'ssr_is_on': int(values[5]) == 1,
-            'state': values[6],
-            'progress': float(values[7])
+            'state': values[5],
+            'progress': float(values[6])
         }
 
         # Force garbage collection after parsing
