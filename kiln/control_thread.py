@@ -193,7 +193,14 @@ class ControlThread:
 
                 if self.controller.state != KilnState.IDLE:
                     print(f"[Control Thread] Cannot start tuning: kiln is in {self.controller.state} state")
+                    if self.controller.state == KilnState.TUNING and self.tuner:
+                        print(f"[Control Thread] Tuning already in progress: mode={self.tuner.mode}, elapsed={time.time() - self.tuner.start_time:.1f}s")
                     return
+
+                # Extra safety: ensure no leftover tuner object
+                if self.tuner is not None:
+                    print(f"[Control Thread] WARNING: Cleaning up leftover tuner object before starting new tuning")
+                    self.tuner = None
 
                 print(f"[Control Thread] Starting PID auto-tuning (mode: {mode}, max_temp: {max_temp}°C)")
                 self.tuner = ZieglerNicholsTuner(mode=mode, max_temp=max_temp)
@@ -238,6 +245,12 @@ class ControlThread:
         This is called periodically to update the web server with current status
         """
         try:
+            # Safety check: if state is TUNING but tuner is None, fix the inconsistency
+            if self.controller.state == KilnState.TUNING and not self.tuner:
+                print("[Control Thread] WARNING: State is TUNING but tuner is None - fixing state to IDLE")
+                self.controller.state = KilnState.IDLE
+                self.ssr_controller.force_off()
+
             # Choose status builder based on state
             if self.controller.state == KilnState.TUNING and self.tuner:
                 status = StatusMessage.build_tuning_status(self.controller, self.tuner, self.ssr_controller)

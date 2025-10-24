@@ -31,6 +31,9 @@ body{font-family:Arial,sans-serif;margin:20px;max-width:800px}
 <div class="mode-card" onclick="selectMode('THOROUGH')" id="modeTHOROUGH">
 <b>THOROUGH</b> (3-4 hours, 200°C, 20/40/60/80% steps) - Comprehensive
 </div>
+<div class="mode-card" onclick="selectMode('HIGH_TEMP')" id="modeHIGH_TEMP">
+<b>HIGH_TEMP</b> (3-4 hours, 500°C, fast heatup for high thermal mass) - High-temp characterization
+</div>
 </div>
 
 <p>Max Temp Override (°C): <input type="number" id="maxTemp" size="5" min="50" max="500"></p>
@@ -94,7 +97,7 @@ alert('Max temperature must be between 50-500°C or left blank');
 return;
 }
 
-const duration = {'SAFE': '30-45 min', 'STANDARD': '1-2 hours', 'THOROUGH': '3-4 hours'}[selectedMode];
+const duration = {'SAFE': '30-45 min', 'STANDARD': '1-2 hours', 'THOROUGH': '3-4 hours', 'HIGH_TEMP': '3-4 hours'}[selectedMode];
 if (!confirm(`Start ${selectedMode} tuning?\n\nDuration: ${duration}\nKiln must be cool.`)) return;
 
 setTuningActive(true);
@@ -191,6 +194,13 @@ return;
 }
 
 const t = d.tuning;
+
+// Defensive check: if tuning data is missing, something went wrong
+if (!t) {
+console.error('State is TUNING but tuning data is missing - possible backend error');
+document.getElementById('progressSection').innerHTML = '<div style="color: red; padding: 20px;">Error: Tuning data unavailable. Please stop and restart tuning.</div>';
+return;
+}
 
 // Show progress section
 document.getElementById('progressSection').classList.remove('hidden');

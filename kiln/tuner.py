@@ -19,6 +19,7 @@ import time
 MODE_SAFE = 'SAFE'
 MODE_STANDARD = 'STANDARD'
 MODE_THOROUGH = 'THOROUGH'
+MODE_HIGH_TEMP = 'HIGH_TEMP'
 
 class TuningStage:
     """Tuning stage constants"""
@@ -180,8 +181,8 @@ class ZieglerNicholsTuner:
             max_temp: Maximum temperature for safety (°C), None = use mode default
             max_time: Maximum total tuning time (seconds)
         """
-        if mode not in [MODE_SAFE, MODE_STANDARD, MODE_THOROUGH]:
-            raise ValueError(f"Invalid mode: {mode}. Must be 'SAFE', 'STANDARD', or 'THOROUGH'")
+        if mode not in [MODE_SAFE, MODE_STANDARD, MODE_THOROUGH, MODE_HIGH_TEMP]:
+            raise ValueError(f"Invalid mode: {mode}. Must be 'SAFE', 'STANDARD', 'THOROUGH', or 'HIGH_TEMP'")
 
         self.mode = mode
         
@@ -193,6 +194,8 @@ class ZieglerNicholsTuner:
                 max_temp = 150
             elif mode == MODE_THOROUGH:
                 max_temp = 200
+            elif mode == MODE_HIGH_TEMP:
+                max_temp = 500
         
         self.max_temp = max_temp
         self.max_time = max_time
@@ -220,11 +223,11 @@ class ZieglerNicholsTuner:
             # SAFE mode: Quick verification (30-45 min)
             return [
                 TuningStep(
-                    step_name="heat_30pct_to_100C",
-                    ssr_percent=30,
+                    step_name="heat_60pct_to_100C",
+                    ssr_percent=60,
                     target_temp=min(100, self.max_temp),
                     hold_time=0,
-                    timeout=1200  # 20 min timeout
+                    timeout=2400  # 20 min timeout
                 ),
                 TuningStep(
                     step_name="hold_30pct_5min",
@@ -336,6 +339,86 @@ class ZieglerNicholsTuner:
 
             return steps
 
+        elif self.mode == MODE_HIGH_TEMP:
+            # HIGH_TEMP mode: Fast heatup for high thermal mass kilns (3-4 hours)
+            # Skip slow 0-200°C "insulation charging" phase
+            # Characterize dynamics at 200-500°C range
+            return [
+                # Step 1: Blast through low-temp phase at full power
+                TuningStep(
+                    step_name="fast_heat_to_200C",
+                    ssr_percent=100,
+                    target_temp=200,
+                    hold_time=0,
+                    timeout=3600  # 60 min timeout for high thermal mass
+                ),
+
+                # Step 2: Cool slightly to reset
+                TuningStep(
+                    step_name="cool_20min",
+                    ssr_percent=0,
+                    target_temp=None,
+                    hold_time=0,
+                    timeout=1200  # 20 min
+                ),
+
+                # Step 3: Characterize at 60% SSR (should reach ~300-350°C)
+                TuningStep(
+                    step_name="heat_60pct_plateau",
+                    ssr_percent=60,
+                    target_temp=None,
+                    hold_time=0,
+                    timeout=2700,  # 45 min timeout
+                    plateau_detect=True
+                ),
+
+                # Step 4: Cool reset
+                TuningStep(
+                    step_name="cool_20min",
+                    ssr_percent=0,
+                    target_temp=None,
+                    hold_time=0,
+                    timeout=1200  # 20 min
+                ),
+
+                # Step 5: Characterize at 80% SSR (should reach ~400-450°C)
+                TuningStep(
+                    step_name="heat_80pct_plateau",
+                    ssr_percent=80,
+                    target_temp=None,
+                    hold_time=0,
+                    timeout=2700,  # 45 min timeout
+                    plateau_detect=True
+                ),
+
+                # Step 6: Cool reset
+                TuningStep(
+                    step_name="cool_20min",
+                    ssr_percent=0,
+                    target_temp=None,
+                    hold_time=0,
+                    timeout=1200  # 20 min
+                ),
+
+                # Step 7: Full power push to max temp
+                TuningStep(
+                    step_name="heat_100pct_to_max",
+                    ssr_percent=100,
+                    target_temp=min(500, self.max_temp),
+                    hold_time=300,  # Hold 5 min at max
+                    timeout=2700  # 45 min timeout
+                ),
+
+                # Step 8: Final cooldown
+                TuningStep(
+                    step_name="final_cooldown",
+                    ssr_percent=0,
+                    target_temp=None,
+                    hold_time=0,
+                    timeout=3600  # 60 min
+                )
+            ]
+
         return []
 
     def start(self):
@@ -429,7 +512,7 @@ class ZieglerNicholsTuner:
             'mode': self.mode,
             'max_temp': self.max_temp,
             'elapsed': round(elapsed_total, 1),
-            'current_step': self.current_step_index + 1 if self.current_step else 0,
+            'step_index': self.current_step_index if self.current_step else 0,
             'total_steps': len(self.steps),
             'error': self.error_message
         }
