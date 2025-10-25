@@ -10,7 +10,7 @@ import socket
 import gc
 import config
 from kiln.comms import CommandMessage, QueueHelper
-from kiln.tuner import MODE_SAFE, MODE_STANDARD, MODE_THOROUGH
+from kiln.tuner import MODE_SAFE, MODE_STANDARD, MODE_THOROUGH, MODE_HIGH_TEMP
 from server.status_receiver import get_status_receiver
 
 # HTTP response templates
@@ -261,7 +261,7 @@ def handle_api_tuning_start(conn, body):
         max_temp = data.get('max_temp')  # None = use mode default
 
         # Validate mode
-        valid_modes = [MODE_SAFE, MODE_STANDARD, MODE_THOROUGH]
+        valid_modes = [MODE_SAFE, MODE_STANDARD, MODE_THOROUGH, MODE_HIGH_TEMP]
         if mode not in valid_modes:
             send_json_response(conn, {
                 'success': False,
