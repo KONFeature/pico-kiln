@@ -38,6 +38,7 @@ class DataLogger:
         self.file = None
         self.is_logging = False
         self.current_profile_name = None
+        self.current_filename = None
         self.last_log_time = 0
         self.previous_state = None
 
@@ -81,6 +82,7 @@ class DataLogger:
             self.file = open(filename, mode)
             self.is_logging = True
             self.current_profile_name = profile_name
+            self.current_filename = filename
             self.last_log_time = 0  # Reset to force first log immediately
 
             # Write CSV header only for new files
@@ -96,6 +98,7 @@ class DataLogger:
             print(f"[DataLogger] Error starting log file: {e}")
             self.is_logging = False
             self.file = None
+            self.current_filename = None
 
     def log_status(self, status):
         """
@@ -165,6 +168,20 @@ class DataLogger:
 
         except Exception as e:
             print(f"[DataLogger] Error writing log entry: {e}")
+            # Try to recover the file handle
+            if not self._recover_file_handle():
+                print(f"[DataLogger] Failed to recover - logging stopped")
+                return
+            # Try writing again after recovery
+            try:
+                self.file.write(row)
+                self.file.flush()
+                print(f"[DataLogger] Successfully wrote after recovery")
+            except Exception as e2:
+                print(f"[DataLogger] Write failed after recovery: {e2}")
+                self.is_logging = False
+                self.file = None
+                self.current_filename = None
 
     def log_recovery_event(self, recovery_info, current_status):
         """
@@ -212,6 +229,20 @@ class DataLogger:
 
         except Exception as e:
             print(f"[DataLogger] Error writing recovery event: {e}")
+            # Try to recover the file handle
+            if not self._recover_file_handle():
+                print(f"[DataLogger] Failed to recover - logging stopped")
+                return
+            # Try writing again after recovery
+            try:
+                self.file.write(row)
+                self.file.flush()
+                print(f"[DataLogger] Successfully wrote recovery event after file recovery")
+            except Exception as e2:
+                print(f"[DataLogger] Write failed after recovery: {e2}")
+                self.is_logging = False
+                self.file = None
+                self.current_filename = None
 
     def stop_logging(self):
         """
@@ -228,6 +259,7 @@ class DataLogger:
             self.file = None
             self.is_logging = False
             self.current_profile_name = None
+            self.current_filename = None
 
         except Exception as e:
             print(f"[DataLogger] Error closing log file: {e}")
@@ -342,3 +374,41 @@ class DataLogger:
         """
         t = time.localtime(unix_timestamp)
         return f"{t[0]:04d}-{t[1]:02d}-{t[2]:02d}_{t[3]:02d}-{t[4]:02d}-{t[5]:02d}"
+
+    def _recover_file_handle(self):
+        """
+        Attempt to recover from a file handle error by reopening the file
+
+        This method is called when a write operation fails. It attempts to:
+        1. Close the existing file handle (if possible)
+        2. Reopen the file in append mode
+        3. Restore logging state
+
+        Returns:
+            True if recovery succeeded, False otherwise
+        """
+        if not self.current_filename:
+            print(f"[DataLogger] Cannot recover - no filename stored")
+            self.is_logging = False
+            self.file = None
+            return False
+
+        # Try to close the existing file handle
+        try:
+            if self.file:
+                self.file.close()
+        except Exception as e:
+            print(f"[DataLogger] Error closing file during recovery: {e}")
+            # Continue anyway - we'll try to reopen
+
+        # Try to reopen the file in append mode
+        try:
+            self.file = open(self.current_filename, 'a')
+            print(f"[DataLogger] Successfully recovered file handle for {self.current_filename}")
+            return True
+        except Exception as e:
+            print(f"[DataLogger] Failed to reopen file during recovery: {e}")
+            self.is_logging = False
+            self.file = None
+            self.current_filename = None
+            return False
