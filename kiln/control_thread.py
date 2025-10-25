@@ -63,10 +63,19 @@ class ControlThread:
         """
         print("[Control Thread] Initializing hardware...")
 
-        # Setup SSR control pin
-        self.ssr_pin = Pin(self.config.SSR_PIN, Pin.OUT)
-        self.ssr_pin.value(0)  # Start with SSR off
-        print(f"[Control Thread] SSR pin initialized on GPIO {self.config.SSR_PIN}")
+        # Setup SSR control pin(s)
+        # Support both single pin (int) and multiple pins (list) for backward compatibility
+        if isinstance(self.config.SSR_PIN, list):
+            if len(self.config.SSR_PIN) == 0:
+                raise ValueError("SSR_PIN list cannot be empty - at least one SSR pin is required")
+            self.ssr_pin = [Pin(pin, Pin.OUT) for pin in self.config.SSR_PIN]
+            for pin in self.ssr_pin:
+                pin.value(0)  # Start with all SSRs off
+            print(f"[Control Thread] {len(self.ssr_pin)} SSR pins initialized on GPIO {self.config.SSR_PIN}")
+        else:
+            self.ssr_pin = Pin(self.config.SSR_PIN, Pin.OUT)
+            self.ssr_pin.value(0)  # Start with SSR off
+            print(f"[Control Thread] SSR pin initialized on GPIO {self.config.SSR_PIN}")
 
         # Setup SPI for MAX31856
         print(f"[Control Thread] Initializing MAX31856 on SPI{self.config.MAX31856_SPI_ID}")
@@ -90,8 +99,11 @@ class ControlThread:
         )
 
         # Initialize SSR controller
+        stagger_delay = getattr(self.config, 'SSR_STAGGER_DELAY', 0.01)
         self.ssr_controller = SSRController(
-            self.ssr_pin, cycle_time=self.config.SSR_CYCLE_TIME
+            self.ssr_pin,
+            cycle_time=self.config.SSR_CYCLE_TIME,
+            stagger_delay=stagger_delay
         )
 
         # Initialize PID controller

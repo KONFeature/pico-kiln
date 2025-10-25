@@ -11,8 +11,12 @@ MAX31856_MOSI_PIN = 19  # SPI MOSI (Master Out Slave In)
 MAX31856_MISO_PIN = 16  # SPI MISO (Master In Slave Out)
 MAX31856_CS_PIN = 28    # Chip Select
 
-# SSR Control Pin
-SSR_PIN = 15  # GPIO pin for controlling the Solid State Relay
+# SSR Control Pin(s)
+# Single SSR (backward compatible):
+# SSR_PIN = 15
+# Multiple SSRs (staggered power-on to prevent inrush current):
+# SSR_PIN = [15, 16, 17]
+SSR_PIN = 15  # GPIO pin(s) for controlling the Solid State Relay(s)
 
 # === WiFi Configuration ===
 WIFI_SSID = "your_wifi_ssid"
@@ -58,6 +62,14 @@ PID_KD = 160.0     # Derivative gain
 # - DO NOT use values < 10 seconds (causes flickering and SSR wear)
 #
 SSR_CYCLE_TIME = 20.0
+
+# Stagger delay between multiple SSRs (seconds)
+# When using multiple SSRs (SSR_PIN as list), this delay is applied between
+# each SSR state change to prevent large inrush current draw.
+# Recommended: 0.01 seconds (10ms) per SSR
+# With 10ms delay, up to 10 SSRs can be supported within the 0.1s update window
+# Set to 0 to disable staggering (not recommended for multiple SSRs)
+SSR_STAGGER_DELAY = 0.01
 
 # === Safety Limits ===
 # Maximum safe temperature (°C)

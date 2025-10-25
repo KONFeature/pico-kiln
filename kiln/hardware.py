@@ -123,28 +123,43 @@ class SSRController:
     Implements time-proportional control (slow PWM) for SSR control.
     This is appropriate for SSRs which should not be switched at high frequency.
 
+    Supports multiple SSRs with staggered switching to prevent inrush current.
+
     Example: 100% duty = ON for full cycle
              50% duty  = ON for half cycle, OFF for half cycle
              0% duty   = OFF for full cycle
     """
 
-    def __init__(self, pin, cycle_time=2.0):
+    def __init__(self, pin, cycle_time=2.0, stagger_delay=0.01):
         """
         Initialize SSR controller
 
         Args:
-            pin: GPIO pin connected to SSR (machine.Pin instance)
+            pin: GPIO pin(s) connected to SSR (machine.Pin instance or list of instances)
             cycle_time: Time-proportional cycle period in seconds (default: 2.0)
+            stagger_delay: Delay between SSR state changes in seconds (default: 0.01)
+                          Only applies when pin is a list (multiple SSRs)
         """
-        self.pin = pin
+        # Convert single pin to list for uniform handling
+        if isinstance(pin, list):
+            self.pins = pin
+        else:
+            self.pins = [pin]
+
         self.cycle_time = cycle_time
+        self.stagger_delay = stagger_delay
         self.duty_cycle = 0.0  # 0-100%
         self.cycle_start = time.time()
-        self.is_on = False
+        self.is_on = False  # True if ANY pin is on
 
-        # Ensure SSR starts OFF
-        self.pin.value(0)
-        print(f"SSR controller initialized (cycle time: {cycle_time}s)")
+        # Ensure all SSRs start OFF
+        for pin in self.pins:
+            pin.value(0)
+
+        if len(self.pins) > 1:
+            print(f"SSR controller initialized with {len(self.pins)} SSRs (cycle time: {cycle_time}s, stagger: {stagger_delay}s)")
+        else:
+            print(f"SSR controller initialized (cycle time: {cycle_time}s)")
 
     def set_output(self, percent):
         """
@@ -164,6 +179,9 @@ class SSRController:
 
         The SSR is turned ON for duty_cycle% of the cycle_time,
         then OFF for the remainder.
+
+        For multiple SSRs, state changes are staggered with delays to
+        prevent large inrush current draw.
         """
         current_time = time.time()
         elapsed = current_time - self.cycle_start
@@ -176,22 +194,58 @@ class SSRController:
         # Calculate when SSR should be ON
         on_time = (self.duty_cycle / 100.0) * self.cycle_time
 
-        # Update SSR state
-        if elapsed < on_time:
-            if not self.is_on:
-                self.pin.value(1)
-                self.is_on = True
-        else:
-            if self.is_on:
-                self.pin.value(0)
-                self.is_on = False
+        # Determine desired state (all pins should have same state in parallel config)
+        desired_state = elapsed < on_time
+
+        # Check if we need to change state
+        if desired_state != self.is_on:
+            # State transition needed - apply staggered switching
+            try:
+                for i, pin in enumerate(self.pins):
+                    # Only change pin if it's not already in the desired state
+                    # Read current pin state directly from hardware
+                    current_state = bool(pin.value())
+                    if current_state != desired_state:
+                        pin.value(1 if desired_state else 0)
+
+                        # Apply stagger delay between pins (except for last pin)
+                        # Only delay if we actually changed a pin and have more pins to process
+                        if i < len(self.pins) - 1 and len(self.pins) > 1 and self.stagger_delay > 0:
+                            time.sleep(self.stagger_delay)
+
+                self.is_on = desired_state
+            except Exception as e:
+                # Rollback: force all pins off on any error during state change
+                print(f"Error during SSR state change: {e}")
+                print("Emergency rollback: forcing all SSRs off")
+                try:
+                    for pin in self.pins:
+                        pin.value(0)
+                    self.is_on = False
+                    self.duty_cycle = 0
+                except:
+                    pass  # Best effort cleanup
+                raise  # Re-raise the original exception
 
     def force_off(self):
-        """Force SSR off immediately (emergency stop)"""
+        """
+        Force all SSRs off immediately (emergency stop)
+
+        NOTE: No stagger delay is applied for safety reasons.
+        All SSRs are turned off as quickly as possible.
+        """
         self.duty_cycle = 0
-        self.pin.value(0)
+
+        # Turn off all pins immediately (no stagger for safety)
+        for pin in self.pins:
+            pin.value(0)
+
         self.is_on = False
-        print("SSR forced OFF")
+
+        if len(self.pins) > 1:
+            print(f"All {len(self.pins)} SSRs forced OFF")
+        else:
+            print("SSR forced OFF")
 
     def get_state(self):
         """
@@ -206,8 +260,9 @@ class SSRController:
         }
 
     def __del__(self):
-        """Destructor - ensure SSR is turned off"""
+        """Destructor - ensure all SSRs are turned off"""
         try:
-            self.pin.value(0)
+            for pin in self.pins:
+                pin.value(0)
         except:
             pass
