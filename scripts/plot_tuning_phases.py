@@ -22,6 +22,7 @@ Example:
 import sys
 import csv
 from pathlib import Path
+from datetime import datetime
 import argparse
 
 try:
@@ -67,6 +68,20 @@ def load_tuning_data(csv_file):
                 step_names.append(row.get('step_name', ''))
             if 'step_index' in fieldnames:
                 step_indices.append(int(row['step_index']) if row.get('step_index', '') else -1)
+
+    # Fallback: if all elapsed_seconds are 0, calculate from timestamps
+    if all(t == 0.0 for t in time_data):
+        print("\n⚠️  Warning: elapsed_seconds column is all zeros")
+        print("Calculating elapsed time from timestamp column as fallback...")
+
+        start_dt = datetime.strptime(timestamps[0], '%Y-%m-%d %H:%M:%S')
+        time_data = []
+        for ts in timestamps:
+            dt = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+            elapsed = (dt - start_dt).total_seconds()
+            time_data.append(elapsed)
+
+        print(f"✓ Rebuilt elapsed time: 0s to {time_data[-1]:.1f}s\n")
 
     # Convert to minutes for better readability
     time_minutes = [t / 60 for t in time_data]
@@ -197,6 +212,15 @@ def plot_tuning_phases(data, phases, output_file=None):
         ax1.axvspan(phase['start_time'], phase['end_time'],
                    alpha=0.3, color=phase['color'])
 
+    # Draw step transition lines if step data available
+    if 'step_indices' in data and data['step_indices']:
+        prev_step = -1
+        for i, step_idx in enumerate(data['step_indices']):
+            if step_idx != prev_step and step_idx >= 0 and i > 0:
+                time_min = data['time_minutes'][i]
+                ax1.axvline(x=time_min, color='gray', linestyle='--', alpha=0.5, linewidth=1.5)
+                prev_step = step_idx
+
     # Plot temperature
     ax1.plot(data['time_minutes'], data['temp'], 'b-', linewidth=2, label='Temperature')
 
@@ -230,6 +254,15 @@ def plot_tuning_phases(data, phases, output_file=None):
         ax2.axvspan(phase['start_time'], phase['end_time'],
                    alpha=0.3, color=phase['color'])
 
+    # Draw step transition lines if step data available
+    if 'step_indices' in data and data['step_indices']:
+        prev_step = -1
+        for i, step_idx in enumerate(data['step_indices']):
+            if step_idx != prev_step and step_idx >= 0 and i > 0:
+                time_min = data['time_minutes'][i]
+                ax2.axvline(x=time_min, color='gray', linestyle='--', alpha=0.5, linewidth=1.5)
+                prev_step = step_idx
+
     ax2.fill_between(data['time_minutes'], 0, data['ssr_output'],
                      alpha=0.5, color='orange')
     ax2.plot(data['time_minutes'], data['ssr_output'],
@@ -250,19 +283,37 @@ def plot_tuning_phases(data, phases, output_file=None):
     # If we have step names from tuning program, show them
     if 'step_names' in data and data['step_names'] and 'step_indices' in data:
         prev_step = -1
-        step_y_positions = []
+        step_transitions = []
 
+        # Collect step transitions
         for i, step_idx in enumerate(data['step_indices']):
             if step_idx != prev_step and step_idx >= 0:
-                time_min = data['time_minutes'][i]
-                ax3.axvline(x=time_min, color='blue', linestyle='-', alpha=0.6, linewidth=2)
-
-                # Add step label
                 if i < len(data['step_names']) and data['step_names'][i]:
-                    ax3.text(time_min, 0.5, f" {data['step_names'][i]}",
-                            rotation=90, verticalalignment='center', fontsize=9, weight='bold')
-                    step_y_positions.append(time_min)
+                    step_transitions.append({
+                        'idx': i,
+                        'time': data['time_minutes'][i],
+                        'name': data['step_names'][i],
+                        'step_idx': step_idx
+                    })
                 prev_step = step_idx
+
+        # Draw step regions with alternating colors
+        for idx, trans in enumerate(step_transitions):
+            start_time = trans['time']
+            end_time = step_transitions[idx + 1]['time'] if idx + 1 < len(step_transitions) else data['time_minutes'][-1]
+            color = 'lightsteelblue' if idx % 2 == 0 else 'lavender'
+            ax3.axvspan(start_time, end_time, alpha=0.4, color=color)
+
+            # Add step label in the middle of the region
+            mid_time = (start_time + end_time) / 2
+            ax3.text(mid_time, 0.5, trans['name'],
+                    horizontalalignment='center', verticalalignment='center',
+                    fontsize=9, weight='bold', bbox=dict(boxstyle='round,pad=0.5',
+                    facecolor='white', edgecolor='gray', alpha=0.8))
+
+        # Draw vertical lines at transitions
+        for trans in step_transitions[1:]:  # Skip first transition
+            ax3.axvline(x=trans['time'], color='gray', linestyle='--', alpha=0.5, linewidth=1.5)
 
         ax3.set_ylabel('Tuning Steps', fontsize=12)
         ax3.set_ylim(0, 1)

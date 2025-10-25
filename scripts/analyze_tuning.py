@@ -41,20 +41,40 @@ def load_tuning_data(csv_file: str) -> Dict:
         csv_file: Path to CSV file with tuning data
 
     Returns:
-        Dictionary with all data arrays: time, temp, ssr_output, etc.
+        Dictionary with all data arrays: time, temp, ssr_output, timestamps,
+        and optionally step_names, step_indices, total_steps if available.
+        Also includes 'has_step_data' flag indicating if step columns exist.
     """
     time_data = []
     temp_data = []
     ssr_output_data = []
     timestamps = []
+    step_names = []
+    step_indices = []
+    total_steps_data = []
+    has_step_data = False
 
     with open(csv_file, 'r') as f:
         reader = csv.DictReader(f)
+
+        # Check if step columns exist in the CSV
+        fieldnames = reader.fieldnames or []
+        has_step_columns = all(col in fieldnames for col in ['step_name', 'step_index', 'total_steps'])
+
+        if has_step_columns:
+            has_step_data = True
+
         for row in reader:
             time_data.append(float(row['elapsed_seconds']))
             temp_data.append(float(row['current_temp_c']))
             ssr_output_data.append(float(row['ssr_output_percent']))
             timestamps.append(row['timestamp'])
+
+            # Load step data if available
+            if has_step_columns:
+                step_names.append(row['step_name'])
+                step_indices.append(int(row['step_index']))
+                total_steps_data.append(int(row['total_steps']))
 
     # Fallback: if all elapsed_seconds are 0, calculate from timestamps
     if all(t == 0.0 for t in time_data):
@@ -70,12 +90,21 @@ def load_tuning_data(csv_file: str) -> Dict:
 
         print(f"✓ Rebuilt elapsed time: 0s to {time_data[-1]:.1f}s\n")
 
-    return {
+    result = {
         'time': time_data,
         'temp': temp_data,
         'ssr_output': ssr_output_data,
-        'timestamps': timestamps
+        'timestamps': timestamps,
+        'has_step_data': has_step_data
     }
+
+    # Add step data if available
+    if has_step_data:
+        result['step_names'] = step_names
+        result['step_indices'] = step_indices
+        result['total_steps'] = total_steps_data
+
+    return result
 
 
 # =============================================================================
@@ -85,24 +114,31 @@ def load_tuning_data(csv_file: str) -> Dict:
 class Phase:
     """Represents a detected phase in the tuning data."""
     def __init__(self, start_idx: int, end_idx: int, phase_type: str,
-                 avg_ssr: float, temp_start: float, temp_end: float):
+                 avg_ssr: float, temp_start: float, temp_end: float,
+                 step_name: Optional[str] = None, step_index: Optional[int] = None):
         self.start_idx = start_idx
         self.end_idx = end_idx
         self.phase_type = phase_type  # 'heating', 'cooling', 'plateau'
         self.avg_ssr = avg_ssr
         self.temp_start = temp_start
         self.temp_end = temp_end
+        self.step_name = step_name  # Name of the tuning step (e.g., "heat_60pct_to_100C")
+        self.step_index = step_index  # Index of the tuning step (0, 1, 2, ...)
 
     def __repr__(self):
-        return f"Phase({self.phase_type}, SSR={self.avg_ssr:.1f}%, {self.temp_start:.1f}->{self.temp_end:.1f}°C)"
+        step_info = f", step={self.step_name}" if self.step_name else ""
+        return f"Phase({self.phase_type}, SSR={self.avg_ssr:.1f}%, {self.temp_start:.1f}->{self.temp_end:.1f}°C{step_info})"
 
 
 def detect_phases(data: Dict, plateau_threshold: float = 0.5) -> List[Phase]:
     """
     Detect different test phases from the data.
 
+    If step data is available (step_indices, step_names), uses explicit step boundaries
+    for perfect phase detection. Otherwise, falls back to heuristic SSR-based detection.
+
     Args:
-        data: Dictionary with time, temp, ssr_output arrays
+        data: Dictionary with time, temp, ssr_output arrays, and optionally step data
         plateau_threshold: Temperature change threshold (°C/min) for plateau detection
 
     Returns:
@@ -116,43 +152,99 @@ def detect_phases(data: Dict, plateau_threshold: float = 0.5) -> List[Phase]:
     if len(time) < 10:
         return phases
 
-    # Group by SSR power level changes (significant changes)
-    current_ssr = ssr[0]
-    phase_start = 0
+    # Check if step data is available for explicit phase detection
+    if data.get('has_step_data', False):
+        step_indices = data['step_indices']
+        step_names = data['step_names']
 
-    for i in range(1, len(ssr)):
-        # Detect significant SSR change (>10%)
-        if abs(ssr[i] - current_ssr) > 10 or i == len(ssr) - 1:
-            if i == len(ssr) - 1:
-                i = len(ssr) - 1
+        # Use explicit step transitions for phase boundaries
+        current_step_idx = step_indices[0]
+        phase_start = 0
 
-            # Calculate phase characteristics
-            phase_duration = time[i] - time[phase_start]
-            if phase_duration < 10:  # Skip very short phases
+        for i in range(1, len(step_indices)):
+            # Detect step transition or end of data
+            if step_indices[i] != current_step_idx or i == len(step_indices) - 1:
+                if i == len(step_indices) - 1:
+                    phase_end = i
+                else:
+                    phase_end = i - 1
+
+                # Calculate phase characteristics
+                phase_duration = time[phase_end] - time[phase_start]
+                if phase_duration < 1:  # Skip very short phases
+                    phase_start = i
+                    current_step_idx = step_indices[i]
+                    continue
+
+                avg_ssr = sum(ssr[phase_start:phase_end+1]) / (phase_end - phase_start + 1)
+                temp_start = temp[phase_start]
+                temp_end = temp[phase_end]
+                temp_change = temp_end - temp_start
+                step_name = step_names[phase_start]
+                step_index = step_indices[phase_start]
+
+                # Classify phase type from step name
+                step_name_lower = step_name.lower()
+                if 'cool' in step_name_lower:
+                    phase_type = 'cooling'
+                elif 'hold' in step_name_lower or 'plateau' in step_name_lower:
+                    phase_type = 'plateau'
+                elif 'heat' in step_name_lower:
+                    phase_type = 'heating'
+                else:
+                    # Fallback to rate-based classification
+                    rate_per_min = (temp_change / phase_duration) * 60 if phase_duration > 0 else 0
+                    if abs(rate_per_min) < plateau_threshold:
+                        phase_type = 'plateau'
+                    elif rate_per_min > plateau_threshold:
+                        phase_type = 'heating'
+                    else:
+                        phase_type = 'cooling'
+
+                phases.append(Phase(phase_start, phase_end, phase_type, avg_ssr,
+                                  temp_start, temp_end, step_name, step_index))
+
+                phase_start = i
+                current_step_idx = step_indices[i]
+
+    else:
+        # Fallback to heuristic SSR-based phase detection (for old CSV files)
+        current_ssr = ssr[0]
+        phase_start = 0
+
+        for i in range(1, len(ssr)):
+            # Detect significant SSR change (>10%)
+            if abs(ssr[i] - current_ssr) > 10 or i == len(ssr) - 1:
+                if i == len(ssr) - 1:
+                    i = len(ssr) - 1
+
+                # Calculate phase characteristics
+                phase_duration = time[i] - time[phase_start]
+                if phase_duration < 10:  # Skip very short phases
+                    phase_start = i
+                    current_ssr = ssr[i]
+                    continue
+
+                avg_ssr = sum(ssr[phase_start:i]) / (i - phase_start)
+                temp_start = temp[phase_start]
+                temp_end = temp[i-1]
+                temp_change = temp_end - temp_start
+
+                # Calculate heating/cooling rate
+                rate_per_min = (temp_change / phase_duration) * 60 if phase_duration > 0 else 0
+
+                # Classify phase type
+                if abs(rate_per_min) < plateau_threshold:
+                    phase_type = 'plateau'
+                elif rate_per_min > plateau_threshold:
+                    phase_type = 'heating'
+                else:
+                    phase_type = 'cooling'
+
+                phases.append(Phase(phase_start, i-1, phase_type, avg_ssr, temp_start, temp_end))
+
                 phase_start = i
                 current_ssr = ssr[i]
-                continue
-
-            avg_ssr = sum(ssr[phase_start:i]) / (i - phase_start)
-            temp_start = temp[phase_start]
-            temp_end = temp[i-1]
-            temp_change = temp_end - temp_start
-
-            # Calculate heating/cooling rate
-            rate_per_min = (temp_change / phase_duration) * 60 if phase_duration > 0 else 0
-
-            # Classify phase type
-            if abs(rate_per_min) < plateau_threshold:
-                phase_type = 'plateau'
-            elif rate_per_min > plateau_threshold:
-                phase_type = 'heating'
-            else:
-                phase_type = 'cooling'
-
-            phases.append(Phase(phase_start, i-1, phase_type, avg_ssr, temp_start, temp_end))
-
-            phase_start = i
-            current_ssr = ssr[i]
 
     return phases
 
@@ -170,11 +262,16 @@ class ThermalModel:
         self.heat_loss_h1: float = 0  # Linear heat loss coefficient
         self.heat_loss_h2: float = 0  # Quadratic heat loss coefficient
         self.ambient_temp: float = 25.0
+        self.gain_confidence: str = "LOW"  # Confidence level: HIGH, MEDIUM, LOW
+        self.gain_method: str = "fallback"  # Method used: plateau, heating, fallback
 
 
 def fit_thermal_model(data: Dict, phases: List[Phase]) -> ThermalModel:
     """
     Fit thermal model parameters from tuning data.
+
+    This function prioritizes plateau phases for steady-state gain calculation,
+    as they represent true equilibrium conditions where heat input equals heat loss.
 
     Args:
         data: Dictionary with time, temp, ssr_output arrays
@@ -190,11 +287,11 @@ def fit_thermal_model(data: Dict, phases: List[Phase]) -> ThermalModel:
     # Estimate ambient temperature from start
     model.ambient_temp = sum(temp[:min(10, len(temp))]) / min(10, len(temp))
 
-    # Find heating phases for parameter extraction
+    # Find heating phases for parameter extraction (dead time and time constant)
     heating_phases = [p for p in phases if p.phase_type == 'heating' and p.avg_ssr > 20]
 
     if heating_phases:
-        # Use the first significant heating phase
+        # Use the first significant heating phase for dead time and time constant
         phase = heating_phases[0]
         phase_time = time[phase.start_idx:phase.end_idx+1]
         phase_temp = temp[phase.start_idx:phase.end_idx+1]
@@ -224,15 +321,68 @@ def fit_thermal_model(data: Dict, phases: List[Phase]) -> ThermalModel:
                 break
 
         model.time_constant_s = phase_time[tau_idx] - phase_time[dead_time_idx] if tau_idx > dead_time_idx else 60.0
-
-        # Calculate steady-state gain (K) - °C per % SSR
-        if phase.avg_ssr > 0:
-            model.steady_state_gain = temp_change / phase.avg_ssr
     else:
         # Default values if no suitable heating phase found
         model.dead_time_s = 10.0
         model.time_constant_s = 120.0
+
+    # Calculate steady-state gain (K) - CRITICAL FIX: Use plateau phases preferentially
+    # At plateau equilibrium: Gain = (T_plateau - T_ambient) / SSR_plateau
+    plateau_phases = [p for p in phases if p.phase_type == 'plateau'
+                     and p.avg_ssr > 20  # Meaningful heating
+                     and (time[p.end_idx] - time[p.start_idx]) > 60]  # Sufficient duration
+
+    if plateau_phases:
+        # Use plateau phase - this gives the TRUE steady-state gain at equilibrium
+        # Select the plateau with highest temperature for better accuracy
+        best_plateau = max(plateau_phases, key=lambda p: p.temp_end)
+
+        plateau_temp = best_plateau.temp_end
+        temp_above_ambient = plateau_temp - model.ambient_temp
+        model.steady_state_gain = temp_above_ambient / best_plateau.avg_ssr
+
+        model.gain_method = "plateau"
+        model.gain_confidence = "HIGH"
+
+        # Validate gain is physically reasonable
+        if not (0.01 <= model.steady_state_gain <= 10.0):
+            model.gain_confidence = "MEDIUM"
+
+    elif heating_phases:
+        # Fallback: Estimate from heating phase with heat loss correction
+        # This is less accurate because it's contaminated by transient behavior
+        phase = heating_phases[0]
+        phase_time = time[phase.start_idx:phase.end_idx+1]
+        phase_temp = temp[phase.start_idx:phase.end_idx+1]
+
+        # Estimate heat loss during heating
+        avg_temp = (phase_temp[0] + phase_temp[-1]) / 2
+        temp_above_ambient = avg_temp - model.ambient_temp
+
+        # Rough estimate: assume 10% of heat input is lost to ambient
+        # (This is still imperfect but better than ignoring heat loss entirely)
+        loss_fraction = 0.1 * (temp_above_ambient / 100) if temp_above_ambient > 0 else 0.1
+
+        temp_change = phase_temp[-1] - phase_temp[0]
+        corrected_temp_change = temp_change / (1 - loss_fraction) if loss_fraction < 0.9 else temp_change
+
+        if phase.avg_ssr > 0:
+            model.steady_state_gain = corrected_temp_change / phase.avg_ssr
+        else:
+            model.steady_state_gain = 0.5
+
+        model.gain_method = "heating"
+        model.gain_confidence = "MEDIUM"
+
+        # Validate gain is physically reasonable
+        if not (0.01 <= model.steady_state_gain <= 10.0):
+            model.gain_confidence = "LOW"
+
+    else:
+        # No suitable phases - use conservative default
         model.steady_state_gain = 0.5
+        model.gain_method = "fallback"
+        model.gain_confidence = "LOW"
 
     # Fit cooling curve for heat loss parameters
     cooling_phases = [p for p in phases if p.phase_type == 'cooling']
@@ -574,6 +724,79 @@ def assess_test_quality(data: Dict, phases: List[Phase], model: ThermalModel) ->
         return 'POOR'
 
 
+def analyze_tuning_steps(data: Dict, phases: List[Phase]) -> Optional[List[Dict]]:
+    """
+    Analyze each tuning step individually to provide per-step metrics.
+
+    Only runs if step data is available in the CSV.
+
+    Args:
+        data: Dictionary with tuning data including step information
+        phases: List of detected phases (with step information)
+
+    Returns:
+        List of step analysis dictionaries, or None if step data unavailable
+    """
+    if not data.get('has_step_data', False):
+        return None
+
+    time = data['time']
+    temp = data['temp']
+    ssr = data['ssr_output']
+
+    # Group phases by step index
+    step_analyses = []
+    steps_seen = {}
+
+    for phase in phases:
+        if phase.step_index is None:
+            continue
+
+        if phase.step_index not in steps_seen:
+            # Calculate metrics for this step
+            step_time = time[phase.start_idx:phase.end_idx+1]
+            step_temp = temp[phase.start_idx:phase.end_idx+1]
+            step_ssr = ssr[phase.start_idx:phase.end_idx+1]
+
+            duration_s = step_time[-1] - step_time[0] if len(step_time) > 0 else 0
+            duration_min = duration_s / 60
+
+            temp_start = step_temp[0] if len(step_temp) > 0 else 0
+            temp_end = step_temp[-1] if len(step_temp) > 0 else 0
+            temp_change = temp_end - temp_start
+            temp_stability = max(step_temp) - min(step_temp) if len(step_temp) > 0 else 0
+
+            ssr_mean = sum(step_ssr) / len(step_ssr) if len(step_ssr) > 0 else 0
+            # Calculate SSR standard deviation
+            if len(step_ssr) > 1:
+                ssr_variance = sum((x - ssr_mean) ** 2 for x in step_ssr) / len(step_ssr)
+                ssr_std = math.sqrt(ssr_variance)
+            else:
+                ssr_std = 0
+
+            step_analyses.append({
+                'step_index': phase.step_index,
+                'step_name': phase.step_name,
+                'phase_type': phase.phase_type,
+                'duration_s': round(duration_s, 1),
+                'duration_min': round(duration_min, 1),
+                'temp_start': round(temp_start, 1),
+                'temp_end': round(temp_end, 1),
+                'temp_change': round(temp_change, 1),
+                'temp_stability': round(temp_stability, 2),
+                'ssr_mean': round(ssr_mean, 1),
+                'ssr_std': round(ssr_std, 2),
+                'data_points': len(step_time)
+            })
+
+            steps_seen[phase.step_index] = True
+
+    # Sort by step index
+    step_analyses.sort(key=lambda x: x['step_index'])
+
+    return step_analyses
+
+
 # =============================================================================
 # Output Generation
 # =============================================================================
@@ -608,7 +831,8 @@ def generate_results_json(data: Dict, phases: List[Phase], model: ThermalModel,
 
 def print_beautiful_report(data: Dict, phases: List[Phase], model: ThermalModel,
                           pid_methods: Dict[str, PIDParams], range_pids: List[Dict],
-                          test_quality: str, recommended_method: str):
+                          test_quality: str, recommended_method: str,
+                          step_analyses: Optional[List[Dict]] = None):
     """Print a beautifully formatted analysis report."""
 
     # Header
@@ -634,7 +858,8 @@ def print_beautiful_report(data: Dict, phases: List[Phase], model: ThermalModel,
     print(f"│  Dead Time (L):        {model.dead_time_s:8.2f} seconds")
     print(f"│  Time Constant (τ):    {model.time_constant_s:8.1f} seconds ({model.time_constant_s/60:.1f} min)")
     print(f"│  L/τ Ratio:            {model.dead_time_s/model.time_constant_s if model.time_constant_s > 0 else 0:8.3f}")
-    print(f"│  Steady-State Gain:    {model.steady_state_gain:8.4f} °C per % SSR")
+    print(f"│  Steady-State Gain:    {model.steady_state_gain:8.4f} °C per % SSR (from {model.gain_method})")
+    print(f"│  Gain Confidence:      {model.gain_confidence}")
     print(f"│  Heat Loss (linear):   {model.heat_loss_h1:8.6f}")
     print(f"│  Heat Loss (quad):     {model.heat_loss_h2:8.9f}")
     print(f"│  Ambient Temp:         {model.ambient_temp:8.1f}°C")
@@ -659,6 +884,23 @@ def print_beautiful_report(data: Dict, phases: List[Phase], model: ThermalModel,
         print("│")
         for rp in range_pids:
             print(f"│  {rp['name']:4} ({rp['range']:9}°C) - Kp:{rp['kp']:7.3f} Ki:{rp['ki']:7.4f} Kd:{rp['kd']:7.3f}  [{rp['samples']:4} samples]")
+        print("└" + "─" * 79)
+
+    # Per-Step Analysis
+    if step_analyses:
+        print("\n┌─ PER-STEP ANALYSIS " + "─" * 59)
+        print("│  Detailed breakdown of each tuning step")
+        print("│")
+        for step in step_analyses:
+            print(f"│  STEP {step['step_index']}: {step['step_name']}")
+            print("│  " + "─" * 76)
+            print(f"│    Duration:     {step['duration_min']:.1f} min ({step['duration_s']:.0f}s)")
+            temp_sign = '+' if step['temp_change'] >= 0 else ''
+            print(f"│    Temperature:  {step['temp_start']:.1f}°C → {step['temp_end']:.1f}°C (Δ{temp_sign}{step['temp_change']:.1f}°C)")
+            print(f"│    Stability:    ±{step['temp_stability']:.2f}°C")
+            print(f"│    SSR Output:   {step['ssr_mean']:.1f}% (±{step['ssr_std']:.2f}%)")
+            print(f"│    Data Points:  {step['data_points']}")
+            print("│")
         print("└" + "─" * 79)
 
     # Recommendations
@@ -784,6 +1026,16 @@ def main():
         test_quality = assess_test_quality(data, phases, model)
         print(f"✓ Test quality: {test_quality}")
 
+        # Analyze per-step metrics (if step data available)
+        step_analyses = None
+        if data.get('has_step_data', False):
+            print("📋 Analyzing per-step metrics...")
+            step_analyses = analyze_tuning_steps(data, phases)
+            if step_analyses:
+                print(f"✓ Generated analysis for {len(step_analyses)} steps")
+        else:
+            print("  (No step data available - using heuristic phase detection)")
+
         # Select recommended method
         recommended_method = select_recommended_method(model, test_quality)
 
@@ -806,7 +1058,7 @@ def main():
 
         # Print beautiful report
         print_beautiful_report(data, phases, model, pid_methods, range_pids,
-                              test_quality, recommended_method)
+                              test_quality, recommended_method, step_analyses)
 
         # Print hint about config snippet generator
         if range_pids:
