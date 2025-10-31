@@ -106,14 +106,7 @@ class TemperatureSensor:
 
         except Exception as e:
             self.fault_count += 1
-
-            # Check if this is an SPI lock timeout (bus contention issue)
-            error_type = type(e).__name__
-            if "SPILockTimeout" in error_type:
-                print(f"⚠️  SPI bus lock timeout ({self.fault_count}/{self.max_fault_count})")
-                print("    Possible Core 2 interference or bus contention")
-            else:
-                print(f"Temperature read error ({self.fault_count}/{self.max_fault_count}): {e}")
+            print(f"Temperature read error ({self.fault_count}/{self.max_fault_count}): {e}")
 
             if self.fault_count >= self.max_fault_count:
                 # Persistent fault - raise error
@@ -236,38 +229,27 @@ class SSRController:
         # Calculate when SSR should be ON
         on_time = (self.duty_cycle / 100.0) * self.cycle_time
 
-        # Determine desired state (all pins should have same state in parallel config)
-        desired_state = elapsed < on_time
-
-        # Check if we need to change state
-        if desired_state != self.is_on:
-            # State transition needed - apply staggered switching
-            try:
+        # Update SSR state based on simple time-proportional logic
+        if elapsed < on_time:
+            # Should be ON
+            if not self.is_on:
+                # Turn ON with staggered switching for multiple SSRs
                 for i, pin in enumerate(self.pins):
-                    # Only change pin if it's not already in the desired state
-                    # Read current pin state directly from hardware
-                    current_state = bool(pin.value())
-                    if current_state != desired_state:
-                        pin.value(1 if desired_state else 0)
-
-                        # Apply stagger delay between pins (except for last pin)
-                        # Only delay if we actually changed a pin and have more pins to process
-                        if i < len(self.pins) - 1 and len(self.pins) > 1 and self.stagger_delay > 0:
-                            time.sleep(self.stagger_delay)
-
-                self.is_on = desired_state
-            except Exception as e:
-                # Rollback: force all pins off on any error during state change
-                print(f"Error during SSR state change: {e}")
-                print("Emergency rollback: forcing all SSRs off")
-                try:
-                    for pin in self.pins:
-                        pin.value(0)
-                    self.is_on = False
-                    self.duty_cycle = 0
-                except:
-                    pass  # Best effort cleanup
-                raise  # Re-raise the original exception
+                    pin.value(1)
+                    # Apply stagger delay between pins (except last)
+                    if i < len(self.pins) - 1 and self.stagger_delay > 0:
+                        time.sleep(self.stagger_delay)
+                self.is_on = True
+        else:
+            # Should be OFF
+            if self.is_on:
+                # Turn OFF with staggered switching for multiple SSRs
+                for i, pin in enumerate(self.pins):
+                    pin.value(0)
+                    # Apply stagger delay between pins (except last)
+                    if i < len(self.pins) - 1 and self.stagger_delay > 0:
+                        time.sleep(self.stagger_delay)
+                self.is_on = False
 
     def force_off(self):
         """
@@ -277,12 +259,11 @@ class SSRController:
         All SSRs are turned off as quickly as possible.
         """
         self.duty_cycle = 0
+        self.is_on = False
 
         # Turn off all pins immediately (no stagger for safety)
         for pin in self.pins:
             pin.value(0)
-
-        self.is_on = False
 
         if len(self.pins) > 1:
             print(f"All {len(self.pins)} SSRs forced OFF")
