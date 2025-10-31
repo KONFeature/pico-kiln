@@ -189,13 +189,13 @@ class ZieglerNicholsTuner:
         # Set default max_temp based on mode if not provided
         if max_temp is None:
             if mode == MODE_SAFE:
-                max_temp = 100
-            elif mode == MODE_STANDARD:
-                max_temp = 150
-            elif mode == MODE_THOROUGH:
                 max_temp = 200
+            elif mode == MODE_STANDARD:
+                max_temp = 900
+            elif mode == MODE_THOROUGH:
+                max_temp = 900
             elif mode == MODE_HIGH_TEMP:
-                max_temp = 500
+                max_temp = 900
         
         self.max_temp = max_temp
         self.max_time = max_time
@@ -320,7 +320,7 @@ class ZieglerNicholsTuner:
                     TuningStep(
                         step_name=f"cool_30C",
                         ssr_percent=0,
-                        target_temp=30,  # Cool 30°C below peak
+                        target_temp=50,  # Cool 30°C below peak
                         hold_time=0,
                         timeout=1200
                     )
@@ -404,7 +404,7 @@ class ZieglerNicholsTuner:
                 TuningStep(
                     step_name="heat_100pct_to_max",
                     ssr_percent=100,
-                    target_temp=min(500, self.max_temp),
+                    target_temp=min(600, self.max_temp),
                     hold_time=300,  # Hold 5 min at max
                     timeout=2700  # 45 min timeout
                 ),
