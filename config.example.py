@@ -83,6 +83,20 @@ MAX_TEMP_ERROR = 50
 # Temperature units: "c" for Celsius, "f" for Fahrenheit
 TEMP_UNITS = "c"
 
+# Thermocouple type
+# The MAX31856 supports various thermocouple types (B, E, J, K, N, R, S, T)
+# Import ThermocoupleType from adafruit_max31856 to specify your thermocouple type
+# Common types:
+#   - ThermocoupleType.K: Type K (default) - General purpose, -270°C to 1372°C
+#   - ThermocoupleType.R: Type R - High temp platinum, 0°C to 1768°C (ceramics/kilns)
+#   - ThermocoupleType.S: Type S - High temp platinum, 0°C to 1768°C (ceramics/kilns)
+#   - ThermocoupleType.J: Type J - Iron-constantan, -210°C to 1200°C
+#   - ThermocoupleType.T: Type T - Copper-constantan, -270°C to 400°C
+#
+# Example configuration:
+from adafruit_max31856 import ThermocoupleType
+THERMOCOUPLE_TYPE = ThermocoupleType.K  # Change to match your thermocouple
+
 # Thermocouple calibration offset (°C)
 # Add this value to all temperature readings for calibration
 THERMOCOUPLE_OFFSET = 0.0

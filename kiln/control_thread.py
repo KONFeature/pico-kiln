@@ -24,7 +24,7 @@ class ControlThread:
     All hardware access happens exclusively in this thread to avoid race conditions.
     """
 
-    def __init__(self, command_queue, status_queue, config):
+    def __init__(self, command_queue, status_queue, config, error_log=None):
         """
         Initialize control thread
 
@@ -32,10 +32,12 @@ class ControlThread:
             command_queue: ThreadSafeQueue for receiving commands from Core 2
             status_queue: ThreadSafeQueue for sending status updates to Core 2
             config: Configuration object with hardware and control parameters
+            error_log: ErrorLog instance for cross-core error logging (optional)
         """
         self.command_queue = command_queue
         self.status_queue = status_queue
         self.config = config
+        self.error_log = error_log
         self.running = True
 
         # Hardware components (initialized in setup)
@@ -98,7 +100,7 @@ class ControlThread:
 
         # Initialize temperature sensor
         self.temp_sensor = TemperatureSensor(
-            spi, cs_pin, offset=self.config.THERMOCOUPLE_OFFSET
+            spi, cs_pin, thermocouple_type=self.config.THERMOCOUPLE_TYPE, offset=self.config.THERMOCOUPLE_OFFSET, error_log=self.error_log
         )
 
         # Initialize SSR controller
@@ -106,7 +108,8 @@ class ControlThread:
         self.ssr_controller = SSRController(
             self.ssr_pin,
             cycle_time=self.config.SSR_CYCLE_TIME,
-            stagger_delay=stagger_delay
+            stagger_delay=stagger_delay,
+            error_log=self.error_log
         )
 
         # Initialize PID controller
@@ -546,7 +549,7 @@ class ControlThread:
         self.running = False
 
 
-def start_control_thread(command_queue, status_queue, config):
+def start_control_thread(command_queue, status_queue, config, error_log=None):
     """
     Thread entry point - starts the control loop
 
@@ -557,6 +560,7 @@ def start_control_thread(command_queue, status_queue, config):
         command_queue: ThreadSafeQueue for receiving commands
         status_queue: ThreadSafeQueue for sending status updates
         config: Configuration object
+        error_log: ErrorLog instance for cross-core error logging (optional)
     """
-    control = ControlThread(command_queue, status_queue, config)
+    control = ControlThread(command_queue, status_queue, config, error_log)
     control.run()

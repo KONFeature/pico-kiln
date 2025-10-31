@@ -11,7 +11,7 @@ class TemperatureSensor:
     and fault detection.
     """
 
-    def __init__(self, spi, cs_pin, thermocouple_type=None, offset=0.0):
+    def __init__(self, spi, cs_pin, thermocouple_type=None, offset=0.0, error_log=None):
         """
         Initialize temperature sensor
 
@@ -20,7 +20,9 @@ class TemperatureSensor:
             cs_pin: Chip select pin (wrapped for adafruit library)
             thermocouple_type: Type of thermocouple (default: K-type)
             offset: Temperature offset for calibration (°C)
+            error_log: Optional ErrorLog instance for cross-core error logging
         """
+        self.error_log = error_log
         try:
             import adafruit_max31856
             from adafruit_max31856 import ThermocoupleType
@@ -33,31 +35,29 @@ class TemperatureSensor:
                 spi, cs_pin, thermocouple_type=thermocouple_type
             )
             self.offset = offset
-            self.last_good_temp = 20.0  # Reasonable default
+            self.last_good_temp = None  # No fake default - require first valid read
+            self.initialized = False  # Track if we've ever had a valid reading
             self.fault_count = 0
             self.degraded_mode_threshold = 3  # Enter degraded mode after this many faults
             self.max_fault_count = 10  # Fatal error after this many faults
             self.degraded_mode = False  # Track if we're in degraded mode
-            self.last_degraded_warning = 0  # Timestamp of last warning
 
             # Perform initial conversion to clear power-up faults
             # The chip needs ~160ms to complete first conversion
-            print("Temperature sensor initialized, waiting for first conversion...")
-            time.sleep(0.2)  # Wait for first conversion to complete
+            print("Temperature sensor initializing...")
+            time.sleep(0.2)  # Wait for first conversion to complete (MAX31856 requirement)
 
-            # Read and discard first temperature to clear any power-up faults
-            # Try a few times in case of transient power-up issues
-            for attempt in range(3):
-                try:
-                    _ = self.sensor.temperature
-                    print("Temperature sensor ready")
-                    break
-                except Exception as e:
-                    if attempt < 2:
-                        print(f"Temperature read attempt {attempt+1} failed: {e}, retrying...")
-                        time.sleep(0.5)
-                    else:
-                        print(f"Temperature read failed after 3 attempts (may work later): {e}")
+            # Attempt initial read (don't block startup on retries - will retry during operation)
+            try:
+                temp = self.sensor.temperature
+                if temp is not None and -50 <= temp <= 1500:
+                    self.last_good_temp = temp + self.offset
+                    self.initialized = True
+                    print(f"Temperature sensor ready: {self.last_good_temp:.1f}°C")
+                else:
+                    print("Sensor init: Invalid first reading, will retry during operation")
+            except Exception as e:
+                print(f"Sensor init: First read failed ({e}), will retry during operation")
 
         except Exception as e:
             print(f"Error initializing temperature sensor: {e}")
@@ -71,7 +71,7 @@ class TemperatureSensor:
             Temperature in Celsius
 
         Raises:
-            Exception if persistent sensor fault detected
+            Exception if persistent sensor fault detected or sensor not initialized
         """
         try:
             # Read temperature
@@ -86,12 +86,17 @@ class TemperatureSensor:
                 fault_list = [k for k, v in faults.items() if v]
                 raise Exception(f"Thermocouple faults: {', '.join(fault_list)}")
 
-            # Apply calibration offset
-            temp += self.offset
-
             # Sanity check: temperature should be in reasonable range
             if temp < -50 or temp > 1500:
                 raise Exception(f"Temperature {temp}°C out of reasonable range")
+
+            # Apply calibration offset
+            temp += self.offset
+
+            # First successful read - mark as initialized
+            if not self.initialized:
+                print(f"✅ Temperature sensor initialized: {temp:.1f}°C")
+                self.initialized = True
 
             # Success - gradually decay fault counter and save value
             if self.fault_count > 0:
@@ -106,30 +111,33 @@ class TemperatureSensor:
 
         except Exception as e:
             self.fault_count += 1
-            print(f"Temperature read error ({self.fault_count}/{self.max_fault_count}): {e}")
+
+            # SAFETY: If never initialized, don't allow heating - fail immediately
+            if not self.initialized:
+                error_msg = f"Temperature sensor failed to initialize: {e}"
+                self._log_error(error_msg)
+                raise Exception(error_msg)
+
+            # Log error
+            self._log_error(f"Temperature read error ({self.fault_count}/{self.max_fault_count}): {e}")
 
             if self.fault_count >= self.max_fault_count:
                 # Persistent fault - raise error
-                raise Exception(f"Persistent sensor fault after {self.max_fault_count} attempts: {e}")
+                error_msg = f"Persistent sensor fault after {self.max_fault_count} attempts: {e}"
+                self._log_error(error_msg)
+                raise Exception(error_msg)
             elif self.fault_count >= self.degraded_mode_threshold:
                 # Enter degraded mode - continue but signal for reduced SSR output
                 if not self.degraded_mode:
-                    print("⚠️  DEGRADED MODE: Temperature sensor experiencing persistent issues")
-                    print("    Continuing with last good temperature but reducing SSR output for safety")
                     self.degraded_mode = True
-                    self.last_degraded_warning = time.time()
-                else:
-                    # Periodic warning every 60 seconds
-                    current_time = time.time()
-                    if current_time - self.last_degraded_warning >= 60:
-                        print(f"⚠️  Still in DEGRADED MODE ({self.fault_count}/{self.max_fault_count} faults)")
-                        self.last_degraded_warning = current_time
+                    self._log_error(f"⚠️  DEGRADED MODE: Sensor issues detected (fault {self.fault_count}/{self.max_fault_count})")
+                    self._log_error("    Using last good temperature, reducing SSR output for safety")
 
-                print(f"Using last good temperature: {self.last_good_temp}°C")
+                print(f"Using last good temperature: {self.last_good_temp:.1f}°C")
                 return self.last_good_temp
             else:
-                # Transient fault (phase 1) - return last good value
-                print(f"Using last good temperature: {self.last_good_temp}°C")
+                # Transient fault - return last good value (don't spam logs for transient faults)
+                print(f"Using last good temperature: {self.last_good_temp:.1f}°C")
                 return self.last_good_temp
 
     def get_last_temp(self):
@@ -150,6 +158,12 @@ class TemperatureSensor:
         self.fault_count = 0
         self.degraded_mode = False
 
+    def _log_error(self, message):
+        """Log error to both console and error log (if available)"""
+        print(message)
+        if self.error_log:
+            self.error_log.log_error('TemperatureSensor', message)
+
 
 class SSRController:
     """
@@ -165,7 +179,7 @@ class SSRController:
              0% duty   = OFF for full cycle
     """
 
-    def __init__(self, pin, cycle_time=2.0, stagger_delay=0.01):
+    def __init__(self, pin, cycle_time=2.0, stagger_delay=0.01, error_log=None):
         """
         Initialize SSR controller
 
@@ -174,18 +188,23 @@ class SSRController:
             cycle_time: Time-proportional cycle period in seconds (default: 2.0)
             stagger_delay: Delay between SSR state changes in seconds (default: 0.01)
                           Only applies when pin is a list (multiple SSRs)
+            error_log: Optional ErrorLog instance for cross-core error logging
         """
+        self.error_log = error_log
+
         # Convert single pin to list for uniform handling
         if isinstance(pin, list):
             self.pins = pin
         else:
             self.pins = [pin]
 
-        self.cycle_time = cycle_time
+        self.cycle_time_ms = int(cycle_time * 1000)  # Store as milliseconds
         self.stagger_delay = stagger_delay
         self.duty_cycle = 0.0  # 0-100%
-        self.cycle_start = time.time()
-        self.is_on = False  # True if ANY pin is on
+        self.cycle_start = time.ticks_ms()  # Use ticks for efficiency
+
+        # Track individual pin states
+        self.pin_states = [False] * len(self.pins)
 
         # Ensure all SSRs start OFF
         for pin in self.pins:
@@ -218,38 +237,39 @@ class SSRController:
         For multiple SSRs, state changes are staggered with delays to
         prevent large inrush current draw.
         """
-        current_time = time.time()
-        elapsed = current_time - self.cycle_start
+        current_time = time.ticks_ms()
+        elapsed = time.ticks_diff(current_time, self.cycle_start)
 
-        # Check if we need to start a new cycle
-        if elapsed >= self.cycle_time:
-            self.cycle_start = current_time
-            elapsed = 0
+        # Check if we need to start a new cycle (fix drift by using ticks_add)
+        if elapsed >= self.cycle_time_ms:
+            self.cycle_start = time.ticks_add(self.cycle_start, self.cycle_time_ms)
+            elapsed = time.ticks_diff(current_time, self.cycle_start)
 
         # Calculate when SSR should be ON
-        on_time = (self.duty_cycle / 100.0) * self.cycle_time
+        on_time_ms = int((self.duty_cycle / 100.0) * self.cycle_time_ms)
+
+        # Determine desired state
+        should_be_on = elapsed < on_time_ms
+        current_state = any(self.pin_states)
 
         # Update SSR state based on simple time-proportional logic
-        if elapsed < on_time:
-            # Should be ON
-            if not self.is_on:
-                # Turn ON with staggered switching for multiple SSRs
-                for i, pin in enumerate(self.pins):
-                    pin.value(1)
-                    # Apply stagger delay between pins (except last)
-                    if i < len(self.pins) - 1 and self.stagger_delay > 0:
-                        time.sleep(self.stagger_delay)
-                self.is_on = True
-        else:
-            # Should be OFF
-            if self.is_on:
-                # Turn OFF with staggered switching for multiple SSRs
-                for i, pin in enumerate(self.pins):
-                    pin.value(0)
-                    # Apply stagger delay between pins (except last)
-                    if i < len(self.pins) - 1 and self.stagger_delay > 0:
-                        time.sleep(self.stagger_delay)
-                self.is_on = False
+        if should_be_on and not current_state:
+            # Turn ON with staggered switching for multiple SSRs
+            for i, pin in enumerate(self.pins):
+                pin.value(1)
+                self.pin_states[i] = True
+                # Apply stagger delay between pins (except last)
+                if i < len(self.pins) - 1 and self.stagger_delay > 0:
+                    time.sleep(self.stagger_delay)
+
+        elif not should_be_on and current_state:
+            # Turn OFF with staggered switching for multiple SSRs
+            for i, pin in enumerate(self.pins):
+                pin.value(0)
+                self.pin_states[i] = False
+                # Apply stagger delay between pins (except last)
+                if i < len(self.pins) - 1 and self.stagger_delay > 0:
+                    time.sleep(self.stagger_delay)
 
     def force_off(self):
         """
@@ -259,11 +279,11 @@ class SSRController:
         All SSRs are turned off as quickly as possible.
         """
         self.duty_cycle = 0
-        self.is_on = False
 
         # Turn off all pins immediately (no stagger for safety)
-        for pin in self.pins:
+        for i, pin in enumerate(self.pins):
             pin.value(0)
+            self.pin_states[i] = False
 
         if len(self.pins) > 1:
             print(f"All {len(self.pins)} SSRs forced OFF")
@@ -275,17 +295,24 @@ class SSRController:
         Get current SSR state
 
         Returns:
-            Dictionary with duty_cycle and is_on status
+            Dictionary with duty_cycle, is_on status, and individual pin states
         """
         return {
             'duty_cycle': self.duty_cycle,
-            'is_on': self.is_on
+            'is_on': any(self.pin_states),
+            'pin_states': self.pin_states.copy() if len(self.pins) > 1 else None
         }
+
+    def _log_error(self, message):
+        """Log error to both console and error log (if available)"""
+        print(message)
+        if self.error_log:
+            self.error_log.log_error('SSRController', message)
 
     def __del__(self):
         """Destructor - ensure all SSRs are turned off"""
         try:
             for pin in self.pins:
                 pin.value(0)
-        except:
-            pass
+        except Exception as e:
+            self._log_error(f"Error in SSR destructor: {e}")

@@ -19,6 +19,62 @@ from server.data_logger import DataLogger
 # Import control thread
 from kiln.control_thread import start_control_thread
 
+def format_timestamp(timestamp):
+    """Format timestamp for error log file"""
+    try:
+        # MicroPython's localtime returns (year, month, day, hour, min, sec, weekday, yearday)
+        t = time.localtime(timestamp)
+        return f"{t[0]}-{t[1]:02d}-{t[2]:02d} {t[3]:02d}:{t[4]:02d}:{t[5]:02d}"
+    except:
+        # Fallback if localtime not available
+        return f"{int(timestamp)}"
+
+async def error_logger_loop(error_log):
+    """
+    Async loop that periodically flushes errors from queue to log file
+
+    Runs on Core 2 to avoid blocking Core 1's control loop with I/O operations.
+
+    Args:
+        error_log: ErrorLog instance shared with Core 1
+    """
+    print("[Error Logger] Starting error logger loop")
+    error_file = '/errors.log'
+    flush_interval = 10  # Flush every 10 seconds
+
+    while True:
+        try:
+            # Get all pending errors from queue
+            errors, dropped_count = error_log.get_errors()
+
+            if errors or dropped_count > 0:
+                # Write to file
+                try:
+                    with open(error_file, 'a') as f:
+                        # Report dropped errors if any
+                        if dropped_count > 0:
+                            timestamp_str = format_timestamp(time.time())
+                            f.write(f"[{timestamp_str}] [ErrorLog] WARNING: {dropped_count} errors dropped due to full queue\n")
+
+                        # Write all errors
+                        for error in errors:
+                            timestamp_str = format_timestamp(error['timestamp'])
+                            f.write(f"[{timestamp_str}] [{error['source']}] {error['message']}\n")
+
+                    if errors:
+                        print(f"[Error Logger] Flushed {len(errors)} errors to {error_file}")
+
+                except Exception as e:
+                    print(f"[Error Logger] Failed to write error log: {e}")
+                    # Don't crash the logger - just skip this flush and try again later
+
+        except Exception as e:
+            print(f"[Error Logger] Error in logger loop: {e}")
+            # Don't crash - keep running
+
+        # Wait before next flush
+        await asyncio.sleep(flush_interval)
+
 async def main():
     """
     Main entry point for multi-threaded kiln controller
@@ -33,7 +89,7 @@ async def main():
 
     # Create communication queues for inter-thread communication
     print("[Main] Creating communication queues...")
-    from kiln.comms import ThreadSafeQueue
+    from kiln.comms import ThreadSafeQueue, ErrorLog
 
     # Command queue: Core 2 -> Core 1
     # Small queue since commands are infrequent
@@ -43,11 +99,15 @@ async def main():
     # Larger queue to buffer status updates
     status_queue = ThreadSafeQueue(maxsize=100)
 
+    # Error log: Core 1 -> Core 2
+    # Queue for cross-core error logging
+    error_log = ErrorLog(max_queue_size=50)
+
     print("[Main] Communication queues created")
 
     # Start control thread on Core 1
     print("[Main] Starting control thread on Core 1...")
-    _thread.start_new_thread(start_control_thread, (command_queue, status_queue, config))
+    _thread.start_new_thread(start_control_thread, (command_queue, status_queue, config, error_log))
     print("[Main] Control thread started")
 
     # Give control thread time to initialize hardware
@@ -110,10 +170,13 @@ async def main():
     print("[Main] Starting WiFi monitor...")
     wifi_task = asyncio.create_task(wifi_mgr.monitor())
 
+    print("[Main] Starting error logger...")
+    error_logger_task = asyncio.create_task(error_logger_loop(error_log))
+
     print("=" * 50)
     print(f"System ready!")
     print(f"Core 1: Control thread (temp, PID, SSR)")
-    print(f"Core 2: Web server + WiFi + Status receiver + Data logger")
+    print(f"Core 2: Web server + WiFi + Status receiver + Data logger + Error logger")
     if ip_address != "N/A":
         print(f"Access web interface at: http://{ip_address}")
     else:
@@ -122,7 +185,7 @@ async def main():
     print("=" * 50)
 
     # Run all async tasks on Core 2
-    await asyncio.gather(receiver_task, server_task, wifi_task)
+    await asyncio.gather(receiver_task, server_task, wifi_task, error_logger_task)
 
 if __name__ == "__main__":
     try:
