@@ -555,6 +555,9 @@ async def start_server(cmd_queue):
 
     print("[Web Server] HTTP server listening!")
 
+    socket_error_count = 0
+    max_socket_errors = 50  # Allow 5 seconds of errors (50 * 0.1s)
+
     while True:
         try:
             # Check if we're at connection limit before accepting
@@ -563,10 +566,36 @@ async def start_server(cmd_queue):
                 continue
 
             conn, addr = s.accept()
+            socket_error_count = 0  # Reset on successful accept
             # Handle each client in a separate task
             asyncio.create_task(handle_client(conn, addr))
-        except OSError:
-            # No connection available, yield to other tasks
-            pass
+
+        except OSError as e:
+            # Check if it's a "no connection" error (errno 11 EAGAIN) vs real error
+            if hasattr(e, 'args') and len(e.args) > 0 and e.args[0] == 11:
+                # EAGAIN - no connection available (normal for non-blocking socket)
+                pass
+            else:
+                # Real socket error - count and potentially recover
+                socket_error_count += 1
+                if socket_error_count <= 3:  # Only print first few errors to avoid spam
+                    print(f"[Web Server] Socket error ({socket_error_count}/{max_socket_errors}): {e}")
+
+                if socket_error_count >= max_socket_errors:
+                    print("[Web Server] Too many socket errors - attempting server restart...")
+                    try:
+                        # Try to restart the server socket
+                        s.close()
+                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        s.bind(('', config.WEB_SERVER_PORT))
+                        s.listen(5)
+                        s.setblocking(False)
+                        socket_error_count = 0
+                        print("[Web Server] Server socket restarted successfully")
+                    except Exception as restart_error:
+                        print(f"[Web Server] Server restart failed: {restart_error}")
+                        print("[Web Server] Giving up on web server - Core 1 continues")
+                        return  # Exit web server but let Core 1 continue
 
         await asyncio.sleep(0.1)

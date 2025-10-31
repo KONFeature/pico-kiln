@@ -54,6 +54,9 @@ class ControlThread:
         self.last_status_update = 0
         self.status_update_interval = 2.0  # Send status updates every 2s
 
+        # Fallback status storage for queue full edge cases
+        self.last_status_fallback = None
+
     def setup_hardware(self):
         """
         Initialize all hardware components
@@ -144,6 +147,41 @@ class ControlThread:
 
         print("[Control Thread] All hardware initialized successfully")
 
+    def load_profile_with_retry(self, filename, max_attempts=3):
+        """
+        Load profile from file with retry logic
+
+        Implements exponential backoff retry to handle transient filesystem errors.
+        This is critical for long-running operations where a single filesystem
+        glitch shouldn't abort the entire program.
+
+        Args:
+            filename: Profile filename (with path, e.g., "profiles/cone6.json")
+            max_attempts: Maximum number of retry attempts (default: 3)
+
+        Returns:
+            Profile object if successful
+
+        Raises:
+            Exception: If all retry attempts fail
+        """
+        for attempt in range(max_attempts):
+            try:
+                profile = Profile.load_from_file(filename)
+                if attempt > 0:
+                    print(f"[Control Thread] Profile loaded successfully after {attempt + 1} attempts")
+                return profile
+            except Exception as e:
+                if attempt < max_attempts - 1:
+                    backoff_time = 0.5 * (attempt + 1)  # Exponential backoff: 0.5s, 1.0s
+                    print(f"[Control Thread] Profile load attempt {attempt + 1}/{max_attempts} failed: {e}")
+                    print(f"[Control Thread] Retrying in {backoff_time:.1f}s...")
+                    time.sleep(backoff_time)
+                else:
+                    # All retries exhausted
+                    print(f"[Control Thread] Profile load failed after {max_attempts} attempts")
+                    raise
+
     def handle_command(self, command):
         """
         Process command from Core 2
@@ -162,7 +200,7 @@ class ControlThread:
                     return
 
                 try:
-                    profile = Profile.load_from_file(f"profiles/{profile_filename}")
+                    profile = self.load_profile_with_retry(f"profiles/{profile_filename}")
                     self.controller.run_profile(profile)
                     print(f"[Control Thread] Started profile: {profile.name}")
                 except Exception as e:
@@ -179,7 +217,7 @@ class ControlThread:
                     return
 
                 try:
-                    profile = Profile.load_from_file(f"profiles/{profile_filename}")
+                    profile = self.load_profile_with_retry(f"profiles/{profile_filename}")
                     self.controller.resume_profile(profile, elapsed_seconds)
                     print(f"[Control Thread] Resumed profile: {profile.name} at {elapsed_seconds:.1f}s")
                 except Exception as e:
@@ -285,8 +323,18 @@ class ControlThread:
                 # Queue full - clear old statuses and try again
                 cleared = QueueHelper.clear(self.status_queue)
                 if cleared > 0:
-                    print(f"[Control Thread] CRITICAL: Cleared {cleared} old status messages - Core 2 is not consuming status!")
-                QueueHelper.put_nowait(self.status_queue, status)
+                    # Minimal logging to avoid USB contention
+                    print("[Control Thread] CRITICAL: Queue cleared - Core 2 not consuming!")
+
+                # Try one more time after clearing
+                if not QueueHelper.put_nowait(self.status_queue, status):
+                    # Still failed - store in fallback and continue
+                    # This indicates Core 2 is likely compromised, but Core 1 continues
+                    self.last_status_fallback = status
+                    print("[Control Thread] WARNING: Status stored in fallback - queue still full")
+                else:
+                    # Successfully sent after clearing
+                    self.last_status_fallback = None
 
         except Exception as e:
             print(f"[Control Thread] Error sending status: {e}")
@@ -330,6 +378,11 @@ class ControlThread:
                 self.controller.target_temp = self.tuner.current_step.target_temp
             else:
                 self.controller.target_temp = 0
+
+            # Apply degraded mode safety reduction if sensor is experiencing issues
+            if self.temp_sensor.is_degraded():
+                ssr_output = ssr_output * 0.5  # Reduce to 50% for safety
+                print(f"[Control Thread] Degraded mode: SSR reduced to {ssr_output:.1f}%")
 
             self.ssr_controller.set_output(ssr_output)
 
@@ -417,6 +470,11 @@ class ControlThread:
                 # Not running - turn off SSR
                 ssr_output = 0
                 self.pid.reset()
+
+            # Apply degraded mode safety reduction if sensor is experiencing issues
+            if self.temp_sensor.is_degraded():
+                ssr_output = ssr_output * 0.5  # Reduce to 50% for safety
+                print(f"[Control Thread] Degraded mode: SSR reduced to {ssr_output:.1f}%")
 
             self.controller.ssr_output = ssr_output
             self.ssr_controller.set_output(ssr_output)

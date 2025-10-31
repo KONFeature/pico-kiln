@@ -35,7 +35,10 @@ class TemperatureSensor:
             self.offset = offset
             self.last_good_temp = 20.0  # Reasonable default
             self.fault_count = 0
-            self.max_fault_count = 3  # Allow some transient faults
+            self.degraded_mode_threshold = 3  # Enter degraded mode after this many faults
+            self.max_fault_count = 10  # Fatal error after this many faults
+            self.degraded_mode = False  # Track if we're in degraded mode
+            self.last_degraded_warning = 0  # Timestamp of last warning
 
             # Perform initial conversion to clear power-up faults
             # The chip needs ~160ms to complete first conversion
@@ -90,20 +93,49 @@ class TemperatureSensor:
             if temp < -50 or temp > 1500:
                 raise Exception(f"Temperature {temp}°C out of reasonable range")
 
-            # Success - reset fault counter and save value
-            self.fault_count = 0
+            # Success - gradually decay fault counter and save value
+            if self.fault_count > 0:
+                self.fault_count -= 1  # Gradual recovery instead of immediate reset
+                if self.fault_count < self.degraded_mode_threshold:
+                    if self.degraded_mode:
+                        print("Temperature sensor recovered from degraded mode")
+                    self.degraded_mode = False
+
             self.last_good_temp = temp
             return temp
 
         except Exception as e:
             self.fault_count += 1
-            print(f"Temperature read error ({self.fault_count}/{self.max_fault_count}): {e}")
+
+            # Check if this is an SPI lock timeout (bus contention issue)
+            error_type = type(e).__name__
+            if "SPILockTimeout" in error_type:
+                print(f"⚠️  SPI bus lock timeout ({self.fault_count}/{self.max_fault_count})")
+                print("    Possible Core 2 interference or bus contention")
+            else:
+                print(f"Temperature read error ({self.fault_count}/{self.max_fault_count}): {e}")
 
             if self.fault_count >= self.max_fault_count:
                 # Persistent fault - raise error
-                raise Exception(f"Persistent sensor fault: {e}")
+                raise Exception(f"Persistent sensor fault after {self.max_fault_count} attempts: {e}")
+            elif self.fault_count >= self.degraded_mode_threshold:
+                # Enter degraded mode - continue but signal for reduced SSR output
+                if not self.degraded_mode:
+                    print("⚠️  DEGRADED MODE: Temperature sensor experiencing persistent issues")
+                    print("    Continuing with last good temperature but reducing SSR output for safety")
+                    self.degraded_mode = True
+                    self.last_degraded_warning = time.time()
+                else:
+                    # Periodic warning every 60 seconds
+                    current_time = time.time()
+                    if current_time - self.last_degraded_warning >= 60:
+                        print(f"⚠️  Still in DEGRADED MODE ({self.fault_count}/{self.max_fault_count} faults)")
+                        self.last_degraded_warning = current_time
+
+                print(f"Using last good temperature: {self.last_good_temp}°C")
+                return self.last_good_temp
             else:
-                # Transient fault - return last good value
+                # Transient fault (phase 1) - return last good value
                 print(f"Using last good temperature: {self.last_good_temp}°C")
                 return self.last_good_temp
 
@@ -111,9 +143,19 @@ class TemperatureSensor:
         """Get last successfully read temperature"""
         return self.last_good_temp
 
+    def is_degraded(self):
+        """
+        Check if sensor is in degraded mode
+
+        Returns:
+            True if sensor is experiencing persistent issues but still operational
+        """
+        return self.degraded_mode
+
     def reset_faults(self):
-        """Reset fault counter"""
+        """Reset fault counter and degraded mode"""
         self.fault_count = 0
+        self.degraded_mode = False
 
 
 class SSRController:

@@ -36,6 +36,7 @@ class WiFiManager:
         self.ssid = ssid
         self.password = password
         self.wlan = None
+        self.time_synced = False  # Track if NTP sync was successful
 
         # Initialize status LED
         self.status_led = Pin(status_led_pin, Pin.OUT)
@@ -65,30 +66,47 @@ class WiFiManager:
 
         return None, None
 
-    def sync_time_ntp(self):
+    def sync_time_ntp(self, max_attempts=3):
         """
-        Synchronize time with NTP server (simple version)
+        Synchronize time with NTP server with retry logic
+
+        Implements retry with exponential backoff to handle transient NTP server issues.
+        Sets self.time_synced flag on success for recovery system validation.
+
+        Args:
+            max_attempts: Maximum number of retry attempts (default: 3)
 
         Returns:
             True if successful, False otherwise
         """
         if ntptime is None:
             print("[WiFi] NTP sync skipped - ntptime module not available")
+            self.time_synced = False
             return False
 
-        try:
-            print("[WiFi] Syncing time with NTP server...")
-            ntptime.settime()
+        for attempt in range(max_attempts):
+            try:
+                print(f"[WiFi] Syncing time with NTP server (attempt {attempt + 1}/{max_attempts})...")
+                ntptime.settime()
 
-            # Print synchronized time
-            local_time = time.localtime()
-            time_str = f"{local_time[0]:04d}-{local_time[1]:02d}-{local_time[2]:02d} {local_time[3]:02d}:{local_time[4]:02d}:{local_time[5]:02d}"
-            print(f"[WiFi] Time synchronized: {time_str} UTC")
-            return True
+                # Print synchronized time
+                local_time = time.localtime()
+                time_str = f"{local_time[0]:04d}-{local_time[1]:02d}-{local_time[2]:02d} {local_time[3]:02d}:{local_time[4]:02d}:{local_time[5]:02d}"
+                print(f"[WiFi] Time synchronized: {time_str} UTC")
 
-        except Exception as e:
-            print(f"[WiFi] NTP sync failed: {e}")
-            return False
+                self.time_synced = True
+                return True
+
+            except Exception as e:
+                if attempt < max_attempts - 1:
+                    backoff_time = 1.0 * (attempt + 1)  # 1s, 2s
+                    print(f"[WiFi] NTP sync attempt {attempt + 1} failed: {e}, retrying in {backoff_time:.1f}s...")
+                    time.sleep(backoff_time)
+                else:
+                    print(f"[WiFi] NTP sync failed after {max_attempts} attempts: {e}")
+                    self.time_synced = False
+
+        return False
 
     async def connect(self, timeout=30):
         """Connect to the best available AP"""
@@ -138,14 +156,36 @@ class WiFiManager:
         return ip
 
     async def monitor(self, check_interval=5):
-        """Monitor connection and reconnect if dropped"""
+        """
+        Monitor connection and reconnect if dropped
+
+        Implements retry logic with progressive backoff to handle transient
+        WiFi issues without crashing the monitor task.
+        """
+        reconnect_failures = 0
+        max_consecutive_failures = 10
+
         while True:
             await asyncio.sleep(check_interval)
 
             if self.wlan and not self.wlan.isconnected():
-                print("[WiFi] Connection lost, reconnecting...")
-                self.status_led.off()
+                try:
+                    print("[WiFi] Connection lost, reconnecting...")
+                    self.status_led.off()
 
-                # Reconnect
-                self.wlan.disconnect()
-                await self.connect(timeout=30)
+                    # Attempt reconnection
+                    self.wlan.disconnect()
+                    await self.connect(timeout=30)
+
+                    # Success - reset failure counter
+                    reconnect_failures = 0
+
+                except Exception as e:
+                    reconnect_failures += 1
+                    print(f"[WiFi] Reconnect failed ({reconnect_failures}/{max_consecutive_failures}): {e}")
+
+                    if reconnect_failures >= max_consecutive_failures:
+                        # Too many failures - wait longer before next attempt
+                        print("[WiFi] Max reconnect failures reached - waiting 60s before retry")
+                        reconnect_failures = 0  # Reset to try again later
+                        await asyncio.sleep(60)  # Extended wait

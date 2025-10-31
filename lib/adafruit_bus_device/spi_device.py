@@ -24,6 +24,11 @@ __version__ = "5.2.13"
 __repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_BusDevice.git"
 
 
+class SPILockTimeoutError(Exception):
+    """Raised when SPI bus lock acquisition times out"""
+    pass
+
+
 class SPIDevice:
     """
     Represents a single SPI device and manages locking the bus and the device
@@ -90,8 +95,18 @@ class SPIDevice:
             self.chip_select.switch_to_output(value=not self.cs_active_value)
 
     def __enter__(self) -> SPI:
+        # Try to acquire SPI lock with timeout to prevent infinite hang
+        attempts = 0
+        max_attempts = 100  # 10 seconds total (100ms * 100)
+
         while not self.spi.try_lock():
-            time.sleep(0)
+            time.sleep(0.1)
+            attempts += 1
+            if attempts >= max_attempts:
+                raise SPILockTimeoutError(
+                    "SPI lock acquisition timeout after 10s - possible bus contention"
+                )
+
         self.spi.configure(baudrate=self.baudrate, polarity=self.polarity, phase=self.phase)
         if self.chip_select:
             self.chip_select.value = self.cs_active_value
