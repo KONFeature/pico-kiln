@@ -38,9 +38,7 @@ class TemperatureSensor:
             self.last_good_temp = None  # No fake default - require first valid read
             self.initialized = False  # Track if we've ever had a valid reading
             self.fault_count = 0
-            self.degraded_mode_threshold = 3  # Enter degraded mode after this many faults
-            self.max_fault_count = 10  # Fatal error after this many faults
-            self.degraded_mode = False  # Track if we're in degraded mode
+            self.max_consecutive_faults = 10  # Emergency shutdown after this many consecutive faults
 
             # Perform initial conversion to clear power-up faults
             # The chip needs ~160ms to complete first conversion
@@ -98,13 +96,10 @@ class TemperatureSensor:
                 print(f"✅ Temperature sensor initialized: {temp:.1f}°C")
                 self.initialized = True
 
-            # Success - gradually decay fault counter and save value
+            # Success - reset fault counter immediately
             if self.fault_count > 0:
-                self.fault_count -= 1  # Gradual recovery instead of immediate reset
-                if self.fault_count < self.degraded_mode_threshold:
-                    if self.degraded_mode:
-                        print("Temperature sensor recovered from degraded mode")
-                    self.degraded_mode = False
+                print(f"Temperature sensor recovered (after {self.fault_count} faults)")
+                self.fault_count = 0
 
             self.last_good_temp = temp
             return temp
@@ -119,24 +114,16 @@ class TemperatureSensor:
                 raise Exception(error_msg)
 
             # Log error
-            self._log_error(f"Temperature read error ({self.fault_count}/{self.max_fault_count}): {e}")
+            self._log_error(f"Temperature read error ({self.fault_count}/{self.max_consecutive_faults}): {e}")
 
-            if self.fault_count >= self.max_fault_count:
-                # Persistent fault - raise error
-                error_msg = f"Persistent sensor fault after {self.max_fault_count} attempts: {e}"
+            # Check if we've hit the consecutive fault limit
+            if self.fault_count >= self.max_consecutive_faults:
+                # Emergency shutdown - sensor is genuinely failing
+                error_msg = f"EMERGENCY SHUTDOWN: {self.max_consecutive_faults} consecutive sensor failures: {e}"
                 self._log_error(error_msg)
                 raise Exception(error_msg)
-            elif self.fault_count >= self.degraded_mode_threshold:
-                # Enter degraded mode - continue but signal for reduced SSR output
-                if not self.degraded_mode:
-                    self.degraded_mode = True
-                    self._log_error(f"⚠️  DEGRADED MODE: Sensor issues detected (fault {self.fault_count}/{self.max_fault_count})")
-                    self._log_error("    Using last good temperature, reducing SSR output for safety")
-
-                print(f"Using last good temperature: {self.last_good_temp:.1f}°C")
-                return self.last_good_temp
             else:
-                # Transient fault - return last good value (don't spam logs for transient faults)
+                # Transient fault - return last good value and continue
                 print(f"Using last good temperature: {self.last_good_temp:.1f}°C")
                 return self.last_good_temp
 
@@ -144,19 +131,9 @@ class TemperatureSensor:
         """Get last successfully read temperature"""
         return self.last_good_temp
 
-    def is_degraded(self):
-        """
-        Check if sensor is in degraded mode
-
-        Returns:
-            True if sensor is experiencing persistent issues but still operational
-        """
-        return self.degraded_mode
-
     def reset_faults(self):
-        """Reset fault counter and degraded mode"""
+        """Reset fault counter"""
         self.fault_count = 0
-        self.degraded_mode = False
 
     def _log_error(self, message):
         """Log error to both console and error log (if available)"""

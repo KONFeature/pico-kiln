@@ -382,11 +382,6 @@ class ControlThread:
             else:
                 self.controller.target_temp = 0
 
-            # Apply degraded mode safety reduction if sensor is experiencing issues
-            if self.temp_sensor.is_degraded():
-                ssr_output = ssr_output * 0.5  # Reduce to 50% for safety
-                print(f"[Control Thread] Degraded mode: SSR reduced to {ssr_output:.1f}%")
-
             self.ssr_controller.set_output(ssr_output)
 
             # 5. Check if tuning is complete or errored
@@ -473,11 +468,6 @@ class ControlThread:
                 # Not running - turn off SSR
                 ssr_output = 0
                 self.pid.reset()
-
-            # Apply degraded mode safety reduction if sensor is experiencing issues
-            if self.temp_sensor.is_degraded():
-                ssr_output = ssr_output * 0.5  # Reduce to 50% for safety
-                print(f"[Control Thread] Degraded mode: SSR reduced to {ssr_output:.1f}%")
 
             self.controller.ssr_output = ssr_output
             self.ssr_controller.set_output(ssr_output)

@@ -78,8 +78,8 @@ class PIDGainScheduler:
         if len(self.thermal_model) == 0:
             raise ValueError("THERMAL_MODEL cannot be empty (use None instead)")
 
-        if len(self.thermal_model) > 5:
-            raise ValueError("THERMAL_MODEL limited to 5 ranges (memory constraint)")
+        if len(self.thermal_model) > 3:
+            raise ValueError("THERMAL_MODEL limited to 3 ranges (sufficient for pottery kilns)")
 
         for i, range_spec in enumerate(self.thermal_model):
             # Check required fields
@@ -164,43 +164,6 @@ class PIDGainScheduler:
             True if gains changed on last get_gains() call
         """
         return self._gains_just_changed
-
-    def get_current_gains(self):
-        """
-        Get the currently active gains without temperature lookup.
-
-        Returns:
-            Tuple of (kp, ki, kd)
-        """
-        return (self._current_kp, self._current_ki, self._current_kd)
-
-    def get_range_info(self, current_temp):
-        """
-        Get information about which temperature range is active.
-
-        Useful for debugging and status reporting.
-
-        Args:
-            current_temp: Current temperature (°C)
-
-        Returns:
-            Dictionary with range info, or None if using defaults
-        """
-        if self.thermal_model is None:
-            return None
-
-        for i, range_spec in enumerate(self.thermal_model):
-            if range_spec['temp_min'] <= current_temp < range_spec['temp_max']:
-                return {
-                    'index': i,
-                    'temp_min': range_spec['temp_min'],
-                    'temp_max': range_spec['temp_max'],
-                    'kp': range_spec['kp'],
-                    'ki': range_spec['ki'],
-                    'kd': range_spec['kd']
-                }
-
-        return None
 
     def __str__(self):
         """String representation"""

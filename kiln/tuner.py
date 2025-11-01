@@ -257,9 +257,9 @@ class ZieglerNicholsTuner:
                     plateau_detect=True
                 ),
                 TuningStep(
-                    step_name="cool_20C",
+                    step_name="cool_10min",
                     ssr_percent=0,
-                    target_temp=20,  # Cool 20°C below peak
+                    target_temp=None,
                     hold_time=0,
                     timeout=1200
                 ),
@@ -272,9 +272,9 @@ class ZieglerNicholsTuner:
                     plateau_detect=True
                 ),
                 TuningStep(
-                    step_name="cool_20C",
+                    step_name="cool_10min",
                     ssr_percent=0,
-                    target_temp=20,
+                    target_temp=None,
                     hold_time=0,
                     timeout=1200
                 ),
