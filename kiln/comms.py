@@ -263,13 +263,21 @@ class StatusMessage:
             if controller.current_step_index < len(profile.steps):
                 current_step = profile.steps[controller.current_step_index]
                 status['step_name'] = current_step.get('type', '')
+
+                # Add rate information for this step
+                status['desired_rate'] = current_step.get('desired_rate', 0)
+                status['min_rate'] = current_step.get('min_rate', 0)
             else:
                 status['step_name'] = ''
+                status['desired_rate'] = 0
+                status['min_rate'] = 0
         else:
             # No active profile - set step fields to None
             status['step_index'] = None
             status['step_name'] = None
             status['total_steps'] = None
+            status['desired_rate'] = 0
+            status['min_rate'] = 0
 
         # Add PID statistics
         pid_stats = pid.get_stats()
@@ -288,8 +296,10 @@ class StatusMessage:
         status['is_recovering'] = controller.recovery_target_temp is not None
         status['recovery_target_temp'] = round(controller.recovery_target_temp, 2) if controller.recovery_target_temp is not None else None
 
-        # Add current adapted rate (for logging and monitoring)
-        status['current_rate'] = round(controller.current_rate, 1)
+        # Add adaptive rate control information
+        status['current_rate'] = round(controller.current_rate, 1)  # Adapted rate
+        status['actual_rate'] = round(controller.temp_history.get_rate(controller.rate_measurement_window), 1)  # Measured rate
+        status['adaptation_count'] = controller.adaptation_count  # Number of adaptations
 
         return status
 

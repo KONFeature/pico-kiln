@@ -349,7 +349,10 @@ async def handle_index(conn):
         # MEMORY OPTIMIZED: Use get_fields() to fetch only needed fields
         receiver = get_status_receiver()
         cached = receiver.status_cache.get_fields(
-            'ssr_output', 'current_temp', 'target_temp', 'profile_name', 'state'
+            'ssr_output', 'current_temp', 'target_temp', 'profile_name', 'state',
+            'step_index', 'step_name', 'total_steps',
+            'desired_rate', 'current_rate', 'actual_rate', 'min_rate', 'adaptation_count',
+            'is_recovering', 'recovery_target_temp'
         )
 
         # Yield before building profiles list
@@ -382,7 +385,20 @@ async def handle_index(conn):
             'current_temp': cached.get('current_temp', 0.0),
             'target_temp': cached.get('target_temp', 0.0),
             'program': cached.get('profile_name') or 'None',
-            'state': cached.get('state', 'IDLE')
+            'state': cached.get('state', 'IDLE'),
+            # Step information
+            'step_index': cached.get('step_index'),
+            'step_name': cached.get('step_name'),
+            'total_steps': cached.get('total_steps'),
+            # Rate information
+            'desired_rate': cached.get('desired_rate', 0),
+            'current_rate': cached.get('current_rate', 0),
+            'actual_rate': cached.get('actual_rate', 0),
+            'min_rate': cached.get('min_rate', 0),
+            'adaptation_count': cached.get('adaptation_count', 0),
+            # Recovery mode
+            'is_recovering': cached.get('is_recovering', False),
+            'recovery_target_temp': cached.get('recovery_target_temp')
         }
 
         # MEMORY OPTIMIZED: Combine replacements to reduce string allocations

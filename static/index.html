@@ -4,13 +4,51 @@
 <title>Pico Kiln</title>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+h1 { color: #333; }
+h2 { color: #555; margin-top: 20px; }
+.status-box { background: white; padding: 15px; margin: 10px 0; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+.recovery-warning { background: #ff6b6b; color: white; padding: 15px; margin: 10px 0; border-radius: 5px; font-weight: bold; }
+.rate-panel { background: white; padding: 15px; margin: 10px 0; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+.rate-good { color: #2ecc71; }
+.rate-adapted { color: #f39c12; }
+.rate-critical { color: #e74c3c; }
+.step-info { background: #3498db; color: white; padding: 10px; border-radius: 5px; display: inline-block; margin: 10px 0; }
+</style>
 </head>
 <body>
 <h1>Pico Kiln Controller</h1>
 
+<!-- Recovery Mode Warning -->
+<div id="recovery-warning" class="recovery-warning" style="display: none;">
+<span style="font-size: 1.2em;">⚠ RECOVERY MODE ⚠</span><br>
+Recovering temperature before resuming profile<br>
+Target: <span id="recovery-target">--</span>°C
+</div>
+
+<!-- Step Progress -->
+<div id="step-info" class="step-info" style="display: none;">
+Step <span id="step-progress">-/-</span> (<span id="step-type">-</span>)
+</div>
+
+<div class="status-box">
 <h2>SSR: <span id="status">--</span></h2>
 <p>Current: <span id="current_temp">--</span>C | Target: <span id="target_temp">--</span>C | State: <span id="state">--</span></p>
 <p>Program: <span id="program">--</span></p>
+</div>
+
+<!-- Rate Information Panel (only shown during RUNNING) -->
+<div id="rate-panel" class="rate-panel" style="display: none;">
+<h3>Rate Control</h3>
+<table style="width: 100%; border-collapse: collapse;">
+<tr><td><strong>Desired Rate:</strong></td><td><span id="rate-desired">--</span> °C/h</td></tr>
+<tr><td><strong>Current Rate:</strong></td><td><span id="rate-current" class="rate-good">--</span> °C/h</td></tr>
+<tr><td><strong>Actual Rate:</strong></td><td><span id="rate-actual">--</span> °C/h</td></tr>
+<tr><td><strong>Minimum Rate:</strong></td><td><span id="rate-min">--</span> °C/h</td></tr>
+<tr id="adaptation-row" style="display: none;"><td><strong>Adaptations:</strong></td><td><span id="adaptation-count">0</span></td></tr>
+</table>
+</div>
 
 <h2>Profiles</h2>
 {profiles_list}
@@ -39,6 +77,57 @@ document.getElementById('current_temp').textContent = data.current_temp.toFixed(
 document.getElementById('target_temp').textContent = data.target_temp.toFixed(1);
 document.getElementById('program').textContent = data.program;
 document.getElementById('state').textContent = data.state;
+
+// Show recovery warning if in recovery mode
+if (data.is_recovering && data.recovery_target_temp !== null) {
+    document.getElementById('recovery-warning').style.display = 'block';
+    document.getElementById('recovery-target').textContent = data.recovery_target_temp.toFixed(1);
+} else {
+    document.getElementById('recovery-warning').style.display = 'none';
+}
+
+// Show step information if program is running
+if (data.state === 'RUNNING' && data.step_index !== null && data.total_steps !== null) {
+    document.getElementById('step-info').style.display = 'inline-block';
+    document.getElementById('step-progress').textContent = (data.step_index + 1) + '/' + data.total_steps;
+    document.getElementById('step-type').textContent = data.step_name || '-';
+} else {
+    document.getElementById('step-info').style.display = 'none';
+}
+
+// Show rate panel if program is running and step has rate info
+if (data.state === 'RUNNING' && data.step_name === 'ramp' && data.desired_rate > 0) {
+    document.getElementById('rate-panel').style.display = 'block';
+    document.getElementById('rate-desired').textContent = data.desired_rate.toFixed(0);
+    document.getElementById('rate-current').textContent = data.current_rate.toFixed(1);
+    document.getElementById('rate-actual').textContent = data.actual_rate.toFixed(1);
+    document.getElementById('rate-min').textContent = data.min_rate.toFixed(0);
+
+    // Color code the current rate based on adaptation status
+    const currentRateElem = document.getElementById('rate-current');
+    const rateRatio = data.current_rate / data.desired_rate;
+
+    if (rateRatio >= 0.95) {
+        // Good - at or near desired rate
+        currentRateElem.className = 'rate-good';
+    } else if (data.current_rate >= data.min_rate * 1.1) {
+        // Adapted but safe
+        currentRateElem.className = 'rate-adapted';
+    } else {
+        // Critical - near minimum
+        currentRateElem.className = 'rate-critical';
+    }
+
+    // Show adaptation count if any adaptations occurred
+    if (data.adaptation_count > 0) {
+        document.getElementById('adaptation-row').style.display = 'table-row';
+        document.getElementById('adaptation-count').textContent = data.adaptation_count;
+    } else {
+        document.getElementById('adaptation-row').style.display = 'none';
+    }
+} else {
+    document.getElementById('rate-panel').style.display = 'none';
+}
 
 function startProfile(profileName) {
 if (confirm('Start: ' + profileName + '?')) {
