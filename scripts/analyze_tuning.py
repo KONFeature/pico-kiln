@@ -8,7 +8,7 @@ using multiple methods including thermal modeling and phase detection.
 Features:
 - Multi-phase detection (heating, cooling, hold periods)
 - Thermal model fitting (dead time, time constant, heat loss)
-- Multiple PID calculation methods (Ziegler-Nichols, Cohen-Coon, AMIGO, Lambda)
+- Multiple PID calculation methods (Ziegler-Nichols, Cohen-Coon, AMIGO)
 - Continuous gain scheduling (compensates for heat loss at high temperatures)
 - Comprehensive reporting and recommendations
 
@@ -31,7 +31,6 @@ from analyzer import (
     fit_thermal_model,
     calculate_all_pid_methods,
     assess_test_quality,
-    analyze_tuning_steps,
     generate_results_json,
     print_beautiful_report,
     generate_config_snippet
@@ -73,7 +72,7 @@ def main():
         print("\nExample:")
         print("  python analyze_tuning.py logs/tuning_2025-01-15_14-30-00.csv")
         print("  python analyze_tuning.py logs/tuning_2025-01-15_14-30-00.csv --method amigo")
-        print("\nAvailable methods: ziegler_nichols, cohen_coon, amigo, lambda")
+        print("\nAvailable methods: ziegler_nichols, cohen_coon, amigo")
         sys.exit(1)
 
     csv_file = sys.argv[1]
@@ -83,7 +82,7 @@ def main():
     if len(sys.argv) > 2 and sys.argv[2] == '--method':
         if len(sys.argv) > 3:
             filter_method = sys.argv[3].lower()
-            valid_methods = ['ziegler_nichols', 'cohen_coon', 'amigo', 'lambda']
+            valid_methods = ['ziegler_nichols', 'cohen_coon', 'amigo']
             if filter_method not in valid_methods:
                 print(f"\n❌ Error: Unknown method '{filter_method}'")
                 print(f"Valid methods: {', '.join(valid_methods)}")
@@ -120,16 +119,6 @@ def main():
         test_quality = assess_test_quality(data, phases, model)
         print(f"✓ Test quality: {test_quality}")
 
-        # Analyze per-step metrics (if step data available)
-        step_analyses = None
-        if data.get('has_step_data', False):
-            print("📋 Analyzing per-step metrics...")
-            step_analyses = analyze_tuning_steps(data, phases)
-            if step_analyses:
-                print(f"✓ Generated analysis for {len(step_analyses)} steps")
-        else:
-            print("  (No step data available - using heuristic phase detection)")
-
         # Select recommended method
         recommended_method = select_recommended_method(model, test_quality)
 
@@ -152,7 +141,7 @@ def main():
 
         # Print beautiful report
         print_beautiful_report(data, phases, model, pid_methods,
-                              test_quality, recommended_method, step_analyses)
+                              test_quality, recommended_method)
 
     except Exception as e:
         print(f"\n❌ Error: {e}")

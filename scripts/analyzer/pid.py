@@ -119,7 +119,7 @@ def calculate_amigo(model: ThermalModel) -> PIDParams:
 
     # AMIGO formulas
     Kp = (0.2 + 0.45 * (T / L)) / K if K > 0 else 0.45 * (T / L)
-    Ti = (0.4 * L + 0.8 * T) * (L + 0.1 * T) / (L + 0.3 * T) if L + 0.3 * T > 0 else L
+    Ti = (0.4 * L + 0.8 * T) * (L + 0.3 * T) / (L + 0.1 * T) if L + 0.1 * T > 0 else L
     Td = 0.5 * L * T / (0.3 * L + T) if 0.3 * L + T > 0 else 0.5 * L
 
     Ki = Kp / Ti if Ti > 0 else 0
@@ -133,49 +133,10 @@ def calculate_amigo(model: ThermalModel) -> PIDParams:
     return PIDParams(Kp, Ki, Kd, "AMIGO", characteristics)
 
 
-def calculate_lambda(model: ThermalModel, lambda_factor: float = 1.5) -> PIDParams:
-    """
-    Lambda Tuning (IMC-based).
-
-    User specifies desired closed-loop time constant as multiple of system time constant.
-
-    Args:
-        lambda_factor: Closed-loop time constant = lambda_factor * system_time_constant
-                      Lower values = faster response, higher = more conservative
-    """
-    L = model.dead_time_s
-    T = model.time_constant_s
-    K = model.steady_state_gain if model.steady_state_gain > 0 else 1.0
-
-    if L < 1:
-        L = 1
-    if T < 1:
-        T = 1
-
-    # Lambda tuning formulas
-    lambda_cl = lambda_factor * T  # Closed-loop time constant
-
-    Kp = T / (K * (lambda_cl + L)) if K > 0 and (lambda_cl + L) > 0 else 1.0
-    Ti = T
-    Td = 0
-
-    Ki = Kp / Ti if Ti > 0 else 0
-    Kd = 0  # Lambda tuning typically uses PI control
-
-    characteristics = (
-        f"Lambda tuning with λ={lambda_factor}x system time constant. "
-        "Predictable response based on desired closed-loop speed. "
-        "No derivative action (PI control)."
-    )
-
-    return PIDParams(Kp, Ki, Kd, "Lambda", characteristics)
-
-
 def calculate_all_pid_methods(model: ThermalModel) -> Dict[str, PIDParams]:
     """Calculate PID parameters using all methods."""
     return {
         'ziegler_nichols': calculate_ziegler_nichols(model),
         'cohen_coon': calculate_cohen_coon(model),
-        'amigo': calculate_amigo(model),
-        'lambda': calculate_lambda(model, lambda_factor=1.5)
+        'amigo': calculate_amigo(model)
     }

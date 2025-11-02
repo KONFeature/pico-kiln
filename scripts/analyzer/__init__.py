@@ -18,12 +18,10 @@ from .pid import (
     calculate_ziegler_nichols,
     calculate_cohen_coon,
     calculate_amigo,
-    calculate_lambda,
     calculate_all_pid_methods
 )
 from .reporting import (
     assess_test_quality,
-    analyze_tuning_steps,
     generate_results_json,
     print_beautiful_report,
     generate_config_snippet
@@ -42,11 +40,9 @@ __all__ = [
     'calculate_ziegler_nichols',
     'calculate_cohen_coon',
     'calculate_amigo',
-    'calculate_lambda',
     'calculate_all_pid_methods',
     # Reporting module
     'assess_test_quality',
-    'analyze_tuning_steps',
     'generate_results_json',
     'print_beautiful_report',
     'generate_config_snippet',
