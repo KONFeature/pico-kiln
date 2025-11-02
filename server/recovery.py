@@ -23,7 +23,7 @@ class RecoveryListener:
     unregisters itself to avoid interfering with normal operation.
     """
 
-    def __init__(self, command_queue, data_logger, config):
+    def __init__(self, command_queue, data_logger, config, wifi_manager=None):
         """
         Initialize recovery listener
 
@@ -31,11 +31,14 @@ class RecoveryListener:
             command_queue: ThreadSafeQueue for sending commands to control thread
             data_logger: DataLogger instance to set recovery context
             config: Configuration object with recovery settings
+            wifi_manager: WiFiManager instance for NTP sync callback (optional)
         """
         self.command_queue = command_queue
         self.data_logger = data_logger
         self.config = config
+        self.wifi_manager = wifi_manager
         self.recovery_attempted = False
+        self.ntp_retry_registered = False
         self.status_receiver = None
         self.min_valid_temp = 20.0  # Minimum temp to consider valid (avoid false readings)
 
@@ -75,6 +78,14 @@ class RecoveryListener:
         else:
             print(f"[Recovery] No recovery needed: {recovery_info.recovery_reason}")
 
+            # If recovery failed due to time issues, register retry callback for NTP sync
+            if recovery_info.had_time_issue and self.wifi_manager and not self.ntp_retry_registered:
+                print(f"[Recovery] Time sync issue detected - will retry after NTP sync")
+                self.wifi_manager.register_ntp_sync_callback(self._retry_recovery_after_ntp)
+                self.ntp_retry_registered = True
+                # Don't unregister yet - keep listening for temperature updates
+                return
+
         # Unregister this listener - we're done
         if self.status_receiver:
             self.status_receiver.unregister_listener(self.on_status_update)
@@ -88,6 +99,23 @@ class RecoveryListener:
             status_receiver: StatusReceiver instance
         """
         self.status_receiver = status_receiver
+
+    def _retry_recovery_after_ntp(self):
+        """
+        Retry recovery after NTP sync completes
+
+        This is called as a callback when NTP sync succeeds, allowing
+        recovery to retry with correct timestamps.
+        """
+        print(f"[Recovery] NTP sync completed - retrying recovery...")
+
+        # Get current temperature from latest status
+        # We need to wait for a status update with valid temp
+        # For now, just trigger a new check on next status update
+        self.recovery_attempted = False
+        self.ntp_retry_registered = False
+
+        print(f"[Recovery] Recovery retry will occur on next temperature reading")
 
     def _attempt_recovery(self, recovery_info):
         """
@@ -132,6 +160,8 @@ class RecoveryInfo:
         time_since_last_log: Seconds since last log entry
         log_file: Path to the log file being recovered from
         recovery_reason: String explaining why recovery is/isn't possible
+        had_time_issue: Whether recovery failed due to time sync issues
+        used_mtime_fallback: Whether mtime was used instead of log timestamp
     """
     def __init__(self):
         self.can_recover = False
@@ -143,6 +173,8 @@ class RecoveryInfo:
         self.time_since_last_log = 0
         self.log_file = None
         self.recovery_reason = "No recovery needed"
+        self.had_time_issue = False
+        self.used_mtime_fallback = False
 
 
 def check_recovery(logs_dir, current_temp, max_recovery_duration, max_temp_delta):
@@ -210,17 +242,54 @@ def check_recovery(logs_dir, current_temp, max_recovery_duration, max_temp_delta
             return info
 
         # 2. Is it within recovery time window?
+        # Use timestamp validation with mtime fallback for robustness
         current_time = time.time()
-        info.time_since_last_log = current_time - info.last_timestamp
 
-        if info.time_since_last_log > max_recovery_duration:
+        # Validate timestamp sanity (year >= 2020)
+        # MicroPython epoch is 2000-01-01, so timestamps before 2020 indicate no NTP sync
+        MIN_VALID_TIMESTAMP = 631152000  # 2020-01-01 00:00:00 UTC (20 years * 365.25 * 86400)
+        timestamp_is_valid = info.last_timestamp >= MIN_VALID_TIMESTAMP
+        current_time_is_valid = current_time >= MIN_VALID_TIMESTAMP
+
+        if timestamp_is_valid and current_time_is_valid:
+            # Both timestamps are valid - use log timestamp
+            info.time_since_last_log = current_time - info.last_timestamp
+            info.used_mtime_fallback = False
+            print(f"[Recovery] Using log timestamp for time calculation")
+        else:
+            # One or both timestamps invalid - fallback to file mtime
+            try:
+                stat = os.stat(log_file)
+                file_mtime = stat[8]
+                info.time_since_last_log = current_time - file_mtime
+                info.used_mtime_fallback = True
+                print(f"[Recovery] WARNING: Invalid timestamp detected, using file mtime fallback")
+                print(f"[Recovery]   Log timestamp valid: {timestamp_is_valid}, Current time valid: {current_time_is_valid}")
+            except OSError:
+                # Can't get mtime - mark as time issue and skip time check
+                info.had_time_issue = True
+                info.time_since_last_log = 0
+                print(f"[Recovery] WARNING: Cannot determine time delta, skipping time check")
+
+        # Check if time delta makes sense (not negative, not absurdly large)
+        if info.time_since_last_log < 0:
+            info.recovery_reason = "Clock went backwards - time sync issue"
+            info.had_time_issue = True
+            return info
+
+        # If time check is unreliable, we'll rely purely on temperature validation
+        if not info.had_time_issue and info.time_since_last_log > max_recovery_duration:
             info.recovery_reason = (
                 f"Too much time elapsed: {info.time_since_last_log:.0f}s "
                 f"(max: {max_recovery_duration}s)"
             )
+            # If we used mtime fallback and failed, this might be a time issue
+            if info.used_mtime_fallback:
+                info.had_time_issue = True
             return info
 
         # 3. Is temperature within acceptable range?
+        # This is the most reliable check and works regardless of time sync
         temp_deviation = abs(current_temp - info.last_temp)
 
         if temp_deviation > max_temp_delta:
@@ -232,8 +301,9 @@ def check_recovery(logs_dir, current_temp, max_recovery_duration, max_temp_delta
 
         # All checks passed - recovery is safe!
         info.can_recover = True
+        time_info = f"{info.time_since_last_log:.0f}s elapsed" if not info.had_time_issue else "time uncertain"
         info.recovery_reason = (
-            f"Recovery OK: {info.time_since_last_log:.0f}s elapsed, "
+            f"Recovery OK: {time_info}, "
             f"temp deviation {temp_deviation:.1f}°C"
         )
 
@@ -248,8 +318,12 @@ def _find_most_recent_log(logs_dir):
     """
     Find the most recent CSV log file in the logs directory
 
-    Sorts files by filename (which includes timestamp) to find most recent.
-    Filename format: {profile_name}_{YYYY-MM-DD_HH-MM-SS}.csv
+    Uses file modification time (mtime) to find the most recent file.
+    This is robust to clock sync issues - even if timestamps are wrong,
+    the relative ordering of file mtimes is preserved within a boot session.
+
+    Filters out tuning logs (files starting with "tuning_") since they
+    are not profile runs and should not be candidates for recovery.
 
     Args:
         logs_dir: Directory to scan for log files
@@ -261,17 +335,34 @@ def _find_most_recent_log(logs_dir):
         # List all files in logs directory
         files = os.listdir(logs_dir)
 
-        # Filter for CSV files only
-        csv_files = [f for f in files if f.endswith('.csv')]
+        # Filter for CSV files only, excluding tuning logs
+        csv_files = [f for f in files
+                     if f.endswith('.csv') and not f.startswith('tuning_')]
 
         if not csv_files:
             return None
 
-        # Sort by filename (timestamp is in filename, so lexicographic sort works)
-        csv_files.sort(reverse=True)  # Most recent first
+        # Sort by file modification time (mtime) instead of filename
+        # This is robust to clock sync issues
+        csv_files_with_mtime = []
+        for f in csv_files:
+            try:
+                file_path = f"{logs_dir}/{f}"
+                stat = os.stat(file_path)
+                mtime = stat[8]  # ST_MTIME (modification time)
+                csv_files_with_mtime.append((f, mtime))
+            except OSError:
+                # Skip files we can't stat
+                continue
+
+        if not csv_files_with_mtime:
+            return None
+
+        # Sort by mtime, most recent first
+        csv_files_with_mtime.sort(key=lambda x: x[1], reverse=True)
 
         # Return full path to most recent file
-        return f"{logs_dir}/{csv_files[0]}"
+        return f"{logs_dir}/{csv_files_with_mtime[0][0]}"
 
     except OSError:
         # Directory doesn't exist or can't be read

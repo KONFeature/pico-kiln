@@ -37,6 +37,7 @@ class WiFiManager:
         self.password = password
         self.wlan = None
         self.time_synced = False  # Track if NTP sync was successful
+        self.ntp_sync_callbacks = []  # Callbacks to invoke when NTP syncs
 
         # Initialize status LED
         self.status_led = Pin(status_led_pin, Pin.OUT)
@@ -66,12 +67,26 @@ class WiFiManager:
 
         return None, None
 
+    def register_ntp_sync_callback(self, callback):
+        """
+        Register a callback to be invoked when NTP sync completes
+
+        The callback will be invoked once when NTP sync succeeds.
+        Use this for operations that need accurate time (like recovery retry).
+
+        Args:
+            callback: Function to call when NTP syncs (no arguments)
+        """
+        if callback not in self.ntp_sync_callbacks:
+            self.ntp_sync_callbacks.append(callback)
+
     def sync_time_ntp(self, max_attempts=3):
         """
         Synchronize time with NTP server with retry logic
 
         Implements retry with exponential backoff to handle transient NTP server issues.
         Sets self.time_synced flag on success for recovery system validation.
+        Invokes registered callbacks on successful sync.
 
         Args:
             max_attempts: Maximum number of retry attempts (default: 3)
@@ -95,6 +110,10 @@ class WiFiManager:
                 print(f"[WiFi] Time synchronized: {time_str} UTC")
 
                 self.time_synced = True
+
+                # Invoke NTP sync callbacks
+                self._invoke_ntp_callbacks()
+
                 return True
 
             except Exception as e:
@@ -107,6 +126,27 @@ class WiFiManager:
                     self.time_synced = False
 
         return False
+
+    def _invoke_ntp_callbacks(self):
+        """
+        Invoke all registered NTP sync callbacks
+
+        Callbacks are invoked once and then cleared to prevent multiple invocations.
+        Errors in callbacks are caught to prevent blocking NTP sync completion.
+        """
+        if not self.ntp_sync_callbacks:
+            return
+
+        print(f"[WiFi] Invoking {len(self.ntp_sync_callbacks)} NTP sync callback(s)...")
+
+        for callback in self.ntp_sync_callbacks:
+            try:
+                callback()
+            except Exception as e:
+                print(f"[WiFi] Error in NTP sync callback: {e}")
+
+        # Clear callbacks after invoking (one-time use)
+        self.ntp_sync_callbacks.clear()
 
     async def connect(self, timeout=30):
         """Connect to the best available AP"""

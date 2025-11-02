@@ -123,10 +123,14 @@ async def main():
     data_logger = DataLogger(config.LOGS_DIR, config.LOGGING_INTERVAL)
     status_receiver.register_listener(data_logger.on_status_update)
 
-    # Initialize and register recovery listener
+    # Initialize WiFi manager (early, so recovery can use it for NTP callbacks)
+    print("[Main] Initializing WiFi manager...")
+    wifi_mgr = WiFiManager(config.WIFI_SSID, config.WIFI_PASSWORD)
+
+    # Initialize and register recovery listener (with wifi_mgr for NTP retry)
     print("[Main] Initializing recovery listener...")
     from server.recovery import RecoveryListener
-    recovery_listener = RecoveryListener(command_queue, data_logger, config)
+    recovery_listener = RecoveryListener(command_queue, data_logger, config, wifi_mgr)
     recovery_listener.set_status_receiver(status_receiver)
     status_receiver.register_listener(recovery_listener.on_status_update)
     print("[Main] Recovery listener will check on first valid temperature reading")
@@ -150,10 +154,9 @@ async def main():
     profile_cache = get_profile_cache()
     profile_cache.preload(config.PROFILES_DIR)
 
-    # Initialize WiFi manager
-    wifi_mgr = WiFiManager(config.WIFI_SSID, config.WIFI_PASSWORD)
-
     # Connect to WiFi (Core 2)
+    # Note: WiFi manager was initialized earlier to allow recovery NTP callbacks
+    print("[Main] Connecting to WiFi...")
     ip_address = await wifi_mgr.connect(timeout=30)
 
     if not ip_address:
