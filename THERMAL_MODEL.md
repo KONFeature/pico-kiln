@@ -1,358 +1,263 @@
-# Thermal Model - Temperature-Range-Specific PID Parameters
+# Continuous Gain Scheduling - Temperature-Dependent PID Tuning
 
 ## Overview
 
-The thermal model feature enables **gain scheduling** - using different PID parameters at different temperature ranges. This compensates for changing kiln thermal dynamics across the wide 0-1300°C operating range, resulting in better control performance.
+The continuous gain scheduling feature automatically adjusts PID parameters based on temperature to compensate for changing kiln thermal dynamics across the wide 0-1300°C operating range. This results in better control performance throughout the entire firing cycle.
 
-## Why Use a Thermal Model?
+## Why Use Continuous Gain Scheduling?
 
-Kilns have different thermal characteristics at different temperatures:
+Kilns have temperature-dependent thermal characteristics:
 
-- **Low temperatures (0-300°C)**: Fast thermal response, lower heat loss
-- **Mid temperatures (300-700°C)**: Changing thermal mass effects
-- **High temperatures (700-1300°C)**: High heat loss, slower response, radiation effects
+- **Heat Loss Increases with Temperature**: At high temperatures, radiation and convection heat loss increase significantly
+- **Effective Gain Decreases**: More SSR power is needed to maintain high temperatures → effective gain K_eff decreases
+- **PID Must Compensate**: PID gains must increase to maintain consistent control performance
 
-Using a single PID parameter set across this entire range is suboptimal. Gain scheduling automatically adjusts PID gains based on current temperature, providing:
+Using a single fixed PID parameter set across 0-1300°C is suboptimal. Continuous gain scheduling provides:
 
-- **Better control** across wide temperature ranges
-- **Reduced overshoot** during temperature ramps
-- **Faster settling time** when reaching target temperatures
-- **More stable** temperature holds at different ranges
+- **Consistent Control** across wide temperature ranges
+- **Reduced Overshoot** during temperature ramps
+- **Faster Settling Time** when reaching target temperatures
+- **Stable Temperature Holds** at all temperature ranges
 
 ## How It Works
 
-### Gain Scheduling Algorithm
+### Physics-Based Model
 
-The controller uses simple **range-based switching**:
+At plateau equilibrium, heat input equals heat loss:
+```
+SSR × K_eff(T) = (T - T_ambient) + heat_loss(T)
+```
 
-1. Current temperature is measured
-2. PID scheduler finds the matching temperature range
-3. If range changed, PID gains are updated
-4. PID controller uses the new gains
+As temperature increases:
+- Heat loss increases (radiation ∝ T⁴, convection ∝ ΔT)
+- Effective gain K_eff **decreases**
+- PID gains must **increase** to compensate
 
-Range matching: `temp_min <= current_temp < temp_max` (inclusive lower bound)
+### Continuous Gain Scaling Formula
 
-### Gain Switching Behavior
+```python
+# Heat loss model (linear approximation)
+gain_scale(T) = 1 + h × (T - T_ambient)
 
-- **Instant switching** when crossing range boundaries
-- **No interpolation** (keeps it simple and fast)
-- **Integral term continuity** maintained during switches (prevents control discontinuities)
-- **Acceptable for kilns** due to slow thermal response
+# PID scaling
+Kp(T) = Kp_base × gain_scale(T)
+Ki(T) = Ki_base × gain_scale(T)
+Kd(T) = Kd_base × gain_scale(T)
+```
+
+Where:
+- `h` = heat loss coefficient (fitted from tuning data)
+- `T_ambient` = ambient temperature (°C)
+- `Kp_base`, `Ki_base`, `Kd_base` = base PID gains at low temperature
+
+### Advantages Over Range-Based Scheduling
+
+**Old Approach (Range-Based):**
+- ❌ Discrete jumps in PID gains at range boundaries
+- ❌ Requires hysteresis to prevent chattering
+- ❌ More complex configuration (arrays of ranges)
+- ❌ More memory usage (stores multiple PID sets)
+
+**New Approach (Continuous):**
+- ✅ Smooth, continuous gain adjustment (no jumps!)
+- ✅ No hysteresis needed
+- ✅ Simple configuration (just 3 scalar parameters)
+- ✅ Memory efficient (critical for Pico!)
+- ✅ Physically accurate model
 
 ## Configuration
 
 ### Step 1: Run PID Auto-Tuning
 
-Run a tuning test that covers your full temperature range:
+Run a tuning test that covers a wide temperature range:
 
 ```bash
-# Start tuning via web UI or command
-# Let it run across full 0-1300°C range (or your max temp)
+# Start tuning via web UI
+# Let it run across multiple temperature plateaus (e.g., 100°C, 400°C, 700°C)
+# The tuning should include:
+# - Multiple heating ramps
+# - Multiple temperature plateaus at different levels
+# - At least one cooling phase
 ```
+
+**Important:** The tuning data must include plateau phases at different temperatures to fit the heat loss coefficient accurately.
 
 ### Step 2: Analyze Tuning Data
 
-```bash
-python analyze_tuning.py logs/tuning_YYYY-MM-DD_HH-MM-SS.csv
-```
-
-This generates `tuning_results.json` with temperature-range-specific PID parameters.
-
-### Step 3: Generate Config Snippet
+Run the analyzer script:
 
 ```bash
-python generate_thermal_model_config.py
+cd /path/to/pico-kiln
+./scripts/analyze_tuning.py logs/tuning_YYYY-MM-DD_HH-MM-SS.csv
 ```
 
-Or:
+The analyzer will:
+1. Fit a single thermal model (dead time L, time constant τ) from the full dataset
+2. Extract effective gain from each plateau phase
+3. Fit the heat loss coefficient `h`
+4. Calculate base PID parameters using AMIGO tuning
+5. Generate ready-to-paste config
+
+### Step 3: Copy Configuration
+
+The analyzer outputs a config snippet. Copy it to your `config.py`:
+
+```python
+# PID Parameters (AMIGO tuning)
+PID_KP_BASE = 6.11   # Base proportional gain
+PID_KI_BASE = 0.027  # Base integral gain
+PID_KD_BASE = 42.5   # Base derivative gain
+
+# Continuous Gain Scheduling
+THERMAL_H = 0.002            # Heat loss coefficient
+THERMAL_T_AMBIENT = 20.0     # Ambient temperature (°C)
+```
+
+### Step 4: Restart Controller
 
 ```bash
-python -c "from analyze_tuning import generate_config_snippet; generate_config_snippet()"
+# Restart the kiln controller to load new parameters
+# Monitor web UI during first firing to verify control performance
 ```
 
-This prints a ready-to-paste THERMAL_MODEL configuration.
+## How to Interpret Parameters
 
-### Step 4: Update config.py
+### Heat Loss Coefficient (THERMAL_H)
 
-Copy the THERMAL_MODEL from step 3 and paste into `config.py`:
+**Typical Range:** 0.0001 to 0.01
+
+**What it means:**
+- **h = 0**: No gain scaling (constant PID gains)
+- **h = 0.001**: Modest scaling (~1.9x gain increase from 0°C to 1000°C)
+- **h = 0.005**: Aggressive scaling (~6x gain increase from 0°C to 1000°C)
+
+**Too small?** PID won't compensate enough at high temps → may be sluggish at high temperatures
+**Too large?** Over-compensation → may cause instability at high temperatures
+
+### Example: Gain Scaling at Different Temperatures
+
+With `THERMAL_H = 0.002` and `THERMAL_T_AMBIENT = 25°C`:
+
+| Temperature | ΔT from Ambient | Gain Scale | Kp (if Kp_base=6.11) |
+|-------------|-----------------|------------|----------------------|
+| 100°C       | 75°C            | 1.15x      | 7.03                 |
+| 400°C       | 375°C           | 1.75x      | 10.69                |
+| 700°C       | 675°C           | 2.35x      | 14.36                |
+| 1000°C      | 975°C           | 2.95x      | 18.02                |
+
+Notice: **Smooth, continuous scaling** from 6.11 to 18.02 (3x increase over 1000°C range)
+
+## Disabling Gain Scheduling
+
+To use constant PID gains (no temperature compensation):
 
 ```python
-# config.py
+# Set THERMAL_H to zero
+THERMAL_H = 0.0
 
-# Default PID parameters (fallback)
-PID_KP = 25.0
-PID_KI = 180.0
-PID_KD = 160.0
-
-# Temperature-range-specific PID parameters
-THERMAL_MODEL = [
-    {'temp_min': 0, 'temp_max': 300, 'kp': 25.0, 'ki': 180.0, 'kd': 160.0},
-    {'temp_min': 300, 'temp_max': 700, 'kp': 20.0, 'ki': 150.0, 'kd': 120.0},
-    {'temp_min': 700, 'temp_max': 9999, 'kp': 15.0, 'ki': 100.0, 'kd': 80.0}
-]
+# The base gains will be used at all temperatures
+PID_KP_BASE = 25.0
+PID_KI_BASE = 0.18
+PID_KD_BASE = 160.0
 ```
 
-### Step 5: Restart Controller
+## Monitoring During Operation
 
-Restart the kiln controller to load the new thermal model.
+The controller prints gain updates to the console:
 
-## Disabling Thermal Model
+```
+[Control Thread] Continuous gain scheduling ENABLED (h=0.002000)
+[Control Thread] Base PID: Kp=6.110 Ki=0.0270 Kd=42.500
 
-To disable gain scheduling and use single PID parameters:
+...during firing...
 
-```python
-# config.py
-THERMAL_MODEL = None  # Use default PID for all temperatures
+[Control Thread] PID gains updated: Kp=7.03 Ki=0.0309 Kd=48.69 @ 100.0°C (scale=1.150)
+[Control Thread] PID gains updated: Kp=10.69 Ki=0.0473 Kd=74.38 @ 400.0°C (scale=1.750)
+[Control Thread] PID gains updated: Kp=14.36 Ki=0.0635 Kd=100.08 @ 700.0°C (scale=2.350)
 ```
 
-## Architecture Details
-
-### Memory Usage
-
-- Each temperature range: ~100 bytes
-- Maximum 5 ranges (~500 bytes total)
-- Validated at startup to prevent memory issues
-
-### Files Modified/Created
-
-1. **`config.py`**: Added THERMAL_MODEL configuration
-2. **`kiln/pid_scheduler.py`**: New gain scheduling module (220 lines)
-3. **`kiln/__init__.py`**: Export PIDGainScheduler
-4. **`kiln/control_thread.py`**: Integration into control loop
-5. **`kiln/comms.py`**: Added PID gains to status messages
-6. **`analyze_tuning.py`**: Added config snippet generator
-7. **`generate_thermal_model_config.py`**: Standalone helper script
-
-### Control Loop Integration
-
-The gain scheduler is called every control loop iteration (1 Hz):
-
-```python
-# In control_thread.py control_loop_iteration()
-
-# Update PID gains based on current temperature
-kp, ki, kd = self.pid_scheduler.get_gains(current_temp)
-if self.pid_scheduler.gains_changed():
-    self.pid.set_gains(kp, ki, kd)
-    print(f"PID gains updated: Kp={kp} Ki={ki} Kd={kd} @ {current_temp}°C")
-
-# Calculate PID output with current gains
-ssr_output = self.pid.update(target_temp, current_temp)
-```
-
-### Status Reporting
-
-Current PID gains are included in status messages:
-
-```json
-{
-  "current_temp": 450.2,
-  "target_temp": 500.0,
-  "pid_kp": 20.0,
-  "pid_ki": 150.0,
-  "pid_kd": 120.0,
-  "pid_stats": {
-    "kp": 20.0,
-    "ki": 150.0,
-    "kd": 120.0,
-    "p_term": 45.6,
-    "i_term": 12.3,
-    "d_term": -5.2
-  }
-}
-```
-
-Web UI can display which gains are currently active.
-
-## Testing Recommendations
-
-### Unit Testing (Optional)
-
-Test the PIDGainScheduler class:
-
-```python
-# Test basic range selection
-scheduler = PIDGainScheduler(
-    thermal_model=[
-        {'temp_min': 0, 'temp_max': 300, 'kp': 25.0, 'ki': 180.0, 'kd': 160.0},
-        {'temp_min': 300, 'temp_max': 700, 'kp': 20.0, 'ki': 150.0, 'kd': 120.0},
-    ],
-    default_kp=25.0, default_ki=180.0, default_kd=160.0
-)
-
-# Test low temp range
-kp, ki, kd = scheduler.get_gains(150)
-assert kp == 25.0 and ki == 180.0 and kd == 160.0
-
-# Test mid temp range
-kp, ki, kd = scheduler.get_gains(450)
-assert kp == 20.0 and ki == 150.0 and kd == 120.0
-
-# Test boundary (inclusive lower)
-kp, ki, kd = scheduler.get_gains(300)
-assert kp == 20.0  # 300 is in the 300-700 range
-```
-
-### Integration Testing
-
-1. **Test with THERMAL_MODEL = None**:
-   - Should use default PID values
-   - No gain switching should occur
-
-2. **Test with 2-range model**:
-   - Monitor gains in console/web UI
-   - Verify switching at boundary temperature
-   - Check for smooth control during transition
-
-3. **Test with 3-range model**:
-   - Run full firing profile (0-1300°C)
-   - Monitor gain switches at each boundary
-   - Verify no control discontinuities
-
-### Manual Testing
-
-Run an actual firing profile and monitor:
-
-1. **Console output**: Watch for gain update messages
-2. **Web UI**: Display current Kp/Ki/Kd values
-3. **Temperature control**: Check for:
-   - No sudden SSR output changes at boundaries
-   - No oscillations after gain switches
-   - Improved temperature tracking vs single PID
-
-## Design Decisions and Trade-offs
-
-### 1. Range Boundaries
-
-**Decision**: Use `temp_min <= current_temp < temp_max` (inclusive lower, exclusive upper)
-
-**Rationale**: Standard range convention, prevents overlaps
-
-**Trade-off**: Last range must have very high temp_max (e.g., 9999°C)
-
-### 2. Switching Behavior
-
-**Decision**: Instant switching when crossing boundaries (no interpolation)
-
-**Rationale**:
-- Simple and fast (O(n) lookup where n ≤ 5)
-- MicroPython compatible (no floating point interpolation)
-- Acceptable for slow thermal systems (kilns have minutes of time constant)
-
-**Trade-off**: Small control discontinuity possible at boundaries, but mitigated by:
-- Maintaining integral term continuity
-- Slow kiln thermal response
-- Reasonable gain values across ranges
-
-### 3. Fallback Logic
-
-**Decision**: Use default PID if temperature outside all ranges
-
-**Rationale**: Graceful degradation, prevents controller failure
-
-**Implementation**:
-```
-if THERMAL_MODEL is None:
-    use default PID_KP, PID_KI, PID_KD
-else:
-    use gain scheduler
-    if temp outside all ranges: use default PID
-```
-
-### 4. Memory Constraints
-
-**Decision**: Maximum 5 temperature ranges
-
-**Rationale**: Each range uses ~100 bytes, 5 ranges = ~500 bytes (acceptable on Pico 2)
-
-**Validation**: Checked at startup, raises error if exceeded
-
-### 5. Performance
-
-**Decision**: O(n) linear search through ranges (n ≤ 5)
-
-**Rationale**:
-- Called once per control loop (1 Hz)
-- n ≤ 5 means max 5 comparisons
-- Fast enough (microseconds) vs 1-second control interval
-- Simpler than binary search for small n
-
-## Example Thermal Models
-
-### Conservative (Wide Ranges)
-
-```python
-THERMAL_MODEL = [
-    {'temp_min': 0, 'temp_max': 500, 'kp': 25.0, 'ki': 180.0, 'kd': 160.0},
-    {'temp_min': 500, 'temp_max': 9999, 'kp': 15.0, 'ki': 100.0, 'kd': 80.0}
-]
-```
-
-### Detailed (Narrow Ranges)
-
-```python
-THERMAL_MODEL = [
-    {'temp_min': 0, 'temp_max': 200, 'kp': 30.0, 'ki': 200.0, 'kd': 180.0},
-    {'temp_min': 200, 'temp_max': 500, 'kp': 25.0, 'ki': 180.0, 'kd': 160.0},
-    {'temp_min': 500, 'temp_max': 800, 'kp': 20.0, 'ki': 150.0, 'kd': 120.0},
-    {'temp_min': 800, 'temp_max': 1100, 'kp': 15.0, 'ki': 100.0, 'kd': 80.0},
-    {'temp_min': 1100, 'temp_max': 9999, 'kp': 10.0, 'ki': 50.0, 'kd': 40.0}
-]
-```
+Watch for:
+- ✅ Gains increasing smoothly as temperature rises
+- ❌ Excessive oscillations (h may be too large)
+- ❌ Sluggish response at high temps (h may be too small)
 
 ## Troubleshooting
 
-### Thermal model validation error
+### "Heat loss coefficient is very small (h=0.000100)"
 
-**Error**: `ValueError: THERMAL_MODEL limited to 5 ranges`
+**Cause:** Insufficient temperature range in tuning data, or heat loss variation is minimal
 
-**Solution**: Reduce number of temperature ranges to 5 or fewer
+**Solution:**
+- Run tuning across wider temperature range
+- Or just use constant gains (`THERMAL_H = 0`)
 
-### No gains switching during firing
+### "THERMAL_H is very large"
 
-**Check**:
-1. Verify THERMAL_MODEL is not None in config.py
-2. Check console for "PID gains updated" messages
-3. Verify temperature ranges cover current temp
-4. Check last range has high enough temp_max (e.g., 9999)
+**Cause:** User error or tuning data has errors
 
-### Control oscillations after gain switch
+**Solution:**
+- Check tuning data quality
+- Re-run tuning with better plateaus
+- Expected range: 0.0001 to 0.01
 
-**Possible causes**:
-1. PID gains too aggressive for that temperature range
-2. Large gain difference between ranges
+### Control oscillates at high temperatures
 
-**Solutions**:
-1. Use more conservative gains (lower Kp, Ki, Kd)
-2. Make gain transitions more gradual across ranges
-3. Re-run tuning analysis with --method amigo (most conservative)
+**Cause:** `THERMAL_H` is too large, over-compensating
 
-### Performance issues
+**Solution:**
+- Reduce `THERMAL_H` by 50%
+- Re-test
+- Or disable gain scheduling (`THERMAL_H = 0`)
 
-**Unlikely** (gain scheduler is very fast), but if you see control loop delays:
+### Sluggish response at high temperatures
 
-1. Check number of ranges (should be ≤ 5)
-2. Verify no exception spam in console
-3. Monitor control loop timing
+**Cause:** `THERMAL_H` is too small, under-compensating
 
-## Future Enhancements
+**Solution:**
+- Increase `THERMAL_H` by 50%
+- Re-test
 
-Potential improvements (not currently implemented):
+## Technical Details
 
-1. **Gain interpolation**: Smoothly interpolate between ranges instead of instant switching
-2. **Adaptive tuning**: Automatically adjust gains based on observed performance
-3. **Load-dependent scheduling**: Different gains based on kiln load/thermal mass
-4. **Web UI configuration**: Edit THERMAL_MODEL via web interface
-5. **Profile-specific models**: Different thermal models for different firing profiles
+### Implementation
 
-## Summary
+**Analyzer** (`scripts/analyzer/`):
+- Fits single thermal model (L, τ) from full dataset
+- Extracts effective gain from each plateau: `K_eff = (T - T_ambient) / SSR`
+- Fits heat loss coefficient using linear regression
+- Uses median for robustness to outliers
 
-The thermal model feature provides sophisticated gain scheduling for improved kiln control across wide temperature ranges. It's:
+**Runtime** (`kiln/control_thread.py`):
+- Calculates `gain_scale = 1 + h × (T - T_ambient)` in control loop
+- Updates PID gains when change exceeds threshold (0.01 for Kp/Kd, 0.0001 for Ki)
+- Simple, fast computation (~3 floating-point operations)
 
-- **Easy to configure**: Generated automatically from tuning data
-- **Memory efficient**: <500 bytes for 5 ranges
-- **Fast**: Microsecond lookup overhead
-- **MicroPython compatible**: No external dependencies
-- **Optional**: Can be disabled by setting THERMAL_MODEL = None
+### Memory Usage
 
-For best results, run a comprehensive tuning test across your full temperature range and use the generated thermal model in production firings.
+- Old range-based: ~500 bytes (multiple PID sets + hysteresis logic)
+- New continuous: ~12 bytes (3 floats: h, T_ambient, and current gain_scale)
+
+**Savings:** ~98% reduction in memory usage!
+
+### Computational Cost
+
+Per PID update (1 Hz):
+```python
+gain_scale = 1.0 + self.thermal_h * (current_temp - self.thermal_t_ambient)  # 2 float ops
+kp = self.pid_kp_base * gain_scale  # 1 float multiply
+# Total: 3 float operations (negligible on RP2350)
+```
+
+## References
+
+- Process control textbook: "Gain scheduling for wide-range temperature control"
+- Similar approach used in industrial furnace controllers
+- Physics: Stefan-Boltzmann law (radiation heat loss ∝ T⁴), linearized for control
+
+## Support
+
+For questions or issues:
+- Check tuning data quality (analyzer provides warnings)
+- Start conservative (smaller h values)
+- Monitor first firing closely
+- Report issues: https://github.com/anthropics/claude-code/issues

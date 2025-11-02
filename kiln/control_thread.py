@@ -11,7 +11,7 @@
 import time
 from machine import Pin, SPI, WDT
 from wrapper import DigitalInOut, SPIWrapper
-from kiln import TemperatureSensor, SSRController, PID, PIDGainScheduler, KilnController, Profile
+from kiln import TemperatureSensor, SSRController, PID, KilnController, Profile
 from kiln.state import KilnState
 from kiln.comms import MessageType, StatusMessage, QueueHelper
 from kiln.tuner import ZieglerNicholsTuner, TuningStage
@@ -112,22 +112,43 @@ class ControlThread:
             error_log=self.error_log
         )
 
-        # Initialize PID controller
+        # Get base PID gains and thermal parameters
+        self.pid_kp_base = getattr(self.config, 'PID_KP_BASE', 25.0)
+        self.pid_ki_base = getattr(self.config, 'PID_KI_BASE', 0.18)
+        self.pid_kd_base = getattr(self.config, 'PID_KD_BASE', 160.0)
+        self.thermal_h = getattr(self.config, 'THERMAL_H', 0.0)
+        self.thermal_t_ambient = getattr(self.config, 'THERMAL_T_AMBIENT', 25.0)
+
+        # Validate THERMAL_H
+        if self.thermal_h < 0:
+            print(f"[Control Thread] WARNING: THERMAL_H={self.thermal_h} is negative - setting to 0")
+            print(f"[Control Thread] Heat loss coefficient must be non-negative")
+            self.thermal_h = 0.0
+        elif self.thermal_h > 0.1:
+            print(f"[Control Thread] WARNING: THERMAL_H={self.thermal_h} is very large")
+            print(f"[Control Thread] Typical range: 0.0001 to 0.01 - may cause control instability")
+            print(f"[Control Thread] Proceeding anyway, but monitor carefully")
+
+        # Initialize PID controller with base gains
         self.pid = PID(
-            kp=self.config.PID_KP,
-            ki=self.config.PID_KI,
-            kd=self.config.PID_KD,
+            kp=self.pid_kp_base,
+            ki=self.pid_ki_base,
+            kd=self.pid_kd_base,
             output_limits=(0, 100)
         )
 
-        # Initialize PID gain scheduler
-        thermal_model = getattr(self.config, 'THERMAL_MODEL', None)
-        self.pid_scheduler = PIDGainScheduler(
-            thermal_model=thermal_model,
-            default_kp=self.config.PID_KP,
-            default_ki=self.config.PID_KI,
-            default_kd=self.config.PID_KD
-        )
+        # Track current gains for change detection
+        self._current_kp = self.pid_kp_base
+        self._current_ki = self.pid_ki_base
+        self._current_kd = self.pid_kd_base
+
+        # Print continuous gain scheduling status
+        if self.thermal_h > 0:
+            print(f"[Control Thread] Continuous gain scheduling ENABLED (h={self.thermal_h:.6f})")
+            print(f"[Control Thread] Base PID: Kp={self.pid_kp_base:.3f} Ki={self.pid_ki_base:.4f} Kd={self.pid_kd_base:.3f}")
+        else:
+            print(f"[Control Thread] Continuous gain scheduling DISABLED (constant gains)")
+            print(f"[Control Thread] PID: Kp={self.pid_kp_base:.3f} Ki={self.pid_ki_base:.4f} Kd={self.pid_kd_base:.3f}")
 
         # Initialize kiln controller
         self.controller = KilnController(
@@ -456,11 +477,25 @@ class ControlThread:
 
             # 4. Calculate PID output
             if self.controller.state == KilnState.RUNNING:
-                # Update PID gains based on current temperature (gain scheduling)
-                kp, ki, kd = self.pid_scheduler.get_gains(current_temp)
-                if self.pid_scheduler.gains_changed():
-                    self.pid.set_gains(kp, ki, kd)
-                    print(f"[Control Thread] PID gains updated: Kp={kp:.3f} Ki={ki:.4f} Kd={kd:.3f} @ {current_temp:.1f}°C")
+                # Continuous gain scheduling based on temperature
+                # Physics: gain_scale(T) = 1 + h*(T - T_ambient)
+                # This compensates for increased heat loss at higher temperatures
+                if self.thermal_h > 0:
+                    gain_scale = 1.0 + self.thermal_h * (current_temp - self.thermal_t_ambient)
+                    kp = self.pid_kp_base * gain_scale
+                    ki = self.pid_ki_base * gain_scale
+                    kd = self.pid_kd_base * gain_scale
+
+                    # Only update gains if they changed significantly (absolute threshold)
+                    # Using absolute thresholds avoids division by zero
+                    if (abs(kp - self._current_kp) > 0.01 or
+                        abs(ki - self._current_ki) > 0.0001 or
+                        abs(kd - self._current_kd) > 0.01):
+                        self.pid.set_gains(kp, ki, kd)
+                        self._current_kp = kp
+                        self._current_ki = ki
+                        self._current_kd = kd
+                        print(f"[Control Thread] PID gains updated: Kp={kp:.3f} Ki={ki:.4f} Kd={kd:.3f} @ {current_temp:.1f}°C (scale={gain_scale:.3f})")
 
                 # PID control active
                 ssr_output = self.pid.update(target_temp, current_temp)

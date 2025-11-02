@@ -117,9 +117,9 @@ def main():
         pid_methods = calculate_all_pid_methods(model)
         print(f"✓ Calculated {len(pid_methods)} PID parameter sets")
 
-        # Calculate temperature-range-specific PIDs
+        # Calculate temperature-range-specific PIDs using gain scheduling
         print("📊 Analyzing temperature-range-specific parameters...")
-        range_pids = calculate_temperature_range_pids(data, phases)
+        range_pids = calculate_temperature_range_pids(model, data)
         if range_pids:
             print(f"✓ Generated {len(range_pids)} temperature-range-specific PID sets")
         else:

@@ -184,81 +184,84 @@ def calculate_all_pid_methods(model: ThermalModel) -> Dict[str, PIDParams]:
 # Temperature-Range-Specific PID
 # =============================================================================
 
-def calculate_temperature_range_pids(data: Dict, phases: List[Phase],
-                                    min_range_size: float = 50) -> List[Dict]:
+def calculate_temperature_range_pids(model: ThermalModel, data: Dict) -> List[Dict]:
     """
-    Calculate PID parameters for different temperature ranges.
+    Calculate PID parameters for different temperature ranges using continuous gain scaling.
+
+    This implementation uses a SINGLE thermal model (L, τ, K_base) fitted from full data,
+    then adjusts PID gains based on temperature-dependent heat loss using a simple formula.
+
+    Physics:
+    - At higher temperatures, heat loss increases (radiation, convection)
+    - This means you need more SSR power to maintain temperature
+    - Therefore, the effective gain K_eff (°C per % SSR) DECREASES at high temps
+    - We model this as: K_eff(T) = K_base / (1 + h*(T - T_ambient))
+    - PID scaling: gain_scale(T) = 1 + h*(T - T_ambient)
+    - Therefore: Kp(T) = Kp_base * gain_scale(T)
 
     Args:
-        data: Dictionary with tuning data
-        phases: List of detected phases
-        min_range_size: Minimum temperature range size (°C)
+        model: ThermalModel with heat_loss_coefficient
+        data: Dictionary with tuning data (used to determine temperature span)
 
     Returns:
-        List of dictionaries with range-specific PIDs
+        List of dictionaries with range-specific PIDs in config format:
+        {'temp_min': X, 'temp_max': Y, 'kp': Z, 'ki': W, 'kd': V}
+        Note: These are for display - runtime should use continuous formula!
     """
-    # Import fit_thermal_model here to avoid circular import
-    from .thermal import fit_thermal_model
-
     temp = data['temp']
-    min_temp = min(temp)
     max_temp = max(temp)
-    temp_span = max_temp - min_temp
+    temp_span = max_temp - min(temp)
 
     # Only create ranges if we have significant temperature span
     if temp_span < 100:
         return []
 
-    # Define temperature ranges
+    # If no heat loss coefficient, return uniform PID (no temperature dependence)
+    if model.heat_loss_coefficient <= 0:
+        return []
+
+    # Define standard temperature ranges for pottery kilns
+    # These are for display/documentation - runtime should use continuous formula
     ranges = []
     if max_temp > 700:
         ranges = [
-            {'name': 'LOW', 'min': 0, 'max': 300},
-            {'name': 'MID', 'min': 300, 'max': 700},
-            {'name': 'HIGH', 'min': 700, 'max': 1300}
+            {'name': 'LOW', 'temp_min': 0, 'temp_max': 300},
+            {'name': 'MID', 'temp_min': 300, 'temp_max': 700},
+            {'name': 'HIGH', 'temp_min': 700, 'temp_max': 1300}
         ]
     elif max_temp > 300:
         ranges = [
-            {'name': 'LOW', 'min': 0, 'max': 300},
-            {'name': 'MID', 'min': 300, 'max': max(700, max_temp + 50)}
+            {'name': 'LOW', 'temp_min': 0, 'temp_max': 300},
+            {'name': 'MID', 'temp_min': 300, 'temp_max': max(700, max_temp + 50)}
         ]
     else:
         return []
 
+    # Calculate base PID using AMIGO (conservative, minimal overshoot)
+    base_pid = calculate_amigo(model)
+
     range_pids = []
-
     for temp_range in ranges:
-        # Filter data for this temperature range
-        range_indices = [i for i, t in enumerate(temp)
-                        if temp_range['min'] <= t <= temp_range['max']]
+        # Calculate average temperature for this range
+        avg_temp = (temp_range['temp_min'] + temp_range['temp_max']) / 2
 
-        if len(range_indices) < 10:
-            continue
+        # Calculate gain scaling factor at this temperature
+        # gain_scale = 1 + h*(T - T_ambient)
+        delta_T = avg_temp - model.ambient_temp
+        gain_scale = 1.0 + model.heat_loss_coefficient * delta_T
 
-        # Create filtered dataset for this range
-        range_data = {
-            'time': [data['time'][i] for i in range_indices],
-            'temp': [data['temp'][i] for i in range_indices],
-            'ssr_output': [data['ssr_output'][i] for i in range_indices],
-            'timestamps': [data['timestamps'][i] for i in range_indices]
-        }
-
-        # Detect phases in this range
-        range_phases = detect_phases(range_data)
-
-        # Fit thermal model for this range
-        range_model = fit_thermal_model(range_data, range_phases)
-
-        # Calculate AMIGO parameters (conservative choice for range-specific)
-        pid = calculate_amigo(range_model)
+        # Scale PID parameters
+        # When K_eff decreases (high temp), Kp must increase to compensate
+        kp = base_pid.kp * gain_scale
+        ki = base_pid.ki * gain_scale
+        kd = base_pid.kd * gain_scale
 
         range_pids.append({
-            'range': f"{temp_range['min']}-{temp_range['max']}",
-            'name': temp_range['name'],
-            'kp': round(pid.kp, 3),
-            'ki': round(pid.ki, 4),
-            'kd': round(pid.kd, 3),
-            'samples': len(range_indices)
+            'temp_min': temp_range['temp_min'],
+            'temp_max': temp_range['temp_max'],
+            'kp': round(kp, 3),
+            'ki': round(ki, 4),
+            'kd': round(kd, 3)
         })
 
     return range_pids
