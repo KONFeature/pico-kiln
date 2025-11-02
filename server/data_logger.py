@@ -141,13 +141,22 @@ class DataLogger:
             state = status.get('state', 'UNKNOWN')
             progress = status.get('progress', 0.0)
 
-            # Extract step info (populated for both tuning and profile runs)
-            step_name = status.get('step_name', '')
-            step_index = status.get('step_index', '')
-            total_steps = status.get('total_steps', '')
+            # Check if we're in recovery mode
+            is_recovering = status.get('is_recovering', False)
 
-            # Extract rate info (for adaptive control)
-            current_rate = status.get('current_rate', 0.0)
+            if is_recovering:
+                # In recovery mode - use special markers
+                step_name = 'RECOVERY'
+                step_index = -1
+                total_steps = status.get('total_steps', '')
+                current_rate = 0.0  # No rate during recovery
+            else:
+                # Normal logging - extract step info (populated for both tuning and profile runs)
+                step_name = status.get('step_name', '')
+                step_index = status.get('step_index', '')
+                total_steps = status.get('total_steps', '')
+                # Extract rate info (for adaptive control)
+                current_rate = status.get('current_rate', 0.0)
 
             # Format row
             timestamp_iso = self._format_timestamp_iso(timestamp)

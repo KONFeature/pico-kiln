@@ -71,6 +71,10 @@ class KilnController:
         # Error tracking
         self.error_message = None
 
+        # Recovery mode state
+        self.recovery_target_temp = None  # If set, we're in recovery mode
+        self.recovery_start_time = None   # When recovery started (for time adjustment)
+
     def run_profile(self, profile):
         """
         Start running a firing profile
@@ -107,17 +111,22 @@ class KilnController:
 
         print(f"Starting profile: {profile.name} ({len(profile.steps)} steps)")
 
-    def resume_profile(self, profile, elapsed_seconds, current_rate=None):
+    def resume_profile(self, profile, elapsed_seconds, current_rate=None, last_logged_temp=None, current_temp=None):
         """
         Resume a previously interrupted firing profile
 
         Similar to run_profile(), but adjusts start_time and step state
         to account for time that has already elapsed.
 
+        If current_temp is significantly lower than last_logged_temp, enters
+        recovery mode to stabilize at last_logged_temp before resuming profile.
+
         Args:
             profile: Profile instance to resume
             elapsed_seconds: How far through the profile to resume from
             current_rate: Adapted rate to restore (from CSV log), or None for desired_rate
+            last_logged_temp: Last logged temperature before crash (for recovery detection)
+            current_temp: Current temperature (for recovery detection)
         """
         if self.state == KilnState.RUNNING:
             raise Exception("Cannot resume profile: kiln is already running")
@@ -157,6 +166,20 @@ class KilnController:
         self.last_temp_recording = elapsed_seconds
         self.last_adaptation_time = elapsed_seconds
         self.adaptation_count = 0
+
+        # Check for temperature loss and enter recovery mode if needed
+        TEMP_LOSS_THRESHOLD = 5.0  # °C tolerance
+        if last_logged_temp is not None and current_temp is not None:
+            temp_loss = last_logged_temp - current_temp
+            if temp_loss > TEMP_LOSS_THRESHOLD:
+                # Enter recovery mode - hold at last logged temp until caught up
+                self.recovery_target_temp = last_logged_temp
+                self.recovery_start_time = time.time()
+                print(f"Resuming profile: {profile.name} at step {step_index + 1}/{len(profile.steps)}, {elapsed_seconds:.1f}s elapsed")
+                print(f"[Recovery] Temperature loss detected: {temp_loss:.1f}°C")
+                print(f"[Recovery] Current temp: {current_temp:.1f}°C, need to reach: {last_logged_temp:.1f}°C")
+                print(f"[Recovery] Profile progression paused until temperature recovered")
+                return
 
         print(f"Resuming profile: {profile.name} at step {step_index + 1}/{len(profile.steps)}, {elapsed_seconds:.1f}s elapsed")
 
@@ -296,6 +319,31 @@ class KilnController:
 
         # Get current step
         current_step = self.active_profile.steps[self.current_step_index]
+
+        # Check if we're in recovery mode
+        if self.recovery_target_temp is not None:
+            # In recovery mode - hold at recovery target until current temp catches up
+            target = self.recovery_target_temp
+
+            # Check if recovery is complete (within 1°C of target)
+            if self.current_temp >= self.recovery_target_temp - 1.0:
+                recovery_duration = time.time() - self.recovery_start_time
+                print(f"[Recovery] Temperature recovered! Took {recovery_duration/60:.1f} minutes")
+                print(f"[Recovery] Adjusting profile clock to exclude recovery time")
+
+                # Adjust start_time to exclude recovery duration from profile progression
+                self.start_time += recovery_duration
+
+                # Exit recovery mode
+                self.recovery_target_temp = None
+                self.recovery_start_time = None
+
+                print(f"[Recovery] Resuming normal profile execution")
+                # Continue to normal profile execution below
+            else:
+                # Still recovering - return recovery target
+                self.target_temp = target
+                return target
 
         # Check for adaptation (every minute for ramp steps)
         if (current_step['type'] == 'ramp' and
@@ -516,7 +564,11 @@ class KilnController:
             'current_rate': round(self.current_rate, 1),
             'actual_rate': round(self.temp_history.get_rate(self.rate_measurement_window), 1),
             'min_rate': 0,
-            'adaptation_count': self.adaptation_count
+            'adaptation_count': self.adaptation_count,
+
+            # Recovery mode information
+            'is_recovering': self.recovery_target_temp is not None,
+            'recovery_target_temp': round(self.recovery_target_temp, 2) if self.recovery_target_temp is not None else None
         }
 
         if self.active_profile:

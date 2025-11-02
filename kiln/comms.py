@@ -145,19 +145,23 @@ class CommandMessage:
         }
 
     @staticmethod
-    def resume_profile(profile_filename, elapsed_seconds, current_rate=None):
+    def resume_profile(profile_filename, elapsed_seconds, current_rate=None, last_logged_temp=None, current_temp=None):
         """Resume a previously interrupted firing profile
 
         Args:
             profile_filename: Filename of the profile to resume (e.g., "cone6_glaze.json")
             elapsed_seconds: How far through the profile execution to resume from
             current_rate: Adapted rate to restore (from CSV log), or None for desired_rate
+            last_logged_temp: Last logged temperature before crash (for recovery detection)
+            current_temp: Current temperature (for recovery detection)
         """
         return {
             'type': MessageType.RESUME_PROFILE,
             'profile_filename': profile_filename,
             'elapsed_seconds': elapsed_seconds,
-            'current_rate': current_rate
+            'current_rate': current_rate,
+            'last_logged_temp': last_logged_temp,
+            'current_temp': current_temp
         }
 
     @staticmethod
@@ -279,6 +283,13 @@ class StatusMessage:
         # Add SSR state
         ssr_state = ssr_controller.get_state()
         status['ssr_duty_cycle'] = ssr_state['duty_cycle']
+
+        # Add recovery mode information
+        status['is_recovering'] = controller.recovery_target_temp is not None
+        status['recovery_target_temp'] = round(controller.recovery_target_temp, 2) if controller.recovery_target_temp is not None else None
+
+        # Add current adapted rate (for logging and monitoring)
+        status['current_rate'] = round(controller.current_rate, 1)
 
         return status
 

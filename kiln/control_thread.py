@@ -233,6 +233,8 @@ class ControlThread:
                 profile_filename = command.get('profile_filename')
                 elapsed_seconds = command.get('elapsed_seconds', 0)
                 current_rate = command.get('current_rate')  # Adapted rate from recovery
+                last_logged_temp = command.get('last_logged_temp')  # For recovery detection
+                current_temp = command.get('current_temp')  # For recovery detection
 
                 if not profile_filename:
                     print("[Control Thread] Error: No profile filename in resume_profile command")
@@ -240,7 +242,7 @@ class ControlThread:
 
                 try:
                     profile = self.load_profile_with_retry(f"profiles/{profile_filename}")
-                    self.controller.resume_profile(profile, elapsed_seconds, current_rate)
+                    self.controller.resume_profile(profile, elapsed_seconds, current_rate, last_logged_temp, current_temp)
                     print(f"[Control Thread] Resumed profile: {profile.name} at {elapsed_seconds:.1f}s")
                 except Exception as e:
                     print(f"[Control Thread] Error loading profile '{profile_filename}': {e}")

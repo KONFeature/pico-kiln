@@ -74,7 +74,7 @@ class RecoveryListener:
         )
 
         if recovery_info.can_recover:
-            self._attempt_recovery(recovery_info)
+            self._attempt_recovery(recovery_info, current_temp)
         else:
             print(f"[Recovery] No recovery needed: {recovery_info.recovery_reason}")
 
@@ -117,17 +117,19 @@ class RecoveryListener:
 
         print(f"[Recovery] Recovery retry will occur on next temperature reading")
 
-    def _attempt_recovery(self, recovery_info):
+    def _attempt_recovery(self, recovery_info, current_temp):
         """
         Attempt to resume the interrupted program
 
         Args:
             recovery_info: RecoveryInfo object with recovery details
+            current_temp: Current temperature reading
         """
         print(f"[Recovery] RECOVERY POSSIBLE: {recovery_info.recovery_reason}")
         print(f"[Recovery] Resuming profile '{recovery_info.profile_name}'")
         print(f"[Recovery] Elapsed time: {recovery_info.elapsed_seconds:.1f}s")
         print(f"[Recovery] Last temp: {recovery_info.last_temp:.1f}°C")
+        print(f"[Recovery] Current temp: {current_temp:.1f}°C")
 
         try:
             # Set recovery context for data logger
@@ -139,7 +141,9 @@ class RecoveryListener:
             resume_cmd = CommandMessage.resume_profile(
                 profile_filename,
                 recovery_info.elapsed_seconds,
-                recovery_info.current_rate
+                recovery_info.current_rate,
+                recovery_info.last_temp,
+                current_temp
             )
             self.command_queue.put_sync(resume_cmd)
 
