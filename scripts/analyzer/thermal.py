@@ -268,7 +268,7 @@ def fit_heat_loss_coefficient(gain_points: List[Dict], base_gain: float, ambient
         return 0.0001
 
 
-def fit_heat_loss_from_cooling(data: Dict, phases: List[Phase], ambient_temp: float) -> float:
+def fit_heat_loss_from_cooling(data: Dict, phases: List[Phase], ambient_temp: float, verbose: bool = False) -> float:
     """
     Fit heat loss coefficient from cooling phases.
 
@@ -284,6 +284,7 @@ def fit_heat_loss_from_cooling(data: Dict, phases: List[Phase], ambient_temp: fl
         data: Dictionary with time, temp, ssr_output arrays
         phases: List of detected phases
         ambient_temp: Ambient temperature (°C)
+        verbose: If True, print diagnostic information
 
     Returns:
         Heat loss coefficient h (0.0001 to 0.01 for kilns), or 0 if fitting fails
@@ -297,11 +298,18 @@ def fit_heat_loss_from_cooling(data: Dict, phases: List[Phase], ambient_temp: fl
                      and p.temp_start > ambient_temp + 20]  # Significantly above ambient
 
     if not cooling_phases:
+        if verbose:
+            print("\n⚠️  No suitable cooling phases found for heat loss fitting")
         return 0.0
 
+    if verbose:
+        print(f"\n📊 Fitting heat loss coefficient from {len(cooling_phases)} cooling phases:")
+
     h_estimates = []
+    phase_num = 0
 
     for phase in cooling_phases:
+        phase_num += 1
         # Extract phase data
         phase_time = time_array[phase.start_idx:phase.end_idx+1]
         phase_temp = temp_array[phase.start_idx:phase.end_idx+1]
@@ -380,13 +388,38 @@ def fit_heat_loss_from_cooling(data: Dict, phases: List[Phase], ambient_temp: fl
             # Validate h is in reasonable range
             if 0.0001 <= h <= 0.1:
                 h_estimates.append(h)
+                if verbose:
+                    temp_drop = phase_temp[0] - phase_temp[-1]
+                    duration = phase_time[-1] - phase_time[0]
+                    print(f"  Phase {phase_num}: {phase_temp[0]:.1f}°C → {phase_temp[-1]:.1f}°C "
+                          f"(Δ-{temp_drop:.1f}°C in {duration/60:.1f}min) → k={k:.6f}, h={h:.6f}")
+            elif verbose:
+                print(f"  Phase {phase_num}: Rejected (h={h:.6f} out of range)")
+        elif verbose:
+            print(f"  Phase {phase_num}: Skipped (temp too close to ambient)")
 
     if not h_estimates:
+        if verbose:
+            print("  ❌ No valid h estimates obtained from cooling phases")
         return 0.0
 
     # Use median for robustness against outliers
     h_estimates.sort()
     median_idx = len(h_estimates) // 2
     h = h_estimates[median_idx]
+
+    if verbose:
+        min_h = min(h_estimates)
+        max_h = max(h_estimates)
+        print(f"\n  Summary: {len(h_estimates)} valid estimates")
+        print(f"    Range: {min_h:.6f} to {max_h:.6f}")
+        print(f"    Median (selected): h = {h:.6f}")
+
+        # Show what this means for gain scaling
+        print(f"\n  Gain scaling implications:")
+        for temp in [100, 300, 700, 1000]:
+            gain_scale = 1.0 + h * (temp - ambient_temp)
+            pct = (gain_scale - 1.0) * 100
+            print(f"    At {temp:4}°C: gain scale = {gain_scale:.4f} (+{pct:.1f}%)")
 
     return round(h, 6)

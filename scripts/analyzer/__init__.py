@@ -19,8 +19,7 @@ from .pid import (
     calculate_cohen_coon,
     calculate_amigo,
     calculate_lambda,
-    calculate_all_pid_methods,
-    calculate_temperature_range_pids
+    calculate_all_pid_methods
 )
 from .reporting import (
     assess_test_quality,
@@ -45,7 +44,6 @@ __all__ = [
     'calculate_amigo',
     'calculate_lambda',
     'calculate_all_pid_methods',
-    'calculate_temperature_range_pids',
     # Reporting module
     'assess_test_quality',
     'analyze_tuning_steps',

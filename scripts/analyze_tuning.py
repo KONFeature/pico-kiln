@@ -9,7 +9,7 @@ Features:
 - Multi-phase detection (heating, cooling, hold periods)
 - Thermal model fitting (dead time, time constant, heat loss)
 - Multiple PID calculation methods (Ziegler-Nichols, Cohen-Coon, AMIGO, Lambda)
-- Temperature-range-specific PID parameters
+- Continuous gain scheduling (compensates for heat loss at high temperatures)
 - Comprehensive reporting and recommendations
 
 Usage:
@@ -30,7 +30,6 @@ from analyzer import (
     detect_phases,
     fit_thermal_model,
     calculate_all_pid_methods,
-    calculate_temperature_range_pids,
     assess_test_quality,
     analyze_tuning_steps,
     generate_results_json,
@@ -117,14 +116,6 @@ def main():
         pid_methods = calculate_all_pid_methods(model)
         print(f"✓ Calculated {len(pid_methods)} PID parameter sets")
 
-        # Calculate temperature-range-specific PIDs using gain scheduling
-        print("📊 Analyzing temperature-range-specific parameters...")
-        range_pids = calculate_temperature_range_pids(model, data)
-        if range_pids:
-            print(f"✓ Generated {len(range_pids)} temperature-range-specific PID sets")
-        else:
-            print("  (Temperature range too small for range-specific PIDs)")
-
         # Assess test quality
         test_quality = assess_test_quality(data, phases, model)
         print(f"✓ Test quality: {test_quality}")
@@ -151,7 +142,7 @@ def main():
 
         # Generate results
         results = generate_results_json(data, phases, model, pid_methods,
-                                       range_pids, test_quality, recommended_method)
+                                       test_quality, recommended_method)
 
         # Save JSON
         output_file = "tuning_results.json"
@@ -160,18 +151,8 @@ def main():
         print(f"✓ Results saved to: {output_file}")
 
         # Print beautiful report
-        print_beautiful_report(data, phases, model, pid_methods, range_pids,
+        print_beautiful_report(data, phases, model, pid_methods,
                               test_quality, recommended_method, step_analyses)
-
-        # Print hint about config snippet generator
-        if range_pids:
-            print("\n" + "=" * 80)
-            print("📋 THERMAL MODEL CONFIG SNIPPET")
-            print("=" * 80)
-            print("To generate a ready-to-paste config snippet, run:")
-            print("  python -c \"from analyze_tuning import generate_config_snippet; generate_config_snippet()\"")
-            print("=" * 80)
-            print()
 
     except Exception as e:
         print(f"\n❌ Error: {e}")

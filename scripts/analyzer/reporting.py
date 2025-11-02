@@ -155,7 +155,7 @@ def analyze_tuning_steps(data: Dict, phases: List[Phase]) -> Optional[List[Dict]
 # =============================================================================
 
 def generate_results_json(data: Dict, phases: List[Phase], model: ThermalModel,
-                         pid_methods: Dict[str, PIDParams], range_pids: List[Dict],
+                         pid_methods: Dict[str, PIDParams],
                          test_quality: str, recommended_method: str) -> Dict:
     """Generate comprehensive results dictionary for JSON output."""
 
@@ -179,14 +179,13 @@ def generate_results_json(data: Dict, phases: List[Phase], model: ThermalModel,
             'heat_loss_method': model.heat_loss_method
         },
         'pid_methods': {name: pid.to_dict() for name, pid in pid_methods.items()},
-        'temperature_ranges': range_pids if range_pids else None,
         'recommended': recommended_method,
         'test_quality': test_quality
     }
 
 
 def print_beautiful_report(data: Dict, phases: List[Phase], model: ThermalModel,
-                          pid_methods: Dict[str, PIDParams], range_pids: List[Dict],
+                          pid_methods: Dict[str, PIDParams],
                           test_quality: str, recommended_method: str,
                           step_analyses: Optional[List[Dict]] = None):
     """Print a beautifully formatted analysis report."""
@@ -244,17 +243,6 @@ def print_beautiful_report(data: Dict, phases: List[Phase], model: ThermalModel,
         print(f"│    Kp: {pid.kp:8.3f}  |  Ki: {pid.ki:8.4f}  |  Kd: {pid.kd:8.3f}")
         print(f"│    {pid.characteristics}")
     print("└" + "─" * 79)
-
-    # Temperature Range PIDs
-    if range_pids:
-        print("\n┌─ TEMPERATURE-RANGE-SPECIFIC PID (Gain Scheduled) " + "─" * 29)
-        print("│  PID parameters scaled based on effective gain at each temperature range.")
-        print("│  Uses SINGLE thermal model (L, τ) with gain-scheduled K(T).")
-        print("│")
-        for rp in range_pids:
-            range_str = f"{rp['temp_min']}-{rp['temp_max']}"
-            print(f"│  {range_str:13}°C - Kp:{rp['kp']:7.3f} Ki:{rp['ki']:7.4f} Kd:{rp['kd']:7.3f}")
-        print("└" + "─" * 79)
 
     # Per-Step Analysis
     if step_analyses:
