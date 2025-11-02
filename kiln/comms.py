@@ -145,17 +145,19 @@ class CommandMessage:
         }
 
     @staticmethod
-    def resume_profile(profile_filename, elapsed_seconds):
+    def resume_profile(profile_filename, elapsed_seconds, current_rate=None):
         """Resume a previously interrupted firing profile
 
         Args:
             profile_filename: Filename of the profile to resume (e.g., "cone6_glaze.json")
             elapsed_seconds: How far through the profile execution to resume from
+            current_rate: Adapted rate to restore (from CSV log), or None for desired_rate
         """
         return {
             'type': MessageType.RESUME_PROFILE,
             'profile_filename': profile_filename,
-            'elapsed_seconds': elapsed_seconds
+            'elapsed_seconds': elapsed_seconds,
+            'current_rate': current_rate
         }
 
     @staticmethod
@@ -246,23 +248,19 @@ class StatusMessage:
             status['progress'] = round(controller.active_profile.get_progress(elapsed), 1)
             status['profile_duration'] = controller.active_profile.duration
 
-            # Add step info (segment between data points)
+            # Add step info (from step-based profile format)
             profile = controller.active_profile
-            status['total_steps'] = len(profile.data) - 1
+            status['total_steps'] = len(profile.steps)
 
-            # Find current segment
-            current_segment = 0
-            for i in range(len(profile.data) - 1):
-                t1, _ = profile.data[i]
-                t2, _ = profile.data[i + 1]
-                if t1 <= elapsed < t2:
-                    current_segment = i
-                    break
-                elif elapsed >= t2:
-                    current_segment = i + 1
+            # Controller tracks current step - use it directly
+            status['step_index'] = controller.current_step_index
 
-            status['step_index'] = current_segment
-            status['step_name'] = ''  # Profiles don't have named steps
+            # Get step type (ramp/hold) for current step
+            if controller.current_step_index < len(profile.steps):
+                current_step = profile.steps[controller.current_step_index]
+                status['step_name'] = current_step.get('type', '')
+            else:
+                status['step_name'] = ''
         else:
             # No active profile - set step fields to None
             status['step_index'] = None

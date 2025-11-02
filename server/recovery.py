@@ -136,7 +136,11 @@ class RecoveryListener:
             # Send resume command with filename (Core 1 will load the profile)
             from kiln.comms import CommandMessage
             profile_filename = f"{recovery_info.profile_name}.json"
-            resume_cmd = CommandMessage.resume_profile(profile_filename, recovery_info.elapsed_seconds)
+            resume_cmd = CommandMessage.resume_profile(
+                profile_filename,
+                recovery_info.elapsed_seconds,
+                recovery_info.current_rate
+            )
             self.command_queue.put_sync(resume_cmd)
 
             print(f"[Recovery] Resume command sent to control thread")
@@ -162,6 +166,7 @@ class RecoveryInfo:
         recovery_reason: String explaining why recovery is/isn't possible
         had_time_issue: Whether recovery failed due to time sync issues
         used_mtime_fallback: Whether mtime was used instead of log timestamp
+        current_rate: Last adapted rate (for adaptive control)
     """
     def __init__(self):
         self.can_recover = False
@@ -175,6 +180,7 @@ class RecoveryInfo:
         self.recovery_reason = "No recovery needed"
         self.had_time_issue = False
         self.used_mtime_fallback = False
+        self.current_rate = None  # Adapted rate from CSV (None if not available)
 
 
 def check_recovery(logs_dir, current_temp, max_recovery_duration, max_temp_delta):
@@ -221,6 +227,7 @@ def check_recovery(logs_dir, current_temp, max_recovery_duration, max_temp_delta
         info.last_target_temp = last_entry['target_temp']
         info.last_timestamp = last_entry['timestamp']
         info.elapsed_seconds = last_entry['elapsed']
+        info.current_rate = last_entry.get('current_rate')  # May be None for old logs
 
         # Extract profile name from filename
         # Format: {profile_name}_{YYYY-MM-DD}_{HH-MM-SS}.csv
@@ -377,7 +384,11 @@ def _parse_last_log_entry(log_file):
     in memory instead of loading the entire file. This reduces memory usage from
     ~120KB (for a 10-hour log) to <1KB.
 
-    CSV format (new):
+    CSV format (current):
+    timestamp,elapsed_seconds,current_temp_c,target_temp_c,
+    ssr_output_percent,state,progress_percent,step_name,step_index,total_steps,current_rate_c_per_hour
+
+    CSV format (legacy - without current_rate):
     timestamp,elapsed_seconds,current_temp_c,target_temp_c,
     ssr_output_percent,state,progress_percent,step_name,step_index,total_steps
 
@@ -427,6 +438,15 @@ def _parse_last_log_entry(log_file):
             'state': values[5],
             'progress': float(values[6])
         }
+
+        # Parse current_rate if available (column 11, index 10)
+        if len(values) >= 11 and values[10]:
+            try:
+                result['current_rate'] = float(values[10])
+            except (ValueError, IndexError):
+                result['current_rate'] = None
+        else:
+            result['current_rate'] = None
 
         # Force garbage collection after parsing
         gc.collect()

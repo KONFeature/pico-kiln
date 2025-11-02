@@ -146,6 +146,9 @@ class DataLogger:
             step_index = status.get('step_index', '')
             total_steps = status.get('total_steps', '')
 
+            # Extract rate info (for adaptive control)
+            current_rate = status.get('current_rate', 0.0)
+
             # Format row
             timestamp_iso = self._format_timestamp_iso(timestamp)
 
@@ -159,7 +162,8 @@ class DataLogger:
                 f"{progress:.1f},"
                 f"{step_name if step_name else ''},"
                 f"{step_index if step_index is not None and step_index != '' else ''},"
-                f"{total_steps if total_steps is not None and total_steps != '' else ''}\n"
+                f"{total_steps if total_steps is not None and total_steps != '' else ''},"
+                f"{current_rate:.1f}\n"
             )
 
             # Write to file
@@ -206,6 +210,9 @@ class DataLogger:
             ssr_output = current_status.get('ssr_output', 0.0)
             progress = current_status.get('progress', 0.0)
 
+            # Extract rate info (for adaptive control)
+            current_rate = current_status.get('current_rate', 0.0)
+
             # Format row with RECOVERY marker in state column
             timestamp_iso = self._format_timestamp_iso(timestamp)
 
@@ -217,8 +224,8 @@ class DataLogger:
                 f"{ssr_output:.2f},"
                 f"RECOVERY,"  # Special state marker
                 f"{progress:.1f},"
-                f",,"  # Empty step fields for recovery events
-                f"\n"
+                f",,,"  # Empty step fields for recovery events
+                f"{current_rate:.1f}\n"
             )
 
             # Write to file
@@ -338,7 +345,8 @@ class DataLogger:
             "progress_percent,"
             "step_name,"
             "step_index,"
-            "total_steps\n"
+            "total_steps,"
+            "current_rate_c_per_hour\n"
         )
         self.file.write(header)
         self.file.flush()

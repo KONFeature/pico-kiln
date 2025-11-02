@@ -1,0 +1,33 @@
+{
+  "name": "Test Adaptive Control",
+  "temp_units": "c",
+  "description": "Short test profile for adaptive rate control validation",
+  "steps": [
+    {
+      "type": "ramp",
+      "target_temp": 100,
+      "desired_rate": 200,
+      "min_rate": 150
+    },
+    {
+      "type": "hold",
+      "target_temp": 100,
+      "duration": 300
+    },
+    {
+      "type": "ramp",
+      "target_temp": 200,
+      "desired_rate": 150,
+      "min_rate": 100
+    },
+    {
+      "type": "hold",
+      "target_temp": 200,
+      "duration": 300
+    },
+    {
+      "type": "ramp",
+      "target_temp": 50
+    }
+  ]
+}

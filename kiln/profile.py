@@ -1,25 +1,34 @@
 # kiln/profile.py
-# Kiln firing profile management
+# Kiln firing profile management with adaptive rate control
 
 import json
 import gc
 
 class Profile:
     """
-    Kiln firing profile with time-temperature schedule
+    Kiln firing profile with step-based temperature schedule
 
     JSON Format:
     {
         "name": "Cone 6 Glaze",
         "temp_units": "c",
         "description": "Optional description",
-        "data": [
-            [0, 20],        # (seconds, temp)
-            [3600, 100],    # Ramp to 100°C in 1 hour
-            [7200, 100],    # Hold for 1 hour
-            [14400, 1200],  # Ramp to 1200°C
-            [18000, 1200],  # Hold at peak
-            [21600, 20]     # Cool down
+        "steps": [
+            {
+                "type": "ramp",
+                "target_temp": 600,
+                "desired_rate": 100,  # °C/hour target
+                "min_rate": 80        # Minimum acceptable (optional)
+            },
+            {
+                "type": "hold",
+                "target_temp": 600,
+                "duration": 600       # seconds
+            },
+            {
+                "type": "ramp",
+                "target_temp": 100    # Cooldown (no min_rate needed)
+            }
         ]
     }
     """
@@ -32,60 +41,75 @@ class Profile:
         self.name = json_data['name']
         self.temp_units = json_data.get('temp_units', 'c')
         self.description = json_data.get('description', '')
-        self.data = json_data['data']  # [(seconds, temp), ...]
 
-        # Validate data
-        if not self.data:
-            raise ValueError("Profile must have at least one data point")
+        # Step-based format
+        if 'steps' not in json_data:
+            raise ValueError("Profile must have 'steps' array")
 
-        # Sort by time (just in case)
-        self.data.sort(key=lambda x: x[0])
+        self.steps = json_data['steps']
 
-        # Calculate total duration
-        self.duration = self.data[-1][0]
+        # Validate steps
+        if not self.steps:
+            raise ValueError("Profile must have at least one step")
 
-    def get_target_temp(self, elapsed_seconds):
+        # Calculate total duration from steps
+        self.duration = self._calculate_duration()
+
+    def _calculate_duration(self):
         """
-        Get target temperature at given elapsed time
-        Uses linear interpolation between schedule points
+        Calculate total profile duration from steps
 
-        Args:
-            elapsed_seconds: Time since profile start (seconds)
+        Estimates duration based on desired rates. Actual duration may vary
+        if adaptive control adjusts rates during execution.
 
         Returns:
-            Target temperature (float)
+            Estimated duration in seconds
         """
-        # Before start
-        if elapsed_seconds <= 0:
-            return self.data[0][1]
+        total_seconds = 0
+        current_temp = self.steps[0].get('target_temp', 20)
 
-        # After end
-        if elapsed_seconds >= self.duration:
-            return self.data[-1][1]
+        for step in self.steps:
+            if step['type'] == 'hold':
+                total_seconds += step['duration']
+            elif step['type'] == 'ramp':
+                target = step['target_temp']
+                dtemp = abs(target - current_temp)
+                rate = step.get('desired_rate', 100)
+                if rate > 0:
+                    dt_hours = dtemp / rate
+                    total_seconds += dt_hours * 3600
+                current_temp = target
 
-        # Find surrounding points
-        for i in range(len(self.data) - 1):
-            t1, temp1 = self.data[i]
-            t2, temp2 = self.data[i + 1]
-
-            if t1 <= elapsed_seconds <= t2:
-                # Linear interpolation
-                if t2 == t1:
-                    return temp1
-
-                ratio = (elapsed_seconds - t1) / (t2 - t1)
-                target = temp1 + ratio * (temp2 - temp1)
-                return target
-
-        # Shouldn't reach here, but return last temp as fallback
-        return self.data[-1][1]
+        return total_seconds
 
     def is_complete(self, elapsed_seconds):
-        """Check if profile has completed"""
+        """
+        Check if profile has completed
+
+        For step-based profiles, completion is handled by step sequencing,
+        but this provides a fallback duration check.
+
+        Args:
+            elapsed_seconds: Time since profile start
+
+        Returns:
+            True if elapsed time exceeds estimated duration
+        """
         return elapsed_seconds >= self.duration
 
     def get_progress(self, elapsed_seconds):
-        """Get progress percentage (0-100)"""
+        """
+        Get progress percentage
+
+        Estimates progress based on elapsed time vs total duration.
+        With adaptive control, actual progress may differ.
+
+        Args:
+            elapsed_seconds: Time since profile start
+
+        Returns:
+            Progress percentage (0-100)
+        """
         if self.duration == 0:
             return 100.0
         return min(100.0, (elapsed_seconds / self.duration) * 100)
@@ -96,7 +120,7 @@ class Profile:
             'name': self.name,
             'temp_units': self.temp_units,
             'description': self.description,
-            'data': self.data,
+            'steps': self.steps,
             'duration': self.duration
         }
 
@@ -131,12 +155,27 @@ class Profile:
                         with open(filepath, 'r') as f:
                             data = json.load(f)
 
-                        # Extract metadata only (not full data array)
+                        # Calculate duration from steps
+                        duration = 0
+                        if 'steps' in data and data['steps']:
+                            current_temp = data['steps'][0].get('target_temp', 20)
+                            for step in data['steps']:
+                                if step['type'] == 'hold':
+                                    duration += step['duration']
+                                elif step['type'] == 'ramp':
+                                    target = step['target_temp']
+                                    dtemp = abs(target - current_temp)
+                                    rate = step.get('desired_rate', 100)
+                                    if rate > 0:
+                                        duration += (dtemp / rate) * 3600
+                                    current_temp = target
+
+                        # Extract metadata only (not full data/steps)
                         profiles.append({
                             'name': data.get('name', filename),
                             'description': data.get('description', ''),
                             'temp_units': data.get('temp_units', 'c'),
-                            'duration': data['data'][-1][0] if data.get('data') else 0,
+                            'duration': duration,
                             'filename': filename
                         })
 
@@ -153,7 +192,7 @@ class Profile:
     def __str__(self):
         """String representation"""
         duration_hours = self.duration / 3600
-        return f"Profile(name='{self.name}', duration={duration_hours:.1f}h, points={len(self.data)})"
+        return f"Profile(name='{self.name}', duration={duration_hours:.1f}h, steps={len(self.steps)})"
 
     def __repr__(self):
         return self.__str__()

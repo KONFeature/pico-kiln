@@ -105,6 +105,30 @@ THERMOCOUPLE_OFFSET = 0.0
 # Directory for storing firing profiles
 PROFILES_DIR = "profiles"
 
+# === Adaptive Rate Control ===
+# Automatically adjust ramp rates if kiln cannot maintain desired rate
+# This allows profiles to complete successfully even if kiln capacity is insufficient
+#
+# ADAPTATION_ENABLED: Enable/disable adaptive control
+# ADAPTATION_CHECK_INTERVAL: How often to check if adaptation is needed (seconds)
+# ADAPTATION_MIN_STEP_TIME: Minimum time in step before allowing first adaptation (seconds)
+# ADAPTATION_MIN_TIME_BETWEEN: Minimum time between adaptations to avoid oscillation (seconds)
+# ADAPTATION_TEMP_ERROR_THRESHOLD: Trigger adaptation if behind schedule by this many °C
+# ADAPTATION_RATE_THRESHOLD: Trigger if actual rate < (current_rate * threshold)
+# ADAPTATION_REDUCTION_FACTOR: Reduce rate to (measured_rate * factor) when adapting
+# RATE_MEASUREMENT_WINDOW: Time window for measuring actual rate (seconds)
+# RATE_RECORDING_INTERVAL: How often to record temp for rate calculation (seconds)
+#
+ADAPTATION_ENABLED = True
+ADAPTATION_CHECK_INTERVAL = 60  # Check every minute
+ADAPTATION_MIN_STEP_TIME = 600  # Wait 10 minutes before first adaptation
+ADAPTATION_MIN_TIME_BETWEEN = 300  # Wait 5 minutes between adaptations
+ADAPTATION_TEMP_ERROR_THRESHOLD = 20  # Trigger if 20°C behind schedule
+ADAPTATION_RATE_THRESHOLD = 0.85  # Trigger if actual < 85% of target
+ADAPTATION_REDUCTION_FACTOR = 0.95  # Reduce to 95% of measured rate
+RATE_MEASUREMENT_WINDOW = 600  # Measure rate over 10 minutes
+RATE_RECORDING_INTERVAL = 10  # Record temperature every 10 seconds
+
 # === Data Logging Settings ===
 # Directory for storing kiln run data logs (CSV files)
 LOGS_DIR = "logs"

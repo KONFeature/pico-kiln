@@ -1,0 +1,28 @@
+{
+  "name": "Biscuit Faience Adaptive",
+  "temp_units": "c",
+  "description": "Bisque firing to 1050°C with adaptive rate control - 100°C/h to 600, then 150°C/h to 1050",
+  "steps": [
+    {
+      "type": "ramp",
+      "target_temp": 600,
+      "desired_rate": 100,
+      "min_rate": 80
+    },
+    {
+      "type": "ramp",
+      "target_temp": 1050,
+      "desired_rate": 100,
+      "min_rate": 50
+    },
+    {
+      "type": "hold",
+      "target_temp": 1050,
+      "duration": 600
+    },
+    {
+      "type": "ramp",
+      "target_temp": 100
+    }
+  ]
+}
