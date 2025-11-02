@@ -45,6 +45,7 @@ def calculate_ziegler_nichols(model: ThermalModel) -> PIDParams:
     """
     L = model.dead_time_s
     T = model.time_constant_s
+    K = model.steady_state_gain if model.steady_state_gain > 0 else 1.0
 
     # Prevent division by zero
     if L < 1:
@@ -52,7 +53,7 @@ def calculate_ziegler_nichols(model: ThermalModel) -> PIDParams:
     if T < 1:
         T = 1
 
-    Kp = 1.2 * (T / L)
+    Kp = 1.2 * T / (K * L)
     Ti = 2.0 * L
     Td = 0.5 * L
     Ki = Kp / Ti if Ti > 0 else 0

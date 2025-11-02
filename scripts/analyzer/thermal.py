@@ -24,6 +24,7 @@ class ThermalModel:
         self.gain_confidence: str = "LOW"  # Confidence level: HIGH, MEDIUM, LOW
         self.gain_method: str = "fallback"  # Method used: plateau, heating, fallback
         self.gain_vs_temp: List[Dict] = []  # List of {temp, gain, ssr} for gain scheduling
+        self.heat_loss_method: str = "fallback"  # plateau, cooling, or fallback
 
 
 def fit_thermal_model(data: Dict, phases: List[Phase]) -> ThermalModel:
@@ -148,15 +149,24 @@ def fit_thermal_model(data: Dict, phases: List[Phase]) -> ThermalModel:
     # Calculate effective gains by temperature from plateau phases
     model.gain_vs_temp = calculate_effective_gains_by_temperature(data, phases, model.ambient_temp)
 
-    # Fit heat loss coefficient from gain vs temperature data
-    # Physics: K_eff(T) = K_base / (1 + h*(T - T_ambient))
-    # Therefore: 1/K_eff = (1/K_base) * (1 + h*(T - T_ambient))
-    # This gives us the gain scaling factor: gain_scale(T) = 1 + h*(T - T_ambient)
-    model.heat_loss_coefficient = fit_heat_loss_coefficient(
-        model.gain_vs_temp,
-        model.steady_state_gain,
-        model.ambient_temp
-    )
+    # Fit heat loss coefficient - prefer plateau data, fallback to cooling data
+    if model.gain_vs_temp:
+        # Prefer plateau data (more accurate)
+        model.heat_loss_coefficient = fit_heat_loss_coefficient(
+            model.gain_vs_temp,
+            model.steady_state_gain,
+            model.ambient_temp
+        )
+        model.heat_loss_method = "plateau"
+    else:
+        # Fallback: use cooling phases
+        h_cooling = fit_heat_loss_from_cooling(data, phases, model.ambient_temp)
+        if h_cooling > 0:
+            model.heat_loss_coefficient = h_cooling
+            model.heat_loss_method = "cooling"
+        else:
+            model.heat_loss_coefficient = 0.0001
+            model.heat_loss_method = "fallback"
 
     return model
 
@@ -256,3 +266,127 @@ def fit_heat_loss_coefficient(gain_points: List[Dict], base_gain: float, ambient
     else:
         # No valid estimates - use conservative default
         return 0.0001
+
+
+def fit_heat_loss_from_cooling(data: Dict, phases: List[Phase], ambient_temp: float) -> float:
+    """
+    Fit heat loss coefficient from cooling phases.
+
+    Uses Newton's law of cooling: dT/dt = -k*(T - T_ambient)
+    Solution: T(t) = T_ambient + (T_initial - T_ambient) * exp(-k*t)
+
+    We linearize for fitting:
+    ln(T - T_ambient) = ln(T_initial - T_ambient) - k*t
+
+    Then convert cooling rate k to heat loss coefficient h.
+
+    Args:
+        data: Dictionary with time, temp, ssr_output arrays
+        phases: List of detected phases
+        ambient_temp: Ambient temperature (°C)
+
+    Returns:
+        Heat loss coefficient h (0.0001 to 0.01 for kilns), or 0 if fitting fails
+    """
+    time_array = data['time']
+    temp_array = data['temp']
+
+    # Find all cooling phases with sufficient temperature drop
+    cooling_phases = [p for p in phases if p.phase_type == 'cooling'
+                     and (p.temp_start - p.temp_end) > 5  # At least 5°C drop
+                     and p.temp_start > ambient_temp + 20]  # Significantly above ambient
+
+    if not cooling_phases:
+        return 0.0
+
+    h_estimates = []
+
+    for phase in cooling_phases:
+        # Extract phase data
+        phase_time = time_array[phase.start_idx:phase.end_idx+1]
+        phase_temp = temp_array[phase.start_idx:phase.end_idx+1]
+
+        if len(phase_time) < 10:  # Need at least 10 points
+            continue
+
+        # Normalize time to start at 0
+        t = [(ti - phase_time[0]) for ti in phase_time]
+
+        # Calculate temperature above ambient
+        temps_above_ambient = [T - ambient_temp for T in phase_temp]
+
+        # Filter out points too close to ambient (avoid log issues)
+        valid_indices = [i for i, T_delta in enumerate(temps_above_ambient) if T_delta > 5.0]
+
+        if len(valid_indices) < 10:  # Need enough valid points
+            continue
+
+        # Prepare data for linear regression: ln(T - T_amb) vs t
+        x_data = [t[i] for i in valid_indices]
+        y_data = []
+        for i in valid_indices:
+            T_delta = temps_above_ambient[i]
+            if T_delta > 0:
+                # Use natural logarithm for linearization
+                import math
+                y_data.append(math.log(T_delta))
+            else:
+                continue
+
+        if len(x_data) != len(y_data) or len(x_data) < 10:
+            continue
+
+        # Linear regression: y = a - k*x
+        # Using least squares: k = -cov(x,y) / var(x)
+        n = len(x_data)
+        mean_x = sum(x_data) / n
+        mean_y = sum(y_data) / n
+
+        # Calculate covariance and variance
+        cov_xy = sum((x_data[i] - mean_x) * (y_data[i] - mean_y) for i in range(n)) / n
+        var_x = sum((x_data[i] - mean_x) ** 2 for i in range(n)) / n
+
+        if var_x < 1e-10:  # Avoid division by zero
+            continue
+
+        # Slope is -k (negative because temp is decreasing)
+        k = -cov_xy / var_x
+
+        if k <= 0:  # k should be positive for cooling
+            continue
+
+        # Convert cooling rate constant k to heat loss coefficient h
+        # Physics: k represents the exponential decay rate
+        # h represents the linear gain scaling with temperature
+        # Empirical relationship: h ≈ k / average_temp_delta
+        # This accounts for the fact that cooling rate depends on temperature difference
+
+        avg_temp = sum(phase_temp) / len(phase_temp)
+        avg_temp_delta = avg_temp - ambient_temp
+
+        if avg_temp_delta > 10:
+            # Convert k to h: h represents relative change per degree
+            # k is in units of 1/seconds
+            # We want h such that gain_scale(T) = 1 + h*(T - T_ambient)
+            # From physics: k ∝ heat_loss / thermal_mass
+            # And heat_loss = h * area * (T - T_ambient)
+            # So: h ≈ k / (T - T_ambient) * thermal_time_constant
+
+            # Use a calibration factor based on typical kiln behavior
+            # For a kiln with ~100s thermal time constant:
+            thermal_time_constant = 100.0  # seconds (typical for small kilns)
+            h = k * thermal_time_constant / avg_temp_delta
+
+            # Validate h is in reasonable range
+            if 0.0001 <= h <= 0.1:
+                h_estimates.append(h)
+
+    if not h_estimates:
+        return 0.0
+
+    # Use median for robustness against outliers
+    h_estimates.sort()
+    median_idx = len(h_estimates) // 2
+    h = h_estimates[median_idx]
+
+    return round(h, 6)

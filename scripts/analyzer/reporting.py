@@ -175,7 +175,8 @@ def generate_results_json(data: Dict, phases: List[Phase], model: ThermalModel,
             'ambient_temp': round(model.ambient_temp, 1),
             'gain_vs_temp': model.gain_vs_temp,
             'gain_method': model.gain_method,
-            'gain_confidence': model.gain_confidence
+            'gain_confidence': model.gain_confidence,
+            'heat_loss_method': model.heat_loss_method
         },
         'pid_methods': {name: pid.to_dict() for name, pid in pid_methods.items()},
         'temperature_ranges': range_pids if range_pids else None,
@@ -215,7 +216,7 @@ def print_beautiful_report(data: Dict, phases: List[Phase], model: ThermalModel,
     print(f"│  L/τ Ratio:            {model.dead_time_s/model.time_constant_s if model.time_constant_s > 0 else 0:8.3f}")
     print(f"│  Base Gain (K):        {model.steady_state_gain:8.4f} °C per % SSR (from {model.gain_method})")
     print(f"│  Gain Confidence:      {model.gain_confidence}")
-    print(f"│  Heat Loss Coeff (h):  {model.heat_loss_coefficient:8.6f}")
+    print(f"│  Heat Loss Coeff (h):  {model.heat_loss_coefficient:8.6f} (from {model.heat_loss_method})")
     print(f"│  Ambient Temp:         {model.ambient_temp:8.1f}°C")
     print("└" + "─" * 79)
 
