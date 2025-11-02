@@ -191,13 +191,13 @@ def check_recovery(logs_dir, current_temp, max_recovery_duration, max_temp_delta
         info.elapsed_seconds = last_entry['elapsed']
 
         # Extract profile name from filename
-        # Format: {profile_name}_{YYYY-MM-DD_HH-MM-SS}.csv
+        # Format: {profile_name}_{YYYY-MM-DD}_{HH-MM-SS}.csv
         filename = log_file.split('/')[-1]  # Get just the filename
-        # Find the last underscore followed by date pattern
-        # Split from the right to get profile name
-        parts = filename.rsplit('_', 4)  # Split on last 4 underscores (date components)
-        if len(parts) >= 2:
-            info.profile_name = parts[0]
+        # Split on last 2 underscores (date and time components)
+        parts = filename.rsplit('_', 2)  # e.g., ['Biscuit_Faience', '2025-11-02', '13-28-09.csv']
+        if len(parts) >= 3:
+            # Convert to lowercase to match profile filename convention
+            info.profile_name = parts[0].lower()
         else:
             info.recovery_reason = "Could not extract profile name from filename"
             return info

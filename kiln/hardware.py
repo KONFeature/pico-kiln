@@ -177,7 +177,8 @@ class SSRController:
 
         self.cycle_time_ms = int(cycle_time * 1000)  # Store as milliseconds
         self.stagger_delay = stagger_delay
-        self.duty_cycle = 0.0  # 0-100%
+        self.duty_cycle = 0.0  # 0-100% (requested duty - may change mid-cycle)
+        self.duty_cycle_locked = None  # Duty locked at cycle start (None = not locked yet)
         self.cycle_start = time.ticks_ms()  # Use ticks for efficiency
 
         # Track individual pin states
@@ -211,19 +212,29 @@ class SSRController:
         The SSR is turned ON for duty_cycle% of the cycle_time,
         then OFF for the remainder.
 
+        The duty cycle is LOCKED at the start of each cycle to prevent
+        mid-cycle changes that cause relay flickering. New duty cycle
+        values take effect on the next cycle.
+
         For multiple SSRs, state changes are staggered with delays to
         prevent large inrush current draw.
         """
         current_time = time.ticks_ms()
         elapsed = time.ticks_diff(current_time, self.cycle_start)
 
-        # Check if we need to start a new cycle (fix drift by using ticks_add)
+        # Lock duty on first call (initialize immediately so first cycle works)
+        if self.duty_cycle_locked is None:
+            self.duty_cycle_locked = self.duty_cycle
+
+        # Check if we need to start a new cycle
         if elapsed >= self.cycle_time_ms:
+            # Lock duty cycle for the new cycle (prevents mid-cycle changes)
+            self.duty_cycle_locked = self.duty_cycle
             self.cycle_start = time.ticks_add(self.cycle_start, self.cycle_time_ms)
             elapsed = time.ticks_diff(current_time, self.cycle_start)
 
-        # Calculate when SSR should be ON
-        on_time_ms = int((self.duty_cycle / 100.0) * self.cycle_time_ms)
+        # Calculate when SSR should be ON using LOCKED duty cycle
+        on_time_ms = int((self.duty_cycle_locked / 100.0) * self.cycle_time_ms)
 
         # Determine desired state
         should_be_on = elapsed < on_time_ms
@@ -256,6 +267,7 @@ class SSRController:
         All SSRs are turned off as quickly as possible.
         """
         self.duty_cycle = 0
+        self.duty_cycle_locked = 0  # Reset locked duty too
 
         # Turn off all pins immediately (no stagger for safety)
         for i, pin in enumerate(self.pins):
@@ -272,10 +284,11 @@ class SSRController:
         Get current SSR state
 
         Returns:
-            Dictionary with duty_cycle, is_on status, and individual pin states
+            Dictionary with duty_cycle, duty_cycle_locked, is_on status, and individual pin states
         """
         return {
             'duty_cycle': self.duty_cycle,
+            'duty_cycle_locked': self.duty_cycle_locked,  # What's actually being applied
             'is_on': any(self.pin_states),
             'pin_states': self.pin_states.copy() if len(self.pins) > 1 else None
         }

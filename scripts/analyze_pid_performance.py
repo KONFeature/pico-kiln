@@ -13,14 +13,17 @@ Features:
 - Performance grading system
 - Actionable recommendations with specific fixes
 - Beautiful terminal report + JSON output
+- Thermal model integration for context-aware analysis
 
 Usage:
     python analyze_pid_performance.py <profile_csv_file>
     python analyze_pid_performance.py <profile_csv_file> --json-only
     python analyze_pid_performance.py <profile_csv_file> --verbose
+    python analyze_pid_performance.py <profile_csv_file> --tuning-model <file>
 
 Example:
     python analyze_pid_performance.py logs/cone6_glaze_2025-10-25_14-23-45.csv
+    python analyze_pid_performance.py logs/profile_run.csv --tuning-model tuning_results.json
 """
 
 import sys
@@ -35,6 +38,24 @@ from typing import List, Tuple, Dict, Optional
 # =============================================================================
 # Data Loading and Preprocessing
 # =============================================================================
+
+def load_thermal_model(tuning_file: str = "tuning_results.json") -> Optional[Dict]:
+    """
+    Load thermal model data from tuning results file.
+
+    Args:
+        tuning_file: Path to tuning results JSON file
+
+    Returns:
+        Dictionary containing thermal model parameters, or None if file not found
+    """
+    try:
+        with open(tuning_file, 'r') as f:
+            data = json.load(f)
+            return data.get('thermal_model')
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
 
 def load_profile_data(csv_file: str) -> Dict:
     """
@@ -555,6 +576,81 @@ def calculate_control_effort(data: Dict, segment: Segment) -> Dict:
     }
 
 
+def analyze_heat_loss_effects(data: Dict, segment: Segment,
+                              thermal_model: Optional[Dict]) -> Optional[Dict]:
+    """
+    Analyze heat loss effects using thermal model.
+
+    Compares expected steady-state power (based on heat loss coefficient)
+    with actual SSR output to determine if controller is compensating properly.
+
+    Args:
+        data: Profile data dictionary
+        segment: Segment to analyze
+        thermal_model: Thermal model with heat_loss_coefficient and ambient_temp
+
+    Returns:
+        Dictionary with expected_power, actual_power, power_deficit, is_compensated,
+        or None if thermal model not available
+    """
+    if not thermal_model:
+        return None
+
+    if 'heat_loss_coefficient' not in thermal_model or 'ambient_temp' not in thermal_model:
+        return None
+
+    # Only analyze hold segments (where we expect steady-state)
+    if segment.segment_type != 'hold':
+        return None
+
+    heat_loss_coeff = thermal_model['heat_loss_coefficient']
+    ambient_temp = thermal_model['ambient_temp']
+
+    # Calculate expected power to maintain temperature
+    # P_loss = h × (T_kiln - T_ambient) where h is heat loss coefficient
+    # SSR output (0-100%) represents fraction of maximum heater power
+    target_temp = segment.target_end
+    expected_heat_loss = heat_loss_coeff * (target_temp - ambient_temp)
+
+    # Convert to percentage (assuming gain relates power to temperature rise)
+    # Expected SSR% to maintain temperature = expected_heat_loss / max_power
+    # Using steady_state_gain as a proxy: gain = ΔT/ΔP, so ΔP = ΔT/gain
+    if 'steady_state_gain' in thermal_model and thermal_model['steady_state_gain'] > 0:
+        gain = thermal_model['steady_state_gain']
+        # Expected power percentage to maintain this temperature
+        expected_power = (expected_heat_loss * 100.0) / gain
+    else:
+        # Without gain, use heat loss directly as rough estimate
+        expected_power = expected_heat_loss * 100.0
+
+    # Calculate actual average SSR output during steady-state portion
+    # Use last 50% of hold segment to exclude settling transient
+    segment_len = segment.end_idx - segment.start_idx + 1
+    steady_start = segment.start_idx + int(0.5 * segment_len)
+
+    ssr = data['ssr_output']
+    actual_ssr = ssr[steady_start:segment.end_idx + 1]
+
+    if not actual_ssr:
+        return None
+
+    actual_power = sum(actual_ssr) / len(actual_ssr)
+
+    # Calculate power deficit
+    power_deficit = expected_power - actual_power
+
+    # Check if properly compensated (within 10% tolerance)
+    is_compensated = abs(power_deficit) < (expected_power * 0.1)
+
+    return {
+        'expected_power': expected_power,
+        'actual_power': actual_power,
+        'power_deficit': power_deficit,
+        'is_compensated': is_compensated,
+        'segment_temp': target_temp
+    }
+
+
 # =============================================================================
 # Grading System
 # =============================================================================
@@ -575,22 +671,52 @@ def grade_overshoot(overshoot: float) -> Tuple[str, str]:
         return "POOR", "⚠️"
 
 
-def grade_settling_time(settling_time: Optional[float]) -> Tuple[str, str]:
+def grade_settling_time(settling_time: Optional[float],
+                       thermal_model: Optional[Dict] = None) -> Tuple[str, str]:
     """
     Grade settling time performance.
+
+    Uses thermal model to set context-aware thresholds based on system time constant.
+    Expected settling time is approximately 4× the time constant (τ).
+
+    Args:
+        settling_time: Settling time in seconds, or None
+        thermal_model: Optional thermal model with time_constant_s
 
     Returns: (grade, symbol)
     """
     if settling_time is None:
         return "POOR", "⚠️"
-    elif settling_time < 60:
-        return "EXCELLENT", "✓"
-    elif settling_time < 120:
-        return "GOOD", "✓"
-    elif settling_time < 300:
-        return "ACCEPTABLE", "⚠️"
+
+    # Use thermal model to set realistic thresholds if available
+    if thermal_model and 'time_constant_s' in thermal_model:
+        tau = thermal_model['time_constant_s']
+        # Expected settling time is ~4×τ (98% of step response)
+        expected_settling = 4 * tau
+
+        # Thresholds based on percentage of expected settling time
+        excellent_threshold = 0.5 * expected_settling  # 50% of expected
+        good_threshold = 1.0 * expected_settling       # Expected
+        acceptable_threshold = 1.5 * expected_settling # 50% slower than expected
+
+        if settling_time < excellent_threshold:
+            return "EXCELLENT", "✓"
+        elif settling_time < good_threshold:
+            return "GOOD", "✓"
+        elif settling_time < acceptable_threshold:
+            return "ACCEPTABLE", "⚠️"
+        else:
+            return "POOR", "⚠️"
     else:
-        return "POOR", "⚠️"
+        # Fallback to original fixed thresholds (for fast systems)
+        if settling_time < 60:
+            return "EXCELLENT", "✓"
+        elif settling_time < 120:
+            return "GOOD", "✓"
+        elif settling_time < 300:
+            return "ACCEPTABLE", "⚠️"
+        else:
+            return "POOR", "⚠️"
 
 
 def grade_steady_state_error(error: Optional[float]) -> Tuple[str, str]:
@@ -627,9 +753,17 @@ def grade_oscillation(osc: Optional[Dict]) -> Tuple[str, str]:
         return "POOR", "⚠️"
 
 
-def grade_tracking_lag(lag: Optional[Dict]) -> Tuple[str, str]:
+def grade_tracking_lag(lag: Optional[Dict],
+                      thermal_model: Optional[Dict] = None) -> Tuple[str, str]:
     """
     Grade tracking lag performance.
+
+    Uses thermal model to adjust thresholds based on system time constant.
+    Slower systems (high τ) naturally have more lag during ramps.
+
+    Args:
+        lag: Dictionary with avg_lag value
+        thermal_model: Optional thermal model with time_constant_s
 
     Returns: (grade, symbol)
     """
@@ -637,14 +771,37 @@ def grade_tracking_lag(lag: Optional[Dict]) -> Tuple[str, str]:
         return "N/A", ""
 
     avg_lag = lag['avg_lag']
-    if avg_lag < 5.0:
-        return "EXCELLENT", "✓"
-    elif avg_lag < 10.0:
-        return "GOOD", "✓"
-    elif avg_lag < 20.0:
-        return "ACCEPTABLE", "⚠️"
+
+    # Adjust thresholds based on time constant if available
+    if thermal_model and 'time_constant_s' in thermal_model:
+        tau = thermal_model['time_constant_s']
+        # Lag tolerance scales with system time constant
+        # For fast systems (τ<100s), use tight tolerances
+        # For slow systems (τ>500s), allow proportionally more lag
+        scale_factor = min(tau / 100.0, 5.0)  # Cap at 5x for very slow systems
+
+        excellent_threshold = 5.0 * scale_factor
+        good_threshold = 10.0 * scale_factor
+        acceptable_threshold = 20.0 * scale_factor
+
+        if avg_lag < excellent_threshold:
+            return "EXCELLENT", "✓"
+        elif avg_lag < good_threshold:
+            return "GOOD", "✓"
+        elif avg_lag < acceptable_threshold:
+            return "ACCEPTABLE", "⚠️"
+        else:
+            return "POOR", "⚠️"
     else:
-        return "POOR", "⚠️"
+        # Fallback to original fixed thresholds
+        if avg_lag < 5.0:
+            return "EXCELLENT", "✓"
+        elif avg_lag < 10.0:
+            return "GOOD", "✓"
+        elif avg_lag < 20.0:
+            return "ACCEPTABLE", "⚠️"
+        else:
+            return "POOR", "⚠️"
 
 
 def grade_control_effort(control: Dict) -> Tuple[str, str]:
@@ -667,11 +824,15 @@ def grade_control_effort(control: Dict) -> Tuple[str, str]:
         return "POOR", "⚠️"
 
 
-def grade_segment(segment: Segment) -> Tuple[str, str]:
+def grade_segment(segment: Segment, thermal_model: Optional[Dict] = None) -> Tuple[str, str]:
     """
     Grade overall segment performance.
 
     Combines all metrics to produce overall segment grade.
+
+    Args:
+        segment: Segment with metrics to grade
+        thermal_model: Optional thermal model for context-aware grading
 
     Returns: (grade, symbol)
     """
@@ -686,9 +847,9 @@ def grade_segment(segment: Segment) -> Tuple[str, str]:
         if grade != "N/A":
             grades.append(grade_values[grade])
 
-    # Settling time
+    # Settling time (with thermal model context)
     if 'settling_time' in metrics:
-        grade, _ = grade_settling_time(metrics['settling_time'])
+        grade, _ = grade_settling_time(metrics['settling_time'], thermal_model)
         if grade != "N/A":
             grades.append(grade_values[grade])
 
@@ -704,9 +865,9 @@ def grade_segment(segment: Segment) -> Tuple[str, str]:
         if grade != "N/A":
             grades.append(grade_values[grade])
 
-    # Tracking lag
+    # Tracking lag (with thermal model context)
     if 'tracking_lag' in metrics and metrics['tracking_lag'] is not None:
-        grade, _ = grade_tracking_lag(metrics['tracking_lag'])
+        grade, _ = grade_tracking_lag(metrics['tracking_lag'], thermal_model)
         if grade != "N/A":
             grades.append(grade_values[grade])
 
@@ -775,14 +936,35 @@ class Recommendation:
         self.temp_range = temp_range
 
 
-def generate_recommendations(data: Dict, segments: List[Segment]) -> List[Recommendation]:
+def generate_recommendations(data: Dict, segments: List[Segment],
+                            thermal_model: Optional[Dict] = None) -> List[Recommendation]:
     """
     Generate actionable recommendations based on detected issues.
+
+    Uses thermal model to provide more specific tuning suggestions.
+
+    Args:
+        data: Profile data dictionary
+        segments: List of analyzed segments
+        thermal_model: Optional thermal model with PID parameters
 
     Returns:
         List of Recommendation objects, sorted by priority
     """
     recommendations = []
+
+    # Load PID methods from thermal model if available
+    pid_methods = None
+    recommended_method = None
+    if thermal_model:
+        # Try to load full tuning results to get PID methods
+        try:
+            with open("tuning_results.json", 'r') as f:
+                tuning_data = json.load(f)
+                pid_methods = tuning_data.get('pid_methods')
+                recommended_method = tuning_data.get('recommended')
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
 
     # Analyze overall patterns
     high_temp_segments = [s for s in segments if s.target_end > 1000]
@@ -795,11 +977,19 @@ def generate_recommendations(data: Dict, segments: List[Segment]) -> List[Recomm
 
     if high_temp_overshoot:
         max_overshoot = max(s.metrics['overshoot']['max_overshoot'] for s in high_temp_overshoot)
+
+        # Suggest specific Kp if available from thermal model
+        fix_msg = "Reduce Kp by 15-20% at high temperature OR implement gain scheduling"
+        if pid_methods and recommended_method:
+            rec_method = pid_methods.get(recommended_method, {})
+            if 'kp' in rec_method:
+                fix_msg = f"Try Kp={rec_method['kp']:.1f} from {recommended_method.upper()} method OR implement gain scheduling"
+
         recommendations.append(Recommendation(
             priority=1,
             issue=f"High Temperature Overshoot ({max_overshoot:.1f}°C at >{high_temp_overshoot[0].target_end:.0f}°C)",
             cause="System dynamics change with temperature, gains too aggressive",
-            fix="Reduce Kp by 15-20% at high temperature OR implement gain scheduling",
+            fix=fix_msg,
             temp_range="HIGH (>1000°C)"
         ))
 
@@ -809,11 +999,18 @@ def generate_recommendations(data: Dict, segments: List[Segment]) -> List[Recomm
                          and s.metrics['overshoot']['max_overshoot'] > 10.0]
 
     if overshoot_segments and not high_temp_overshoot:
+        # Suggest specific PID parameters if available
+        fix_msg = "Reduce Kp by 10-15% AND reduce Ki by 10-20%"
+        if pid_methods and recommended_method:
+            rec_method = pid_methods.get(recommended_method, {})
+            if 'kp' in rec_method and 'ki' in rec_method:
+                fix_msg = f"Try {recommended_method.upper()} method: Kp={rec_method['kp']:.1f}, Ki={rec_method['ki']:.4f}"
+
         recommendations.append(Recommendation(
             priority=1,
             issue="Excessive Overshoot Across Temperature Range",
             cause="Proportional and/or integral gain too high",
-            fix="Reduce Kp by 10-15% AND reduce Ki by 10-20%",
+            fix=fix_msg,
             temp_range="ALL"
         ))
 
@@ -827,11 +1024,24 @@ def generate_recommendations(data: Dict, segments: List[Segment]) -> List[Recomm
         period = osc['period']
         amplitude = osc['amplitude']
 
+        # Compare with expected period from thermal model
+        osc_type_info = ""
+        if thermal_model and 'time_constant_s' in thermal_model and 'dead_time_s' in thermal_model:
+            tau = thermal_model['time_constant_s']
+            L = thermal_model['dead_time_s']
+            # Kp-induced oscillations typically have period ≈ 4-8×τ
+            # Kd-induced oscillations are much faster
+            expected_slow_period = 4 * tau
+            if period > expected_slow_period * 0.5:
+                osc_type_info = " (Kp-induced, physics-limited)"
+            else:
+                osc_type_info = " (Kd-induced, noise amplification)"
+
         if period < 30:
             # Fast oscillation - derivative gain too high
             recommendations.append(Recommendation(
                 priority=2,
-                issue=f"Fast Oscillation (Period {period:.0f}s, Amplitude {amplitude:.1f}°C)",
+                issue=f"Fast Oscillation (Period {period:.0f}s, Amplitude {amplitude:.1f}°C){osc_type_info}",
                 cause="Derivative gain too high, amplifying noise",
                 fix="Reduce Kd by 20-30% OR increase derivative filter time constant",
                 temp_range="ALL"
@@ -839,11 +1049,18 @@ def generate_recommendations(data: Dict, segments: List[Segment]) -> List[Recomm
         elif period > 60:
             # Slow oscillation - proportional gain too high
             temp_range = "HIGH" if oscillating_segments[0].target_end > 1000 else "ALL"
+
+            fix_msg = "Reduce Kp by 15-20%"
+            if pid_methods and recommended_method == 'amigo':
+                rec_method = pid_methods.get('amigo', {})
+                if 'kp' in rec_method:
+                    fix_msg = f"Try conservative AMIGO tuning: Kp={rec_method['kp']:.1f} (designed for minimal overshoot)"
+
             recommendations.append(Recommendation(
                 priority=2,
-                issue=f"Slow Oscillation (Period {period:.0f}s, Amplitude {amplitude:.1f}°C)",
+                issue=f"Slow Oscillation (Period {period:.0f}s, Amplitude {amplitude:.1f}°C){osc_type_info}",
                 cause="Proportional gain too high for system dynamics",
-                fix="Reduce Kp by 15-20%",
+                fix=fix_msg,
                 temp_range=temp_range
             ))
 
@@ -891,12 +1108,26 @@ def generate_recommendations(data: Dict, segments: List[Segment]) -> List[Recomm
             low_lag = sum(s.metrics['tracking_lag']['avg_lag'] for s in low_temp_ramps) / len(low_temp_ramps)
             high_lag = sum(s.metrics['tracking_lag']['avg_lag'] for s in high_temp_ramps) / len(high_temp_ramps)
 
+            # Check if this is physics-limited or tuning issue
+            if thermal_model and 'time_constant_s' in thermal_model:
+                tau = thermal_model['time_constant_s']
+                # If lag is comparable to τ/10, it's likely physics-limited
+                if high_lag < tau / 10:
+                    cause_msg = f"Natural lag for system with τ={tau:.0f}s time constant"
+                    fix_msg = "Lag is acceptable given system dynamics. Consider reducing ramp rate if tighter tracking needed"
+                else:
+                    cause_msg = "Thermal mass increases, time constant grows with temperature"
+                    fix_msg = "Implement gain scheduling with higher Ki at high temp OR reduce ramp rate above 800°C"
+            else:
+                cause_msg = "Thermal mass increases, time constant grows with temperature"
+                fix_msg = "Implement gain scheduling with higher Ki at high temp OR reduce ramp rate above 800°C"
+
             if high_lag > low_lag * 1.5:  # 50% increase
                 recommendations.append(Recommendation(
                     priority=1,
                     issue=f"Tracking Lag Increases with Temperature ({low_lag:.1f}°C -> {high_lag:.1f}°C)",
-                    cause="Thermal mass increases, time constant grows with temperature",
-                    fix="Implement gain scheduling with higher Ki at high temp OR reduce ramp rate above 800°C",
+                    cause=cause_msg,
+                    fix=fix_msg,
                     temp_range="HIGH (>800°C)"
                 ))
 
@@ -941,21 +1172,111 @@ def generate_recommendations(data: Dict, segments: List[Segment]) -> List[Recomm
             temp_range="ALL"
         ))
 
+    # Issue 10: Heat loss compensation problems
+    if thermal_model:
+        hold_segments = [s for s in segments if s.segment_type == 'hold'
+                        and 'heat_loss' in s.metrics
+                        and s.metrics['heat_loss'] is not None]
+
+        insufficient_power = [s for s in hold_segments
+                             if not s.metrics['heat_loss']['is_compensated']
+                             and s.metrics['heat_loss']['power_deficit'] > 5.0]
+
+        if insufficient_power:
+            # Group by temperature
+            high_temp_deficit = [s for s in insufficient_power if s.target_end > 800]
+
+            if high_temp_deficit:
+                max_deficit = max(s.metrics['heat_loss']['power_deficit'] for s in high_temp_deficit)
+                temp = high_temp_deficit[0].target_end
+
+                # Suggest gain scheduling formula
+                heat_loss_coeff = thermal_model['heat_loss_coefficient']
+                recommendations.append(Recommendation(
+                    priority=1,
+                    issue=f"Insufficient Heat Loss Compensation at {temp:.0f}°C ({max_deficit:.1f}% power deficit)",
+                    cause=f"Heat loss increases with temperature (h={heat_loss_coeff:.6f}), fixed gains can't compensate",
+                    fix=f"Implement gain scheduling: Ki_adjusted = Ki_base × (1 + {heat_loss_coeff:.6f} × temp)",
+                    temp_range="HIGH (>800°C)"
+                ))
+
     # Sort by priority
     recommendations.sort(key=lambda r: r.priority)
 
     return recommendations
 
 
+def compare_with_tuned_pid(recommendations: List[Recommendation],
+                           thermal_model: Optional[Dict]) -> None:
+    """
+    Add recommendations comparing current behavior with tuned PID parameters.
+
+    Modifies recommendations list in-place to add comparison with thermal model PID methods.
+
+    Args:
+        recommendations: List of recommendations to augment
+        thermal_model: Thermal model with PID tuning parameters
+    """
+    if not thermal_model:
+        return
+
+    # Try to load full tuning results
+    try:
+        with open("tuning_results.json", 'r') as f:
+            tuning_data = json.load(f)
+            pid_methods = tuning_data.get('pid_methods')
+            recommended_method = tuning_data.get('recommended')
+
+            if not pid_methods or not recommended_method:
+                return
+
+            # Check if any overshoot issues exist
+            has_overshoot = any('overshoot' in r.issue.lower() for r in recommendations)
+            has_oscillation = any('oscillation' in r.issue.lower() for r in recommendations)
+
+            if has_overshoot or has_oscillation:
+                # Suggest AMIGO method for overshoot
+                amigo_params = pid_methods.get('amigo', {})
+                if amigo_params and 'kp' in amigo_params:
+                    recommendations.append(Recommendation(
+                        priority=1,
+                        issue="Consider Switching to Conservative AMIGO Tuning",
+                        cause="Current behavior shows overshoot/oscillation that AMIGO method is designed to prevent",
+                        fix=f"Try AMIGO method: Kp={amigo_params['kp']:.1f}, Ki={amigo_params['ki']:.4f}, Kd={amigo_params['kd']:.1f} (minimal overshoot design)",
+                        temp_range="ALL"
+                    ))
+
+            # If no major issues, mention tuned parameters are available
+            if len(recommendations) <= 1:
+                rec_params = pid_methods.get(recommended_method, {})
+                if rec_params:
+                    recommendations.append(Recommendation(
+                        priority=3,
+                        issue="Auto-tuned PID Parameters Available",
+                        cause="Thermal model analysis completed, optimized parameters available",
+                        fix=f"Consider {recommended_method.upper()} method: Kp={rec_params['kp']:.1f}, Ki={rec_params['ki']:.4f}, Kd={rec_params['kd']:.1f}",
+                        temp_range="ALL"
+                    ))
+
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+
 # =============================================================================
 # Analysis Pipeline
 # =============================================================================
 
-def analyze_segment_performance(data: Dict, segment: Segment) -> None:
+def analyze_segment_performance(data: Dict, segment: Segment,
+                               thermal_model: Optional[Dict] = None) -> None:
     """
     Analyze performance metrics for a single segment.
 
     Updates segment.metrics dictionary with all calculated metrics.
+
+    Args:
+        data: Profile data dictionary
+        segment: Segment to analyze
+        thermal_model: Optional thermal model for context-aware analysis
     """
     # Calculate all metrics
     segment.metrics['overshoot'] = detect_overshoot(data, segment)
@@ -965,8 +1286,11 @@ def analyze_segment_performance(data: Dict, segment: Segment) -> None:
     segment.metrics['tracking_lag'] = calculate_tracking_lag(data, segment)
     segment.metrics['control_effort'] = calculate_control_effort(data, segment)
 
-    # Grade segment
-    segment.grade, _ = grade_segment(segment)
+    # Analyze heat loss effects if thermal model available
+    segment.metrics['heat_loss'] = analyze_heat_loss_effects(data, segment, thermal_model)
+
+    # Grade segment (with thermal model context)
+    segment.grade, _ = grade_segment(segment, thermal_model)
 
     # Identify issues
     if segment.metrics['overshoot']['max_overshoot'] > 5.0:
@@ -975,19 +1299,37 @@ def analyze_segment_performance(data: Dict, segment: Segment) -> None:
         segment.issues.append("oscillation")
     if segment.metrics['tracking_lag'] and segment.metrics['tracking_lag']['avg_lag'] > 15.0:
         segment.issues.append("tracking_lag")
+    if segment.metrics['heat_loss'] and not segment.metrics['heat_loss']['is_compensated']:
+        segment.issues.append("heat_loss")
 
 
-def analyze_profile_performance(csv_file: str, verbose: bool = False) -> Dict:
+def analyze_profile_performance(csv_file: str, verbose: bool = False,
+                               tuning_results_file: Optional[str] = None) -> Dict:
     """
     Main analysis pipeline.
 
     Args:
         csv_file: Path to profile run CSV
         verbose: Print verbose debugging info
+        tuning_results_file: Optional path to tuning results JSON file
 
     Returns:
         Dictionary with complete analysis results
     """
+    # Load thermal model if available
+    thermal_model = None
+    if tuning_results_file:
+        thermal_model = load_thermal_model(tuning_results_file)
+        if thermal_model and verbose:
+            print(f"Loaded thermal model from {tuning_results_file}")
+            print(f"  τ={thermal_model.get('time_constant_s', 'N/A')}s, "
+                  f"L={thermal_model.get('dead_time_s', 'N/A')}s")
+    else:
+        # Try default location
+        thermal_model = load_thermal_model("tuning_results.json")
+        if thermal_model and verbose:
+            print("Loaded thermal model from tuning_results.json")
+
     # Load data
     if verbose:
         print(f"Loading data from {csv_file}...")
@@ -1008,13 +1350,16 @@ def analyze_profile_performance(csv_file: str, verbose: bool = False) -> Dict:
     for i, segment in enumerate(segments):
         if verbose:
             print(f"Analyzing segment {i}: {segment.segment_type}")
-        analyze_segment_performance(data, segment)
+        analyze_segment_performance(data, segment, thermal_model)
 
     # Generate overall grade
     overall_grade, overall_symbol = grade_overall(segments)
 
     # Generate recommendations
-    recommendations = generate_recommendations(data, segments)
+    recommendations = generate_recommendations(data, segments, thermal_model)
+
+    # Add comparison with tuned PID if available
+    compare_with_tuned_pid(recommendations, thermal_model)
 
     # Compile results
     results = {
@@ -1032,7 +1377,8 @@ def analyze_profile_performance(csv_file: str, verbose: bool = False) -> Dict:
         },
         'segments': segments,
         'recommendations': recommendations,
-        'data': data
+        'data': data,
+        'thermal_model': thermal_model
     }
 
     return results
@@ -1126,6 +1472,7 @@ def print_beautiful_report(results: Dict):
     segments = results['segments']
     recommendations = results['recommendations']
     overall_grade = results['overall_performance']['grade']
+    thermal_model = results.get('thermal_model')
 
     # Header
     print("\n" + "=" * 80)
@@ -1139,6 +1486,23 @@ def print_beautiful_report(results: Dict):
     print(f"│  Temperature:      {results['run_info']['temp_min']:.1f}°C → {results['run_info']['temp_max']:.1f}°C")
     print(f"│  Segments:         {results['run_info']['segments']}")
     print(f"│  Overall Grade:    {overall_grade}")
+
+    # Show thermal model info if available
+    if thermal_model:
+        print("│")
+        print("│  Thermal Model:    ✓ Loaded")
+        tau = thermal_model.get('time_constant_s', 0)
+        L = thermal_model.get('dead_time_s', 0)
+        h = thermal_model.get('heat_loss_coefficient', 0)
+        print(f"│    Time Constant:  τ = {tau:.0f}s")
+        print(f"│    Dead Time:      L = {L:.0f}s")
+        print(f"│    Heat Loss:      h = {h:.6f}")
+        if tau > 0:
+            expected_settling = 4 * tau
+            print(f"│    Expected Ts:    ~{expected_settling:.0f}s (4×τ)")
+    else:
+        print("│  Thermal Model:    Not loaded (using fixed thresholds)")
+
     print("└" + "─" * 79)
 
     # Performance Summary
@@ -1153,7 +1517,7 @@ def print_beautiful_report(results: Dict):
     all_settling = [s.metrics['settling_time'] for s in segments
                    if 'settling_time' in s.metrics and s.metrics['settling_time'] is not None]
     avg_settling = sum(all_settling) / len(all_settling) if all_settling else None
-    settling_grade, settling_sym = grade_settling_time(avg_settling)
+    settling_grade, settling_sym = grade_settling_time(avg_settling, thermal_model)
 
     all_ss_error = [s.metrics['steady_state']['avg_error'] for s in segments
                    if 'steady_state' in s.metrics and s.metrics['steady_state']['avg_error'] is not None]
@@ -1166,7 +1530,7 @@ def print_beautiful_report(results: Dict):
     all_lag = [s.metrics['tracking_lag']['avg_lag'] for s in segments
               if 'tracking_lag' in s.metrics and s.metrics['tracking_lag'] is not None]
     avg_lag = sum(all_lag) / len(all_lag) if all_lag else None
-    lag_grade, lag_sym = grade_tracking_lag({'avg_lag': avg_lag} if avg_lag else None)
+    lag_grade, lag_sym = grade_tracking_lag({'avg_lag': avg_lag} if avg_lag else None, thermal_model)
 
     # Print summary
     if max_overshoot > 0:
@@ -1231,7 +1595,7 @@ def print_beautiful_report(results: Dict):
         # Settling time
         if seg.metrics['settling_time'] is not None:
             st = seg.metrics['settling_time']
-            grade, sym = grade_settling_time(st)
+            grade, sym = grade_settling_time(st, thermal_model)
             print(f"│      Settling Time:  {st:.0f}s after reaching target ({grade}) {sym}")
         elif seg.segment_type == 'hold':
             print(f"│      Settling Time:  Did not settle (POOR) ⚠️")
@@ -1253,13 +1617,20 @@ def print_beautiful_report(results: Dict):
         # Tracking lag
         if seg.metrics['tracking_lag'] is not None:
             lag = seg.metrics['tracking_lag']
-            grade, sym = grade_tracking_lag(lag)
+            grade, sym = grade_tracking_lag(lag, thermal_model)
             print(f"│      Tracking Lag:   {lag['avg_lag']:.1f}°C average ({grade}) {sym}")
 
         # Control effort
         ctrl = seg.metrics['control_effort']
         grade, sym = grade_control_effort(ctrl)
         print(f"│      Control:        SSR {ctrl['ssr_min']:.0f}-{ctrl['ssr_max']:.0f}%, avg {ctrl['ssr_mean']:.0f}% ({grade}) {sym}")
+
+        # Heat loss analysis (if available)
+        if seg.metrics.get('heat_loss') is not None:
+            hl = seg.metrics['heat_loss']
+            status = "✓" if hl['is_compensated'] else "⚠️"
+            compensation = "OK" if hl['is_compensated'] else "POOR"
+            print(f"│      Heat Loss:      Expected {hl['expected_power']:.1f}%, actual {hl['actual_power']:.1f}% ({compensation}) {status}")
 
         print("│")
         print(f"│    Assessment:       {seg.grade} {results['overall_performance']['symbol']}")
@@ -1349,16 +1720,28 @@ def main():
     """Main entry point."""
     # Parse command line arguments
     if len(sys.argv) < 2:
-        print("\nUsage: python analyze_pid_performance.py <profile_csv_file> [--json-only] [--verbose]")
+        print("\nUsage: python analyze_pid_performance.py <profile_csv_file> [--json-only] [--verbose] [--tuning-model <file>]")
         print("\nExample:")
         print("  python analyze_pid_performance.py logs/cone6_glaze_2025-10-25_14-23-45.csv")
         print("  python analyze_pid_performance.py logs/profile_run.csv --json-only")
         print("  python analyze_pid_performance.py logs/profile_run.csv --verbose")
+        print("  python analyze_pid_performance.py logs/profile_run.csv --tuning-model tuning_results.json")
+        print("\nNote: If tuning_results.json exists in current directory, it will be loaded automatically")
         sys.exit(1)
 
     csv_file = sys.argv[1]
     json_only = '--json-only' in sys.argv
     verbose = '--verbose' in sys.argv
+
+    # Check for tuning model file argument
+    tuning_model_file = None
+    if '--tuning-model' in sys.argv:
+        try:
+            idx = sys.argv.index('--tuning-model')
+            if idx + 1 < len(sys.argv):
+                tuning_model_file = sys.argv[idx + 1]
+        except (ValueError, IndexError):
+            pass
 
     # Check if file exists
     if not Path(csv_file).exists():
@@ -1371,9 +1754,19 @@ def main():
         print("=" * 80)
         print(f"\n📂 Analyzing: {csv_file}")
 
+        # Show thermal model loading status
+        if tuning_model_file:
+            if Path(tuning_model_file).exists():
+                print(f"📊 Loading thermal model from: {tuning_model_file}")
+            else:
+                print(f"⚠️  Warning: Thermal model file not found: {tuning_model_file}")
+        elif Path("tuning_results.json").exists():
+            print("📊 Loading thermal model from: tuning_results.json (auto-detected)")
+
     try:
         # Run analysis
-        results = analyze_profile_performance(csv_file, verbose=verbose)
+        results = analyze_profile_performance(csv_file, verbose=verbose,
+                                             tuning_results_file=tuning_model_file)
 
         # Generate JSON output
         json_results = generate_results_json(results)
