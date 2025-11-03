@@ -14,6 +14,8 @@ class Screen:
     STATE = "state"
     TEMP = "temp"
     PROFILE = "profile"
+    RATE = "rate"
+    TUNING_DETAIL = "tuning_detail"
     STOP = "stop"
     STOP_CONFIRM = "stop_confirm"
 
@@ -89,7 +91,17 @@ class LCDManager:
         
         # Screen state
         self.current_screen = Screen.WIFI
-        self.screen_order = [Screen.WIFI, Screen.STATE, Screen.TEMP, Screen.PROFILE, Screen.STOP]
+        self.screen_order = [
+            Screen.WIFI, 
+            Screen.STATE, 
+            Screen.TEMP, 
+            Screen.PROFILE, 
+            Screen.RATE,
+            Screen.STOP
+        ]
+        
+        # Dynamic screen visibility (some screens only shown in certain states)
+        self.always_visible_screens = [Screen.WIFI, Screen.STATE, Screen.TEMP, Screen.STOP]
         
         # Button debouncing
         self.btn_next_last_press = 0
@@ -164,6 +176,10 @@ class LCDManager:
                 self._render_temp_screen()
             elif self.current_screen == Screen.PROFILE:
                 self._render_profile_screen()
+            elif self.current_screen == Screen.RATE:
+                self._render_rate_screen()
+            elif self.current_screen == Screen.TUNING_DETAIL:
+                self._render_tuning_detail_screen()
             elif self.current_screen == Screen.STOP:
                 self._render_stop_screen()
             elif self.current_screen == Screen.STOP_CONFIRM:
@@ -193,7 +209,14 @@ class LCDManager:
         if state == 'RUNNING':
             is_recovering = self.cached_status.get('is_recovering', False)
             if is_recovering:
-                self.lcd.print("(Recovering)", row=1)
+                # Show recovery target and distance
+                recovery_target = self.cached_status.get('recovery_target_temp')
+                current_temp = self.cached_status.get('current_temp', 0.0)
+                if recovery_target:
+                    temp_diff = recovery_target - current_temp
+                    self.lcd.print(f"Recov:{recovery_target:.0f}C {temp_diff:+.0f}", row=1)
+                else:
+                    self.lcd.print("(Recovering)", row=1)
             else:
                 step = self.cached_status.get('current_step', 0)
                 total = self.cached_status.get('total_steps', 0)
@@ -201,34 +224,57 @@ class LCDManager:
         elif state == 'TUNING':
             self.lcd.print("Auto-tuning PID", row=1)
         elif state == 'ERROR':
-            self.lcd.print("Check Web UI", row=1)
+            # Show actual error message (truncated to fit)
+            error_msg = self.cached_status.get('error', 'Unknown error')
+            self.lcd.print(error_msg[:16], row=1)
         elif state == 'COMPLETE':
             self.lcd.print("Profile Done!", row=1)
         else:
             self.lcd.print("", row=1)
     
     def _render_temp_screen(self):
-        """Render temperature screen"""
+        """Render temperature screen with SSR output"""
         current = self.cached_status.get('current_temp', 0.0)
         target = self.cached_status.get('target_temp', 0.0)
+        ssr_output = self.cached_status.get('ssr_output', 0.0)
         
         # Format temperatures to fit: "Cur: 999C"
-        self.lcd.print(f"Cur: {current:.0f}C", row=0)
+        self.lcd.print(f"Cur:{current:4.0f}C", row=0)
         
         if target > 0:
-            self.lcd.print(f"Tgt: {target:.0f}C", row=1)
+            # Show target and SSR output on second line
+            self.lcd.print(f"Tgt:{target:4.0f}C {ssr_output:.0f}%", row=1)
         else:
-            self.lcd.print("Tgt: --", row=1)
+            self.lcd.print(f"Tgt: -- SSR:{ssr_output:.0f}%", row=1)
     
     def _render_profile_screen(self):
-        """Render profile/tuning method screen"""
+        """Render profile/tuning method screen with time estimates"""
         state = self.cached_status.get('state', 'IDLE')
         
         if state == 'RUNNING':
             profile_name = self.cached_status.get('profile', 'Unknown')
-            # Truncate profile name if too long
-            self.lcd.print("Profile:", row=0)
-            self.lcd.print(profile_name[:16], row=1)
+            
+            # Get time information
+            elapsed = self.cached_status.get('elapsed', 0)
+            remaining = self.cached_status.get('remaining', 0)
+            progress = self.cached_status.get('progress', 0)
+            
+            # First line: Profile name (truncated)
+            self.lcd.print(profile_name[:16], row=0)
+            
+            # Second line: Progress and time
+            if remaining > 0:
+                # Format time: hours and minutes
+                remain_hours = int(remaining / 3600)
+                remain_mins = int((remaining % 3600) / 60)
+                if remain_hours > 0:
+                    time_str = f"{remain_hours}h{remain_mins:02d}m"
+                else:
+                    time_str = f"{remain_mins}m"
+                self.lcd.print(f"{progress:3.0f}% {time_str:>9}", row=1)
+            else:
+                self.lcd.print(f"Progress: {progress:.0f}%", row=1)
+                
         elif state == 'TUNING':
             tuning_mode = self.cached_status.get('tuning_mode', 'Unknown')
             self.lcd.print("Tuning Mode:", row=0)
@@ -253,12 +299,83 @@ class LCDManager:
         self.lcd.print("Are you sure?", row=0)
         self.lcd.print("Press Select", row=1)
     
+    def _render_rate_screen(self):
+        """Render rate monitoring screen (only during RUNNING)"""
+        state = self.cached_status.get('state', 'IDLE')
+        
+        if state != 'RUNNING':
+            self.lcd.print("Rate Monitor", row=0)
+            self.lcd.print("(Not running)", row=1)
+            return
+        
+        # Show rate information with adaptation count
+        desired_rate = self.cached_status.get('desired_rate', 0)
+        actual_rate = self.cached_status.get('actual_rate', 0)
+        current_rate = self.cached_status.get('current_rate', 0)
+        adaptation_count = self.cached_status.get('adaptation_count', 0)
+        
+        # First line: Desired vs Actual with warning if significantly behind
+        rate_warning = ""
+        if desired_rate > 0 and actual_rate < desired_rate * 0.85:
+            rate_warning = "!"
+        self.lcd.print(f"D:{desired_rate:3.0f} A:{actual_rate:3.0f}{rate_warning}", row=0)
+        
+        # Second line: Current (adapted) rate and adaptation count
+        if adaptation_count > 0:
+            self.lcd.print(f"Now:{current_rate:3.0f} Ad:{adaptation_count}", row=1)
+        else:
+            self.lcd.print(f"Current:{current_rate:3.0f}", row=1)
+    
+
+    def _render_tuning_detail_screen(self):
+        """Render detailed tuning progress screen"""
+        state = self.cached_status.get('state', 'IDLE')
+        
+        if state != 'TUNING':
+            self.lcd.print("Tuning Detail", row=0)
+            self.lcd.print("(Not tuning)", row=1)
+            return
+        
+        # Show tuning progress details
+        # Note: These fields would need to be added to tuning status
+        tuning_step = self.cached_status.get('tuning_step', 'Unknown')
+        tuning_progress = self.cached_status.get('tuning_progress', '?/?')
+        current_temp = self.cached_status.get('current_temp', 0.0)
+        
+        # First line: Step and progress
+        self.lcd.print(f"{tuning_step[:10]}{tuning_progress:>6}", row=0)
+        
+        # Second line: Current temperature
+        self.lcd.print(f"Temp: {current_temp:.0f}C", row=1)
+    
     def _handle_next_button(self):
         """Handle next button press"""
-        # Move to next screen
+        # Move to next screen, skipping screens not relevant to current state
+        state = self.cached_status.get('state', 'IDLE')
+        
         current_index = self.screen_order.index(self.current_screen)
-        next_index = (current_index + 1) % len(self.screen_order)
-        self.current_screen = self.screen_order[next_index]
+        attempts = 0
+        max_attempts = len(self.screen_order)
+        
+        while attempts < max_attempts:
+            next_index = (current_index + 1 + attempts) % len(self.screen_order)
+            next_screen = self.screen_order[next_index]
+            
+            # Check if screen is relevant
+            if next_screen in self.always_visible_screens:
+                self.current_screen = next_screen
+                break
+            elif next_screen == Screen.PROFILE and state in ['RUNNING', 'TUNING']:
+                self.current_screen = next_screen
+                break
+            elif next_screen == Screen.RATE and state == 'RUNNING':
+                self.current_screen = next_screen
+                break
+            elif next_screen == Screen.TUNING_DETAIL and state == 'TUNING':
+                self.current_screen = next_screen
+                break
+            
+            attempts += 1
         
         print(f"[LCD] Screen changed to: {self.current_screen}")
         self._render_current_screen()
