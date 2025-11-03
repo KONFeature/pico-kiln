@@ -2,190 +2,174 @@
 # Configuration template for pico-kiln controller
 # Copy this file to config.py and update with your settings
 
-# === Hardware Pin Configuration ===
+# ============================================================================
+# HARDWARE CONFIGURATION
+# ============================================================================
 
-# MAX31856 Thermocouple SPI Pins
-MAX31856_SPI_ID = 0  # SPI bus ID (0 or 1)
-MAX31856_SCK_PIN = 18   # SPI Clock
-MAX31856_MOSI_PIN = 19  # SPI MOSI (Master Out Slave In)
-MAX31856_MISO_PIN = 16  # SPI MISO (Master In Slave Out)
-MAX31856_CS_PIN = 28    # Chip Select
+# MAX31856 Thermocouple (SPI Interface)
+MAX31856_SPI_ID = 0      # SPI bus ID (0 or 1)
+MAX31856_SCK_PIN = 18    # SPI Clock
+MAX31856_MOSI_PIN = 19   # SPI MOSI (Master Out Slave In)
+MAX31856_MISO_PIN = 16   # SPI MISO (Master In Slave Out)
+MAX31856_CS_PIN = 28     # Chip Select
 
 # SSR Control Pin(s)
-# Single SSR (backward compatible):
-# SSR_PIN = 15
-# Multiple SSRs (staggered power-on to prevent inrush current):
-# SSR_PIN = [15, 16, 17]
-SSR_PIN = 15  # GPIO pin(s) for controlling the Solid State Relay(s)
+# Single SSR:   SSR_PIN = 15
+# Multiple SSRs (for high-power kilns): SSR_PIN = [15, 16, 17]
+SSR_PIN = 15
 
-# === WiFi Configuration ===
+# ============================================================================
+# NETWORK CONFIGURATION
+# ============================================================================
+
 WIFI_SSID = "your_wifi_ssid"
 WIFI_PASSWORD = "your_wifi_password"
 
-# === Web Server Configuration ===
-WEB_SERVER_PORT = 80
+# Web Server
 WEB_SERVER_HOST = "0.0.0.0"
+WEB_SERVER_PORT = 80
 
-# === Control Parameters ===
-# Temperature reading interval (seconds)
-TEMP_READ_INTERVAL = 1.0
+# ============================================================================
+# TEMPERATURE SENSOR CONFIGURATION
+# ============================================================================
 
-# PID update interval (seconds)
-PID_UPDATE_INTERVAL = 1.0
+# Thermocouple type - MAX31856 supports: B, E, J, K, N, R, S, T
+# Common types:
+#   K: General purpose, -270°C to 1372°C (most common)
+#   R/S: High-temp platinum, 0°C to 1768°C (ceramics/kilns)
+from adafruit_max31856 import ThermocoupleType
+THERMOCOUPLE_TYPE = ThermocoupleType.K
 
-# === PID Parameters ===
-# These should be tuned for your specific kiln
-# Default values are conservative starting points
-# Use auto-tuning utility to determine optimal values for your kiln
-PID_KP = 25.0      # Proportional gain
-PID_KI = 180.0     # Integral gain (inverse time constant)
-PID_KD = 160.0     # Derivative gain
+# Temperature units: "c" (Celsius) or "f" (Fahrenheit)
+TEMP_UNITS = "c"
 
-# === SSR Control ===
+# Calibration offset added to all readings (°C)
+THERMOCOUPLE_OFFSET = 0.0
+
+# ============================================================================
+# CONTROL LOOP TIMING
+# ============================================================================
+
+TEMP_READ_INTERVAL = 1.0   # Temperature sensor read interval (seconds)
+PID_UPDATE_INTERVAL = 1.0  # PID calculation interval (seconds)
+
+# ============================================================================
+# PID CONTROL PARAMETERS
+# ============================================================================
+
+# Base PID gains - tune these for your specific kiln
+# Use the auto-tuning utility: python scripts/analyze_tuning.py
+PID_KP_BASE = 25.0   # Proportional gain
+PID_KI_BASE = 0.14   # Integral gain (converted from time constant)
+PID_KD_BASE = 160.0  # Derivative gain
+
+# Continuous Gain Scheduling (optional)
+# Compensates for increased heat loss at higher temperatures
+# Set THERMAL_H = 0 to disable (constant PID gains)
+#
+# How to generate:
+#   1. Run full-range PID tuning
+#   2. Run: python scripts/analyze_tuning.py logs/tuning_*.csv
+#   3. Copy THERMAL_* and PID_*_BASE values from output
+THERMAL_H = 0.0          # Heat loss coefficient (0 = disabled)
+THERMAL_T_AMBIENT = 25.0 # Ambient temperature (°C)
+
+# ============================================================================
+# SSR POWER CONTROL
+# ============================================================================
+
 # Time-proportional control cycle time (seconds)
+# Example: 30% duty cycle with 20s cycle → ON 6s, OFF 14s (3 switches/min)
 #
-# This is the time window for PWM control of the SSR.
-# For example, at 30% duty cycle with 20s cycle time:
-#   - SSR is ON for 6 seconds
-#   - SSR is OFF for 14 seconds
-#   - Total: 3 switches per minute
+# Why 20 seconds for kilns:
+#   - Kilns have huge thermal mass (respond over minutes, not seconds)
+#   - Short cycles (2s) → 30 switches/min → SSR wear + light flickering
+#   - Long cycles (20s) → 3 switches/min → minimal wear, no flickering
+#   - Temperature precision NOT affected by cycle length
 #
-# Why 20 seconds is appropriate for kilns:
-# - Kilns have huge thermal mass and respond slowly to power changes
-# - Short cycles (2s) = 30 switches/minute → excessive SSR wear + light flickering
-# - Long cycles (20-30s) = 3 switches/minute → minimal wear + no flickering
-# - Temperature precision is NOT affected (kiln responds over minutes, not seconds)
-#
-# Recommended values:
-# - Small kilns (test kilns): 20 seconds
-# - Medium/large kilns: 20-30 seconds
-# - DO NOT use values < 10 seconds (causes flickering and SSR wear)
-#
+# Recommended: 20s (small kilns) to 30s (large kilns)
+# DO NOT use < 10s (causes flickering and SSR wear)
 SSR_CYCLE_TIME = 20.0
 
 # Stagger delay between multiple SSRs (seconds)
-# When using multiple SSRs (SSR_PIN as list), this delay is applied between
-# each SSR state change to prevent large inrush current draw.
-# Recommended: 0.01 seconds (10ms) per SSR
-# With 10ms delay, up to 10 SSRs can be supported within the 0.1s update window
-# Set to 0 to disable staggering (not recommended for multiple SSRs)
+# Prevents inrush current when using multiple SSRs (SSR_PIN as list)
+# Recommended: 0.01s (10ms) per SSR, supports up to 10 SSRs
 SSR_STAGGER_DELAY = 0.01
 
-# === Safety Limits ===
-# Maximum safe temperature (°C)
-MAX_TEMP = 1300
+# ============================================================================
+# SAFETY LIMITS
+# ============================================================================
 
-# Maximum temperature error before triggering safety shutdown (°C)
-# If actual temp deviates from target by more than this, stop firing
-MAX_TEMP_ERROR = 50
+MAX_TEMP = 1300          # Maximum safe temperature (°C)
+MAX_TEMP_ERROR = 50      # Max deviation from target before emergency stop (°C)
 
-# === Temperature Settings ===
-# Temperature units: "c" for Celsius, "f" for Fahrenheit
-TEMP_UNITS = "c"
+# ============================================================================
+# FIRING PROFILES
+# ============================================================================
 
-# Thermocouple type
-# The MAX31856 supports various thermocouple types (B, E, J, K, N, R, S, T)
-# Import ThermocoupleType from adafruit_max31856 to specify your thermocouple type
-# Common types:
-#   - ThermocoupleType.K: Type K (default) - General purpose, -270°C to 1372°C
-#   - ThermocoupleType.R: Type R - High temp platinum, 0°C to 1768°C (ceramics/kilns)
-#   - ThermocoupleType.S: Type S - High temp platinum, 0°C to 1768°C (ceramics/kilns)
-#   - ThermocoupleType.J: Type J - Iron-constantan, -210°C to 1200°C
-#   - ThermocoupleType.T: Type T - Copper-constantan, -270°C to 400°C
-#
-# Example configuration:
-from adafruit_max31856 import ThermocoupleType
-THERMOCOUPLE_TYPE = ThermocoupleType.K  # Change to match your thermocouple
+PROFILES_DIR = "profiles"  # Directory for storing firing profiles
 
-# Thermocouple calibration offset (°C)
-# Add this value to all temperature readings for calibration
-THERMOCOUPLE_OFFSET = 0.0
+# ============================================================================
+# ADAPTIVE RATE CONTROL
+# ============================================================================
 
-# === Profile Settings ===
-# Directory for storing firing profiles
-PROFILES_DIR = "profiles"
-
-# === Adaptive Rate Control ===
 # Automatically adjust ramp rates if kiln cannot maintain desired rate
-# This allows profiles to complete successfully even if kiln capacity is insufficient
-#
-# ADAPTATION_ENABLED: Enable/disable adaptive control
-# ADAPTATION_CHECK_INTERVAL: How often to check if adaptation is needed (seconds)
-# ADAPTATION_MIN_STEP_TIME: Minimum time in step before allowing first adaptation (seconds)
-# ADAPTATION_MIN_TIME_BETWEEN: Minimum time between adaptations to avoid oscillation (seconds)
-# ADAPTATION_TEMP_ERROR_THRESHOLD: Trigger adaptation if behind schedule by this many °C
-# ADAPTATION_RATE_THRESHOLD: Trigger if actual rate < (current_rate * threshold)
-# ADAPTATION_REDUCTION_FACTOR: Reduce rate to (measured_rate * factor) when adapting
-# RATE_MEASUREMENT_WINDOW: Time window for measuring actual rate (seconds)
-# RATE_RECORDING_INTERVAL: How often to record temp for rate calculation (seconds)
-#
+# Allows profiles to complete successfully even with insufficient kiln capacity
+
 ADAPTATION_ENABLED = True
-ADAPTATION_CHECK_INTERVAL = 60  # Check every minute
-ADAPTATION_MIN_STEP_TIME = 600  # Wait 10 minutes before first adaptation
-ADAPTATION_MIN_TIME_BETWEEN = 300  # Wait 5 minutes between adaptations
-ADAPTATION_TEMP_ERROR_THRESHOLD = 20  # Trigger if 20°C behind schedule
-ADAPTATION_RATE_THRESHOLD = 0.85  # Trigger if actual < 85% of target
-ADAPTATION_REDUCTION_FACTOR = 0.95  # Reduce to 95% of measured rate
-RATE_MEASUREMENT_WINDOW = 600  # Measure rate over 10 minutes
-RATE_RECORDING_INTERVAL = 10  # Record temperature every 10 seconds
+ADAPTATION_CHECK_INTERVAL = 60           # Check interval (seconds)
+ADAPTATION_MIN_STEP_TIME = 600           # Wait before first adaptation (seconds)
+ADAPTATION_MIN_TIME_BETWEEN = 300        # Wait between adaptations (seconds)
+ADAPTATION_TEMP_ERROR_THRESHOLD = 20     # Trigger if behind by this temp (°C)
+ADAPTATION_RATE_THRESHOLD = 0.85         # Trigger if actual < 85% of target
+ADAPTATION_REDUCTION_FACTOR = 0.95       # Reduce to 95% of measured rate
+RATE_MEASUREMENT_WINDOW = 600            # Rate measurement window (seconds)
+RATE_RECORDING_INTERVAL = 10             # Temp recording interval (seconds)
 
-# === Data Logging Settings ===
-# Directory for storing kiln run data logs (CSV files)
-LOGS_DIR = "logs"
+# ============================================================================
+# DATA LOGGING
+# ============================================================================
 
-# Logging interval (seconds) - how often to write data to CSV
-# Lower values = more data points but more memory usage
-# Default: 30 seconds (saves ~120 data points for a 1-hour firing)
-LOGGING_INTERVAL = 30
+LOGS_DIR = "logs"       # Directory for CSV log files
+LOGGING_INTERVAL = 30   # Log data every N seconds
 
-# === Program Recovery Settings ===
+# ============================================================================
+# CRASH RECOVERY
+# ============================================================================
+
 # Automatic program recovery after unexpected reboot/crash
-# If a kiln program was running when the device rebooted, it will attempt
-# to resume automatically if the conditions below are met
-#
-# MAX_RECOVERY_DURATION: Maximum time since last log entry to attempt recovery (seconds)
-# If more time has passed, recovery is considered unsafe and program is abandoned
-# Default: 300 seconds (5 minutes)
-MAX_RECOVERY_DURATION = 300
+# Resumes interrupted kiln program if conditions are safe
 
-# MAX_RECOVERY_TEMP_DELTA: Maximum temperature deviation from last logged value (°C)
-# If current temperature differs by more than this, recovery is considered unsafe
-# Default: 30°C
-MAX_RECOVERY_TEMP_DELTA = 30
+MAX_RECOVERY_DURATION = 300   # Max time since last log to attempt recovery (seconds)
+MAX_RECOVERY_TEMP_DELTA = 30  # Max temp deviation from last log for safe recovery (°C)
 
-# === Watchdog Timer Settings ===
-# Hardware watchdog timer for automatic recovery from control loop hangs
-#
-# The watchdog runs on Core 1 (control thread) and monitors the critical control loop.
-# If the control loop hangs or crashes, the watchdog will automatically reset the Pico
-# after WATCHDOG_TIMEOUT milliseconds. The recovery system will then automatically
-# resume the interrupted kiln program (if within recovery time window).
-#
-# ENABLE_WATCHDOG: Set to True to enable watchdog protection
-# WATCHDOG_TIMEOUT: Time in milliseconds before watchdog resets (default: 8000ms = 8s)
+# ============================================================================
+# WATCHDOG TIMER
+# ============================================================================
+
+# Hardware watchdog for automatic recovery from control loop hangs
+# Monitors Core 1 (control thread) and resets Pico if control loop hangs
 #
 # How it works:
-# 1. Control loop iteration completes successfully → watchdog is fed
-# 2. Control loop hangs or crashes → watchdog NOT fed
-# 3. After WATCHDOG_TIMEOUT ms → Pico resets automatically
-# 4. On boot → Recovery system detects interrupted program
-# 5. If within MAX_RECOVERY_DURATION → Program resumes automatically
+#   1. Control loop completes → watchdog is fed
+#   2. Control loop hangs → watchdog NOT fed
+#   3. After WATCHDOG_TIMEOUT → Pico resets
+#   4. Recovery system resumes program (if within MAX_RECOVERY_DURATION)
 #
 # Safety notes:
-# - Watchdog timeout (8000ms) must be longer than control loop interval (1000ms)
-# - Current settings: 8x safety margin (8s timeout / 1s loop = 8x)
-# - Core 2 failures (web server, WiFi) do NOT trigger watchdog - kiln keeps firing
-# - Only critical control loop hangs will cause reset
+#   - Timeout (8000ms) > control loop interval (1000ms) → 8x safety margin
+#   - Core 2 failures (web, WiFi) do NOT trigger watchdog
+#   - Only critical control loop hangs trigger reset
 #
 # When to enable:
-# ✓ After thorough testing of your kiln profiles
-# ✓ For unattended operation (no laptop connected)
-# ✓ When MAX_RECOVERY_DURATION and MAX_RECOVERY_TEMP_DELTA are properly configured
+#   ✓ After thorough testing
+#   ✓ For unattended operation
+#   ✓ When recovery parameters are properly configured
 #
 # When to disable:
-# ✗ During development and debugging
-# ✗ When connected to REPL/laptop (watchdog prevents debugging)
-# ✗ If control loop legitimately takes >8 seconds (increase WATCHDOG_TIMEOUT instead)
-#
+#   ✗ During development/debugging
+#   ✗ When connected to REPL/laptop
+#   ✗ If control loop legitimately takes >8s (increase timeout instead)
+
 ENABLE_WATCHDOG = False
 WATCHDOG_TIMEOUT = 8000  # milliseconds (8 seconds)
