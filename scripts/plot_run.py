@@ -49,12 +49,17 @@ def load_run_data(csv_file):
     step_names = []
     step_indices = []
     total_steps_data = []
+    current_rate_data = []
 
     with open(csv_file, 'r') as f:
         reader = csv.DictReader(f)
         fieldnames = reader.fieldnames
 
         for row in reader:
+            # Skip RECOVERY state entries
+            if row.get('state') == 'RECOVERY':
+                continue
+
             elapsed = float(row['elapsed_seconds'])
             time_data.append(elapsed)
             temp_data.append(float(row['current_temp_c']))
@@ -71,6 +76,8 @@ def load_run_data(csv_file):
                 step_indices.append(int(row['step_index']) if row.get('step_index', '') else -1)
             if 'total_steps' in fieldnames:
                 total_steps_data.append(int(row['total_steps']) if row.get('total_steps', '') else 0)
+            if 'current_rate_c_per_hour' in fieldnames:
+                current_rate_data.append(float(row.get('current_rate_c_per_hour', 0)))
 
     # Fallback: if all elapsed_seconds are 0, calculate from timestamps
     if all(t == 0.0 for t in time_data):
@@ -107,6 +114,8 @@ def load_run_data(csv_file):
         result['step_indices'] = step_indices
     if total_steps_data:
         result['total_steps'] = total_steps_data
+    if current_rate_data:
+        result['current_rate'] = current_rate_data
 
     return result
 
@@ -133,10 +142,15 @@ def plot_run(data, output_file=None):
         output_file: Optional output file path (None = show interactive plot)
     """
     run_type = detect_run_type(data)
+    has_rate_data = 'current_rate' in data and data['current_rate']
 
-    # Create figure with subplots
-    fig = plt.figure(figsize=(14, 10))
-    gs = GridSpec(3, 1, height_ratios=[2, 1, 1], hspace=0.3)
+    # Create figure with subplots - add extra row if rate data available
+    if has_rate_data:
+        fig = plt.figure(figsize=(14, 12))
+        gs = GridSpec(4, 1, height_ratios=[2, 1, 1, 1], hspace=0.3)
+    else:
+        fig = plt.figure(figsize=(14, 10))
+        gs = GridSpec(3, 1, height_ratios=[2, 1, 1], hspace=0.3)
 
     # Subplot 1: Temperature vs Time
     ax1 = fig.add_subplot(gs[0])
@@ -231,11 +245,46 @@ def plot_run(data, output_file=None):
 
     # Plot progress
     ax3.plot(data['time_hours'], data['progress'], 'purple', linewidth=2, label='Progress (%)')
-    ax3.set_xlabel('Time (hours)', fontsize=12)
     ax3.set_ylabel('Progress (%)', fontsize=12)
     ax3.set_ylim(-5, 105)
     ax3.grid(True, alpha=0.3)
     ax3.legend(loc='upper left', fontsize=10)
+
+    # Only set xlabel on bottom subplot
+    if not has_rate_data:
+        ax3.set_xlabel('Time (hours)', fontsize=12)
+
+    # Subplot 4: Rate (if available)
+    if has_rate_data:
+        ax4 = fig.add_subplot(gs[3], sharex=ax1)
+
+        # Draw step transition lines if step data available
+        if 'step_indices' in data and data['step_indices']:
+            prev_step = -1
+            for i, step_idx in enumerate(data['step_indices']):
+                if step_idx != prev_step and step_idx >= 0 and i > 0:
+                    ax4.axvline(x=data['time_hours'][i], color='gray', linestyle='--', alpha=0.4, linewidth=1)
+                    prev_step = step_idx
+
+        ax4.plot(data['time_hours'], data['current_rate'], 'green', linewidth=2, label='Current Rate (°C/h)')
+        ax4.axhline(y=0, color='black', linestyle='-', alpha=0.3, linewidth=0.5)
+        ax4.set_xlabel('Time (hours)', fontsize=12)
+        ax4.set_ylabel('Rate (°C/h)', fontsize=12)
+        ax4.grid(True, alpha=0.3)
+        ax4.legend(loc='upper right', fontsize=10)
+
+        # Add info about rate adaptations
+        rate_changes = 0
+        if len(data['current_rate']) > 1:
+            for i in range(1, len(data['current_rate'])):
+                if abs(data['current_rate'][i] - data['current_rate'][i-1]) > 10:
+                    rate_changes += 1
+
+        if rate_changes > 0:
+            ax4.text(0.02, 0.98, f'Rate adaptations: {rate_changes}',
+                    transform=ax4.transAxes, fontsize=9,
+                    verticalalignment='top', horizontalalignment='left',
+                    bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
 
     # Add run info as title
     start_time = data['timestamps'][0]

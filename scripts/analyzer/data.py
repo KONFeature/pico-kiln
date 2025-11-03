@@ -68,6 +68,10 @@ def load_tuning_data(csv_file: str) -> Dict:
             has_step_data = True
 
         for row in reader:
+            # Skip RECOVERY state entries
+            if row.get('state') == 'RECOVERY':
+                continue
+
             time_data.append(float(row['elapsed_seconds']))
             temp_data.append(float(row['current_temp_c']))
             ssr_output_data.append(float(row['ssr_output_percent']))

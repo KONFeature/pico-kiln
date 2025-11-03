@@ -42,11 +42,17 @@ def load_run_data(csv_file):
     target_temp_data = []
     ssr_output_data = []
     timestamps = []
+    current_rate_data = []
 
     with open(csv_file, 'r') as f:
         reader = csv.DictReader(f)
-        # Note: ssr_is_on column removed in new format, but we don't use it here anyway
+        fieldnames = reader.fieldnames or []
+
         for row in reader:
+            # Skip RECOVERY state entries
+            if row.get('state') == 'RECOVERY':
+                continue
+
             elapsed = float(row['elapsed_seconds'])
             time_data.append(elapsed)
             temp_data.append(float(row['current_temp_c']))
@@ -54,10 +60,14 @@ def load_run_data(csv_file):
             ssr_output_data.append(float(row['ssr_output_percent']))
             timestamps.append(row['timestamp'])
 
+            # Handle new optional columns (backward compatibility)
+            if 'current_rate_c_per_hour' in fieldnames:
+                current_rate_data.append(float(row.get('current_rate_c_per_hour', 0)))
+
     # Convert elapsed seconds to hours for better readability
     time_hours = [t / 3600 for t in time_data]
 
-    return {
+    result = {
         'time': time_data,
         'time_hours': time_hours,
         'temp': temp_data,
@@ -66,6 +76,12 @@ def load_run_data(csv_file):
         'timestamps': timestamps,
         'filename': Path(csv_file).stem  # Use filename as label
     }
+
+    # Add rate data if available
+    if current_rate_data:
+        result['current_rate'] = current_rate_data
+
+    return result
 
 
 def calculate_metrics(data):
@@ -115,9 +131,16 @@ def compare_runs(datasets, output_file=None):
     # Generate colors for each run
     colors = plt.cm.tab10(range(len(datasets)))
 
-    # Create figure with subplots
-    fig = plt.figure(figsize=(16, 10))
-    gs = GridSpec(2, 2, height_ratios=[2, 1], width_ratios=[3, 1], hspace=0.3, wspace=0.3)
+    # Check if any dataset has rate data
+    has_rate_data = any('current_rate' in d and d['current_rate'] for d in datasets)
+
+    # Create figure with subplots - add rate row if data available
+    if has_rate_data:
+        fig = plt.figure(figsize=(16, 13))
+        gs = GridSpec(3, 2, height_ratios=[2, 1, 1], width_ratios=[3, 1], hspace=0.3, wspace=0.3)
+    else:
+        fig = plt.figure(figsize=(16, 10))
+        gs = GridSpec(2, 2, height_ratios=[2, 1], width_ratios=[3, 1], hspace=0.3, wspace=0.3)
 
     # Subplot 1: Temperature Comparison
     ax1 = fig.add_subplot(gs[0, 0])
@@ -141,14 +164,32 @@ def compare_runs(datasets, output_file=None):
         ax2.plot(data['time_hours'], data['ssr_output'],
                 linewidth=1.5, label=data['filename'], color=colors[i], alpha=0.7)
 
-    ax2.set_xlabel('Time (hours)', fontsize=12)
     ax2.set_ylabel('SSR Output (%)', fontsize=12)
     ax2.set_title('SSR Output Comparison', fontsize=12, fontweight='bold')
     ax2.set_ylim(-5, 105)
     ax2.grid(True, alpha=0.3)
     ax2.legend(loc='best', fontsize=9)
 
-    # Subplot 3: Metrics Table
+    # Only set xlabel on bottom left subplot
+    if not has_rate_data:
+        ax2.set_xlabel('Time (hours)', fontsize=12)
+
+    # Subplot 3: Rate Comparison (if available)
+    if has_rate_data:
+        ax_rate = fig.add_subplot(gs[2, 0], sharex=ax1)
+        for i, data in enumerate(datasets):
+            if 'current_rate' in data and data['current_rate']:
+                ax_rate.plot(data['time_hours'], data['current_rate'],
+                           linewidth=1.5, label=data['filename'], color=colors[i], alpha=0.7)
+
+        ax_rate.axhline(y=0, color='black', linestyle='-', alpha=0.3, linewidth=0.5)
+        ax_rate.set_xlabel('Time (hours)', fontsize=12)
+        ax_rate.set_ylabel('Rate (°C/h)', fontsize=12)
+        ax_rate.set_title('Rate Comparison (Adaptive Control)', fontsize=12, fontweight='bold')
+        ax_rate.grid(True, alpha=0.3)
+        ax_rate.legend(loc='best', fontsize=9)
+
+    # Subplot 4: Metrics Table
     ax3 = fig.add_subplot(gs[:, 1])
     ax3.axis('tight')
     ax3.axis('off')

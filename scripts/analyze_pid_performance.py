@@ -89,7 +89,8 @@ def load_profile_data(csv_file: str) -> Dict:
 
         for row in reader:
             # Skip non-RUNNING states (we only analyze active PID control)
-            if 'state' in row and row['state'] != 'RUNNING':
+            # Also skip RECOVERY state entries
+            if 'state' in row and row['state'] not in ['RUNNING']:
                 continue
 
             time_data.append(float(row['elapsed_seconds']))
