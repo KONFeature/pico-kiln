@@ -117,15 +117,28 @@ async def main():
     print("[Main] Initializing status receiver...")
     status_receiver = get_status_receiver()
     status_receiver.initialize(status_queue)
+    
+    # Initialize LCD manager (optional hardware)
+    print("[Main] Initializing LCD manager...")
+    from server.lcd_manager import initialize_lcd_manager
+    lcd_manager = initialize_lcd_manager(config, command_queue)
+    if lcd_manager and lcd_manager.enabled:
+        lcd_manager.show_init_message("Status receiver")
+        # Register LCD as status listener
+        status_receiver.register_listener(lcd_manager.update_status)
 
     # Initialize and register data logger
     print("[Main] Initializing data logger...")
     data_logger = DataLogger(config.LOGS_DIR, config.LOGGING_INTERVAL)
     status_receiver.register_listener(data_logger.on_status_update)
+    if lcd_manager and lcd_manager.enabled:
+        lcd_manager.show_init_message("Data logger")
 
     # Initialize WiFi manager (early, so recovery can use it for NTP callbacks)
     print("[Main] Initializing WiFi manager...")
     wifi_mgr = WiFiManager(config.WIFI_SSID, config.WIFI_PASSWORD)
+    if lcd_manager and lcd_manager.enabled:
+        lcd_manager.show_init_message("WiFi manager")
 
     # Initialize and register recovery listener (with wifi_mgr for NTP retry)
     print("[Main] Initializing recovery listener...")
@@ -134,6 +147,8 @@ async def main():
     recovery_listener.set_status_receiver(status_receiver)
     status_receiver.register_listener(recovery_listener.on_status_update)
     print("[Main] Recovery listener will check on first valid temperature reading")
+    if lcd_manager and lcd_manager.enabled:
+        lcd_manager.show_init_message("Recovery check")
 
     # Start status receiver
     print("[Main] Starting status receiver...")
@@ -157,6 +172,9 @@ async def main():
     # Connect to WiFi (Core 2)
     # Note: WiFi manager was initialized earlier to allow recovery NTP callbacks
     print("[Main] Connecting to WiFi...")
+    if lcd_manager and lcd_manager.enabled:
+        lcd_manager.show_init_message("Connecting WiFi")
+    
     ip_address = await wifi_mgr.connect(timeout=30)
 
     if not ip_address:
@@ -165,6 +183,11 @@ async def main():
         print("[Main] - Control thread is still running")
         print("[Main] - WiFi monitor will keep trying to connect")
         ip_address = "N/A"
+        if lcd_manager and lcd_manager.enabled:
+            lcd_manager.set_wifi_status(False, None)
+    else:
+        if lcd_manager and lcd_manager.enabled:
+            lcd_manager.set_wifi_status(True, ip_address)
 
     # Start async tasks on Core 2
     print("[Main] Starting web server...")
@@ -175,11 +198,18 @@ async def main():
 
     print("[Main] Starting error logger...")
     error_logger_task = asyncio.create_task(error_logger_loop(error_log))
+    
+    # Start LCD manager if enabled
+    lcd_task = None
+    if lcd_manager and lcd_manager.enabled:
+        print("[Main] Starting LCD manager...")
+        lcd_task = asyncio.create_task(lcd_manager.run())
 
     print("=" * 50)
     print(f"System ready!")
     print(f"Core 1: Control thread (temp, PID, SSR)")
-    print(f"Core 2: Web server + WiFi + Status receiver + Data logger + Error logger")
+    lcd_status = " + LCD display" if (lcd_manager and lcd_manager.enabled) else ""
+    print(f"Core 2: Web server + WiFi + Status receiver + Data logger + Error logger{lcd_status}")
     if ip_address != "N/A":
         print(f"Access web interface at: http://{ip_address}")
     else:
@@ -188,7 +218,10 @@ async def main():
     print("=" * 50)
 
     # Run all async tasks on Core 2
-    await asyncio.gather(receiver_task, server_task, wifi_task, error_logger_task)
+    tasks = [receiver_task, server_task, wifi_task, error_logger_task]
+    if lcd_task:
+        tasks.append(lcd_task)
+    await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
     try:

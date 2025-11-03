@@ -173,3 +173,32 @@ MAX_RECOVERY_TEMP_DELTA = 30  # Max temp deviation from last log for safe recove
 
 ENABLE_WATCHDOG = False
 WATCHDOG_TIMEOUT = 8000  # milliseconds (8 seconds)
+
+# ============================================================================
+# LCD DISPLAY (OPTIONAL)
+# ============================================================================
+
+# 1602 LCD display with I2C backpack (PCF8574)
+# If these settings are not defined, LCD display will be disabled
+#
+# To enable the LCD display, uncomment and configure the following:
+
+# I2C Configuration for LCD
+# LCD_I2C_ID = 0           # I2C bus ID (0 or 1)
+# LCD_I2C_SCL = 21         # I2C SCL pin
+# LCD_I2C_SDA = 20         # I2C SDA pin
+# LCD_I2C_FREQ = 100000    # I2C frequency (100kHz standard)
+# LCD_I2C_ADDR = 0x27      # I2C address (0x27 or 0x3F common for PCF8574)
+
+# Button Configuration (OPTIONAL)
+# Buttons connect to ground (active low with internal pull-up)
+# If not defined, display will work but no button navigation
+# LCD_BTN_NEXT_PIN = 14    # Button to cycle through screens
+# LCD_BTN_SELECT_PIN = 15  # Button to select/confirm actions
+
+# Available screens (auto-cycle with NEXT button):
+#   1. WiFi Status - Shows connection status and IP address
+#   2. State - Shows current state (RUNNING, IDLE, TUNING, etc.)
+#   3. Temperature - Shows current and target temperature
+#   4. Profile - Shows active profile or tuning method
+#   5. Stop - Allows stopping active program (requires SELECT confirmation)
