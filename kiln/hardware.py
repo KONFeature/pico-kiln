@@ -178,7 +178,7 @@ class SSRController:
         self.cycle_time_ms = int(cycle_time * 1000)  # Store as milliseconds
         self.stagger_delay = stagger_delay
         self.duty_cycle = 0.0  # 0-100% (requested duty - may change mid-cycle)
-        self.duty_cycle_locked = None  # Duty locked at cycle start (None = not locked yet)
+        self.duty_cycle_locked = 0.0  # Duty locked at cycle start (initialize to 0 to avoid race)
         self.cycle_start = time.ticks_ms()  # Use ticks for efficiency
 
         # Track individual pin states
@@ -221,10 +221,6 @@ class SSRController:
         """
         current_time = time.ticks_ms()
         elapsed = time.ticks_diff(current_time, self.cycle_start)
-
-        # Lock duty on first call (initialize immediately so first cycle works)
-        if self.duty_cycle_locked is None:
-            self.duty_cycle_locked = self.duty_cycle
 
         # Check if we need to start a new cycle
         if elapsed >= self.cycle_time_ms:

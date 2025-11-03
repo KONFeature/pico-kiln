@@ -220,6 +220,17 @@ class ControlThread:
                     print("[Control Thread] Error: No profile filename in run_profile command")
                     return
 
+                # Safety check: cannot start new profile if already running
+                if self.controller.state == KilnState.RUNNING:
+                    print("[Control Thread] Cannot start profile: kiln is already running")
+                    print("[Control Thread] Stop current profile first")
+                    return
+
+                if self.controller.state == KilnState.TUNING:
+                    print("[Control Thread] Cannot start profile: tuning is in progress")
+                    print("[Control Thread] Stop tuning first")
+                    return
+
                 try:
                     profile = self.load_profile_with_retry(f"profiles/{profile_filename}")
                     self.controller.run_profile(profile)
@@ -474,6 +485,12 @@ class ControlThread:
 
             # 3. Update controller state and get target temperature
             target_temp = self.controller.update(current_temp)
+
+            # 3.5. Check if PID reset was requested (e.g., after rate adaptation)
+            if self.controller.pid_reset_requested:
+                self.pid.reset()
+                self.controller.pid_reset_requested = False
+                print("[Control Thread] PID reset after rate adaptation")
 
             # 4. Calculate PID output
             if self.controller.state == KilnState.RUNNING:

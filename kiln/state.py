@@ -75,6 +75,9 @@ class KilnController:
         self.recovery_target_temp = None  # If set, we're in recovery mode
         self.recovery_start_time = None   # When recovery started (for time adjustment)
 
+        # PID reset flag (set by controller when PID should be reset)
+        self.pid_reset_requested = False
+
     def run_profile(self, profile):
         """
         Start running a firing profile
@@ -500,6 +503,16 @@ class KilnController:
         target_temp = self._get_step_target_temp(elapsed, step)
         temp_error = target_temp - self.current_temp
 
+        # CRITICAL SAFETY CHECK: Only adapt if SSR is saturated (at or near 100%)
+        # This prevents death spiral where adaptation reduces rate, SSR drops,
+        # rate drops further, triggers another adaptation, etc.
+        # The kiln can only be "underpowered" if it's already at full power!
+        SSR_SATURATION_THRESHOLD = 95.0  # Consider saturated at 95%+
+        if self.ssr_output < SSR_SATURATION_THRESHOLD:
+            # SSR not saturated - PID has headroom, so rate issue is transient
+            # Don't adapt - let PID controller increase output naturally
+            return
+
         # Check if adaptation is needed
         needs_adaptation = (
             temp_error > self.adaptation_temp_error_threshold and  # Behind schedule
@@ -521,7 +534,11 @@ class KilnController:
             self.adaptation_count += 1
 
             print(f"[Adaptation {self.adaptation_count}] Rate adjusted: {old_rate:.1f} → {proposed_rate:.1f}°C/h "
-                  f"(actual: {actual_rate:.1f}°C/h, min: {min_rate:.1f}°C/h, error: {temp_error:.1f}°C)")
+                  f"(actual: {actual_rate:.1f}°C/h, min: {min_rate:.1f}°C/h, error: {temp_error:.1f}°C, SSR: {self.ssr_output:.1f}%)")
+
+            # Request PID reset to clear integral accumulator
+            # This prevents overshoot from stale integral term after target change
+            self.pid_reset_requested = True
 
             # Force immediate temp recording so adapted rate gets logged ASAP
             self._record_temp_for_rate(elapsed)
