@@ -111,34 +111,34 @@ class LCD1602:
             OSError: If I2C communication fails
         """
         # Initialize display - wait for power-on
-        await asyncio.sleep_ms(50)  # Wait >40ms after power on
+        await asyncio.sleep(0.05)  # Wait >40ms after power on
 
         # Try to ensure we're in a known state - send 0x00 to clear any garbage
         try:
             self.i2c.writeto(self.addr, bytes([self.backlight]))
-            await asyncio.sleep_ms(10)
+            await asyncio.sleep(0.01)
         except:
             pass
 
         # Put LCD into 4-bit mode (HD44780 initialization sequence)
         # This sequence works regardless of whether LCD is in 4-bit or 8-bit mode
         self._write4bits(0x03 << 4)
-        await asyncio.sleep_ms(5)  # Wait >4.1ms
+        await asyncio.sleep(0.005)  # Wait >4.1ms
         self._write4bits(0x03 << 4)
-        await asyncio.sleep_ms(5)  # Wait >100us (using 5ms to be safe)
+        await asyncio.sleep(0.005)  # Wait >100us (using 5ms to be safe)
         self._write4bits(0x03 << 4)
-        await asyncio.sleep_ms(1)
+        await asyncio.sleep(0.001)
         self._write4bits(0x02 << 4)  # Switch to 4-bit mode
-        await asyncio.sleep_ms(1)
+        await asyncio.sleep(0.001)
 
         # Display initialization with proper delays
         self._send_command(self.LCD_FUNCTIONSET | self.LCD_4BITMODE | self.LCD_2LINE | self.LCD_5x8DOTS)
-        await asyncio.sleep_ms(1)
+        await asyncio.sleep(0.001)
         self._send_command(self.LCD_DISPLAYCONTROL | self.LCD_DISPLAYON | self.LCD_CURSOROFF | self.LCD_BLINKOFF)
-        await asyncio.sleep_ms(1)
+        await asyncio.sleep(0.001)
         await self.clear_async()
         self._send_command(self.LCD_ENTRYMODESET | self.LCD_ENTRYLEFT | self.LCD_ENTRYSHIFTDECREMENT)
-        await asyncio.sleep_ms(2)
+        await asyncio.sleep(0.002)
     
     def _write4bits(self, data):
         """
@@ -192,7 +192,7 @@ class LCD1602:
     async def clear_async(self):
         """Clear display (async, non-blocking)"""
         self._send_command(self.LCD_CLEARDISPLAY)
-        await asyncio.sleep_ms(5)  # Clear needs up to 1.52ms, use 5ms to be safe
+        await asyncio.sleep(0.005)  # Clear needs up to 1.52ms, use 5ms to be safe
 
     def home(self):
         """Return cursor to home position (blocking)"""

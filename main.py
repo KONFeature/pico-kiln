@@ -105,7 +105,17 @@ async def main():
 
     print("[Main] Communication queues created")
 
-    # Start control thread on Core 1
+    # Connect to WiFi FIRST (before starting Core 1 for zero interference)
+    print("[Main] Connecting to WiFi...")
+    wifi_mgr = WiFiManager(config.WIFI_SSID, config.WIFI_PASSWORD)
+    ip_address = await wifi_mgr.connect(timeout=30)
+
+    if not ip_address:
+        print("[Main] WARNING: WiFi connection failed!")
+        print("[Main] System will continue without WiFi")
+        ip_address = "N/A"
+
+    # Start control thread on Core 1 (after WiFi is connected)
     print("[Main] Starting control thread on Core 1...")
     _thread.start_new_thread(start_control_thread, (command_queue, status_queue, config, error_log))
     print("[Main] Control thread started")
@@ -132,10 +142,6 @@ async def main():
     data_logger = DataLogger(config.LOGS_DIR, config.LOGGING_INTERVAL)
     status_receiver.register_listener(data_logger.on_status_update)
 
-    # Initialize WiFi manager (early, so recovery can use it for NTP callbacks)
-    print("[Main] Initializing WiFi manager...")
-    wifi_mgr = WiFiManager(config.WIFI_SSID, config.WIFI_PASSWORD)
-
     # Initialize and register recovery listener (with wifi_mgr for NTP retry)
     print("[Main] Initializing recovery listener...")
     from server.recovery import RecoveryListener
@@ -144,21 +150,9 @@ async def main():
     status_receiver.register_listener(recovery_listener.on_status_update)
     print("[Main] Recovery listener will check on first valid temperature reading")
 
-    # Start status receiver
+    # Start status receiver immediately after WiFi (process Core 1 updates ASAP)
     print("[Main] Starting status receiver...")
     receiver_task = asyncio.create_task(status_receiver.run())
-
-    # Connect to WiFi FIRST (minimal interference from other operations)
-    # Note: WiFi manager was initialized earlier to allow recovery NTP callbacks
-    print("[Main] Connecting to WiFi...")
-    ip_address = await wifi_mgr.connect(timeout=30)
-
-    if not ip_address:
-        print("[Main] WARNING: WiFi connection failed!")
-        print("[Main] System will continue without WiFi")
-        print("[Main] - Control thread is still running")
-        print("[Main] - WiFi monitor will keep trying to connect")
-        ip_address = "N/A"
 
     # Initialize LCD hardware AFTER WiFi to avoid timing interference
     if lcd_manager and lcd_manager.enabled:

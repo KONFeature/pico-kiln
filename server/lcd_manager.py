@@ -81,9 +81,12 @@ class LCDManager:
         self.cached_status = {}
         self.wifi_ip = None
         self.wifi_connected = False
-        
+
         # Initialization tracking
         self.init_steps_completed = []
+
+        # Dirty flag for efficient rendering (only render when something changes)
+        self.screen_dirty = True
 
     async def initialize_hardware(self, timeout_ms=500):
         """
@@ -112,6 +115,18 @@ class LCDManager:
                 freq=self.config.LCD_I2C_FREQ
             )
 
+            # Test I2C bus by scanning for device
+            try:
+                devices = i2c.scan()
+                if self.config.LCD_I2C_ADDR not in devices:
+                    print(f"[LCD] WARNING: Device not found at 0x{self.config.LCD_I2C_ADDR:02x}")
+                    print(f"[LCD] Found devices: {[hex(d) for d in devices]}")
+                    raise Exception(f"LCD not found on I2C bus at 0x{self.config.LCD_I2C_ADDR:02x}")
+                print(f"[LCD] Device detected at 0x{self.config.LCD_I2C_ADDR:02x}")
+            except Exception as e:
+                print(f"[LCD] I2C bus scan failed: {e}")
+                raise
+
             # Create LCD object (does not initialize hardware yet)
             from lib.lcd1602_i2c import LCD1602
             self.lcd = LCD1602(i2c, addr=self.config.LCD_I2C_ADDR)
@@ -122,7 +137,7 @@ class LCDManager:
                 timeout_ms / 1000.0  # Convert to seconds
             )
 
-            print(f"[LCD] Display initialized at I2C address 0x{self.config.LCD_I2C_ADDR:02x}")
+            print(f"[LCD] Display initialized successfully")
 
             # Initialize buttons if configured
             if hasattr(self.config, 'LCD_BTN_NEXT_PIN'):
@@ -136,8 +151,9 @@ class LCDManager:
             return True
 
         except asyncio.TimeoutError:
-            print(f"[LCD] Hardware initialization TIMED OUT after {timeout_ms}ms")
-            print("[LCD] Display disabled (event loop NOT blocked)")
+            print(f"[LCD] CRITICAL: Hardware initialization TIMED OUT after {timeout_ms}ms")
+            print("[LCD] This may indicate I2C bus issues or wrong address")
+            print("[LCD] Display disabled - system will continue without LCD")
             self.lcd = None
             self.btn_next = None
             self.btn_select = None
@@ -145,8 +161,8 @@ class LCDManager:
             return False
 
         except Exception as e:
-            print(f"[LCD] Failed to initialize LCD hardware: {e}")
-            print("[LCD] Display disabled")
+            print(f"[LCD] CRITICAL: Failed to initialize LCD hardware: {e}")
+            print("[LCD] Display disabled - system will continue without LCD")
             self.lcd = None
             self.btn_next = None
             self.btn_select = None
@@ -174,55 +190,69 @@ class LCDManager:
     def set_wifi_status(self, connected, ip_address=None):
         """
         Update WiFi connection status
-        
+
         Args:
             connected: True if WiFi connected
             ip_address: IP address if connected
         """
         self.wifi_connected = connected
         self.wifi_ip = ip_address
-        
-        # Update display if we're on WiFi screen
-        if self.current_screen == Screen.WIFI:
-            self._render_current_screen()
+        self.screen_dirty = True  # Mark screen for re-render
     
     def update_status(self, status):
         """
         Update cached status from control thread
-        
+
         Args:
             status: Status dictionary from kiln controller
         """
         self.cached_status = status
-        
-        # Update display if we're on a status screen
-        if self.current_screen != Screen.STOP_CONFIRM:
-            self._render_current_screen()
+        self.screen_dirty = True  # Mark screen for re-render
     
-    def _render_current_screen(self):
-        """Render the current screen"""
+    def _render_current_screen_sync(self):
+        """Render the current screen (synchronous, can block)"""
         if not self.enabled or not self.lcd:
             return
-        
+
+        if self.current_screen == Screen.WIFI:
+            self._render_wifi_screen()
+        elif self.current_screen == Screen.STATE:
+            self._render_state_screen()
+        elif self.current_screen == Screen.TEMP:
+            self._render_temp_screen()
+        elif self.current_screen == Screen.PROFILE:
+            self._render_profile_screen()
+        elif self.current_screen == Screen.RATE:
+            self._render_rate_screen()
+        elif self.current_screen == Screen.TUNING_DETAIL:
+            self._render_tuning_detail_screen()
+        elif self.current_screen == Screen.STOP:
+            self._render_stop_screen()
+        elif self.current_screen == Screen.STOP_CONFIRM:
+            self._render_stop_confirm_screen()
+
+    async def _render_current_screen(self):
+        """Render the current screen with timeout protection"""
+        if not self.enabled or not self.lcd:
+            return
+
         try:
-            if self.current_screen == Screen.WIFI:
-                self._render_wifi_screen()
-            elif self.current_screen == Screen.STATE:
-                self._render_state_screen()
-            elif self.current_screen == Screen.TEMP:
-                self._render_temp_screen()
-            elif self.current_screen == Screen.PROFILE:
-                self._render_profile_screen()
-            elif self.current_screen == Screen.RATE:
-                self._render_rate_screen()
-            elif self.current_screen == Screen.TUNING_DETAIL:
-                self._render_tuning_detail_screen()
-            elif self.current_screen == Screen.STOP:
-                self._render_stop_screen()
-            elif self.current_screen == Screen.STOP_CONFIRM:
-                self._render_stop_confirm_screen()
+            # Wrap render in timeout - if it takes >200ms, something is wrong
+            await asyncio.wait_for(
+                self._render_sync_as_async(),
+                timeout=0.2  # 200ms timeout
+            )
+        except asyncio.TimeoutError:
+            print(f"[LCD] Render timeout on screen {self.current_screen}")
+            raise Exception("LCD render timeout")
         except Exception as e:
             print(f"[LCD] Error rendering screen: {e}")
+            raise
+
+    async def _render_sync_as_async(self):
+        """Wrapper to run synchronous render in async context"""
+        self._render_current_screen_sync()
+        await asyncio.sleep(0)  # Yield to event loop
     
     def _render_wifi_screen(self):
         """Render WiFi status screen"""
@@ -413,9 +443,9 @@ class LCDManager:
                 break
             
             attempts += 1
-        
+
         print(f"[LCD] Screen changed to: {self.current_screen}")
-        self._render_current_screen()
+        self.screen_dirty = True  # Mark screen for re-render
     
     def _handle_select_button(self):
         """Handle select button press"""
@@ -425,32 +455,27 @@ class LCDManager:
             if state in ['RUNNING', 'TUNING']:
                 # Show confirmation screen
                 self.current_screen = Screen.STOP_CONFIRM
-                self._render_current_screen()
-        
+                self.screen_dirty = True  # Mark screen for re-render
+
         elif self.current_screen == Screen.STOP_CONFIRM:
             # Confirmed - send stop command
             print("[LCD] Stop confirmed, sending stop command")
             from kiln.comms import CommandMessage, QueueHelper
             command = CommandMessage.stop()
-            
+
             if QueueHelper.put_nowait(self.command_queue, command):
                 print("[LCD] Stop command sent successfully")
-                # Show feedback
-                self.lcd.print("Stopping...", row=0)
-                self.lcd.print("", row=1)
-                # Return to state screen after short delay
-                asyncio.create_task(self._return_to_state_screen_delayed())
             else:
                 print("[LCD] Failed to send stop command (queue full)")
-                self.lcd.print("Stop Failed", row=0)
-                self.lcd.print("Queue full", row=1)
-                asyncio.create_task(self._return_to_state_screen_delayed())
+
+            # Return to state screen after short delay (will render there)
+            asyncio.create_task(self._return_to_state_screen_delayed())
     
     async def _return_to_state_screen_delayed(self):
         """Return to state screen after 2 seconds"""
         await asyncio.sleep(2)
         self.current_screen = Screen.STATE
-        self._render_current_screen()
+        self.screen_dirty = True  # Mark screen for re-render
     
     def _check_buttons(self):
         """Check button states and handle presses (with debouncing)"""
@@ -474,35 +499,77 @@ class LCDManager:
     async def run(self):
         """
         Main LCD update loop
-        
+
         Runs on Core 2 as an async task.
-        - Updates display periodically
-        - Checks button presses
+        - Updates display when changes occur (dirty flag)
+        - Checks button presses at 10Hz
         """
         if not self.enabled:
             print("[LCD] LCD manager not enabled, exiting")
             return
-        
+
+        # Wait for LCD hardware to be initialized
+        while not self.lcd:
+            await asyncio.sleep(0.1)
+
         print("[LCD] Starting LCD update loop")
-        
+
         # Show initial screen
-        self._render_current_screen()
-        
-        # Main loop: update display and check buttons
+        try:
+            await self._render_current_screen()
+            self.screen_dirty = False
+        except Exception as e:
+            print(f"[LCD] Failed to render initial screen: {e}")
+
+        # Main loop: check buttons and render only when needed
+        consecutive_errors = 0
+        max_consecutive_errors = 3  # Lower threshold for faster disable
+        last_successful_render = time.ticks_ms()
+        max_render_silence = 30000  # 30 seconds without successful render = dead LCD
+
         while True:
             try:
-                # Check buttons
-                self._check_buttons()
-                
-                # Update display (refresh current screen)
-                # This ensures display stays in sync with status updates
-                self._render_current_screen()
-                
+                # Check buttons (responsive at 10Hz, should not fail)
+                try:
+                    self._check_buttons()
+                except Exception as e:
+                    print(f"[LCD] Button check error: {e}")
+
+                # Only render if something changed (dirty flag)
+                if self.screen_dirty:
+                    await self._render_current_screen()
+                    self.screen_dirty = False
+                    last_successful_render = time.ticks_ms()
+
+                # Reset error counter on success
+                consecutive_errors = 0
+
+                # Check if LCD is silently dead (no successful renders for too long)
+                if time.ticks_diff(time.ticks_ms(), last_successful_render) > max_render_silence:
+                    print(f"[LCD] CRITICAL: No successful render in {max_render_silence}ms, LCD may be dead")
+                    print(f"[LCD] Disabling LCD to prevent system impact")
+                    self.enabled = False
+                    self.lcd = None
+                    return
+
                 # Run at ~10Hz for responsive button handling
                 await asyncio.sleep(0.1)
-                
+
             except Exception as e:
-                print(f"[LCD] Error in update loop: {e}")
+                consecutive_errors += 1
+                print(f"[LCD] Error in update loop ({consecutive_errors}/{max_consecutive_errors}): {e}")
+
+                # If too many consecutive errors, disable LCD to prevent crash loop
+                if consecutive_errors >= max_consecutive_errors:
+                    print(f"[LCD] CRITICAL: Disabling LCD after {max_consecutive_errors} errors")
+                    print(f"[LCD] Last error: {e}")
+                    print(f"[LCD] Web server and WiFi should remain functional")
+                    self.enabled = False
+                    self.lcd = None
+                    return
+
+                # Clear dirty flag to prevent retry spam
+                self.screen_dirty = False
                 await asyncio.sleep(1)  # Back off on errors
 
 
