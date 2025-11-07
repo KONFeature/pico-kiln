@@ -16,6 +16,11 @@ from kiln import TemperatureSensor, SSRController, PID, KilnController, Profile
 from kiln.state import KilnState
 from kiln.comms import MessageType, StatusMessage, QueueHelper
 from kiln.tuner import ZieglerNicholsTuner, TuningStage
+from micropython import const
+
+# Performance: const() declarations for hot path time intervals
+STATUS_UPDATE_INTERVAL = const(2)  # Status updates every 2 seconds (integer for const)
+SSR_UPDATE_INTERVAL = 0.1  # 100ms between SSR state updates (10 Hz)
 
 class ControlThread:
     """
@@ -59,7 +64,7 @@ class ControlThread:
 
         # Timing
         self.last_status_update = 0
-        self.status_update_interval = 2.0  # Send status updates every 2s
+        self.status_update_interval = STATUS_UPDATE_INTERVAL
 
         # Fallback status storage for queue full edge cases
         self.last_status_fallback = None
@@ -452,10 +457,10 @@ class ControlThread:
                 self.last_status_update = current_time
 
             # 7. Update SSR state multiple times during control interval
-            update_count = int(self.config.TEMP_READ_INTERVAL / 0.1)  # 10 Hz updates
+            update_count = int(self.config.TEMP_READ_INTERVAL / SSR_UPDATE_INTERVAL)  # 10 Hz updates
             for _ in range(update_count):
                 self.ssr_controller.update()
-                time.sleep(0.1)
+                time.sleep(SSR_UPDATE_INTERVAL)
 
             # 8. Feed watchdog - tuning loop iteration completed successfully
             self.feed_watchdog()
@@ -565,10 +570,10 @@ class ControlThread:
 
             # 8. Update SSR state multiple times during control interval
             # This provides better time-proportional control resolution
-            update_count = int(self.config.TEMP_READ_INTERVAL / 0.1)  # 10 Hz updates
+            update_count = int(self.config.TEMP_READ_INTERVAL / SSR_UPDATE_INTERVAL)  # 10 Hz updates
             for _ in range(update_count):
                 self.ssr_controller.update()
-                time.sleep(0.1)
+                time.sleep(SSR_UPDATE_INTERVAL)
 
             # 9. Feed watchdog - control loop iteration completed successfully
             self.feed_watchdog()

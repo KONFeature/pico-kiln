@@ -4,6 +4,25 @@
 
 set -e  # Exit on error
 
+# Parse arguments
+MINIFY=false
+MODE="development"
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --production|--minify)
+            MINIFY=true
+            MODE="production"
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: ./compile.sh [--production]"
+            exit 1
+            ;;
+    esac
+done
+
 echo "======================================"
 echo "Pico Kiln Bytecode Compiler"
 echo "======================================"
@@ -15,17 +34,38 @@ if ! command -v mpy-cross &> /dev/null; then
     exit 1
 fi
 
+# Check if python-minifier is installed (if needed)
+if [ "$MINIFY" = true ]; then
+    if ! python3 -c "import python_minifier" 2>/dev/null; then
+        echo "Error: python-minifier is not installed"
+        echo "Install with: pip install python-minifier"
+        exit 1
+    fi
+fi
+
 # Architecture flags from mpy-detect.py output
 # Pico 2 uses armv7emsp (ARMv7E-M with single precision FPU)
 ARCH_FLAGS="-march=armv7emsp"
 
 echo "Using architecture: armv7emsp"
+echo "Build mode: $MODE"
+if [ "$MINIFY" = true ]; then
+    echo "  - Removing docstrings and comments"
+    echo "  - Minifying code"
+    echo "  - Preserving type annotations"
+fi
 echo ""
 
 # Create build directory
 BUILD_DIR="build"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
+
+# Create temp directory for minification if needed
+if [ "$MINIFY" = true ]; then
+    TEMP_DIR="build/.temp"
+    mkdir -p "$TEMP_DIR"
+fi
 
 echo "Compiling Python modules to bytecode..."
 echo ""
@@ -39,8 +79,23 @@ compile_file() {
 
     mkdir -p "$dest_dir"
 
-    echo "  -> Compiling $src_file"
-    mpy-cross $ARCH_FLAGS -o "$dest_dir/${base_name}.mpy" "$src_file"
+    local processed_file="$src_file"
+
+    # Minify if requested
+    if [ "$MINIFY" = true ]; then
+        local temp_minified="$TEMP_DIR/minified_${filename}"
+        python3 -m python_minifier \
+            --no-remove-annotations \
+            --remove-literal-statements \
+            --output "$temp_minified" \
+            "$src_file"
+        processed_file="$temp_minified"
+        echo "  -> Compiling $src_file (minified)"
+    else
+        echo "  -> Compiling $src_file"
+    fi
+
+    mpy-cross $ARCH_FLAGS -o "$dest_dir/${base_name}.mpy" "$processed_file"
 }
 
 # Compile lib/ directory
@@ -113,12 +168,35 @@ if [ -d "static" ]; then
     cp -r static "$BUILD_DIR/"
 fi
 
+# Clean up temp directory if it exists
+if [ -d "$TEMP_DIR" ]; then
+    rm -rf "$TEMP_DIR"
+fi
+
 echo ""
 echo "======================================"
 echo "Compilation complete!"
 echo "======================================"
 echo ""
 echo "Compiled files are in: $BUILD_DIR/"
+echo ""
+
+# Build mode summary
+case $MODE in
+    "production")
+        echo "Production build complete!"
+        echo "  ✓ Docstrings removed"
+        echo "  ✓ Comments removed"
+        echo "  ✓ Code minified"
+        echo "  ✓ Type annotations preserved"
+        ;;
+    "development")
+        echo "Development build complete!"
+        echo "  • Docstrings and comments included"
+        echo "Tip: Use './compile.sh --production' for deployment (smaller, faster)"
+        ;;
+esac
+
 echo ""
 echo "Next steps:"
 echo "  1. Review compiled files: ls -lR $BUILD_DIR/"
@@ -129,6 +207,11 @@ echo ""
 echo "Size comparison:"
 ORIGINAL_SIZE=$(du -sh . 2>/dev/null | cut -f1)
 COMPILED_SIZE=$(du -sh "$BUILD_DIR" 2>/dev/null | cut -f1)
-echo "  Original:  $ORIGINAL_SIZE"
-echo "  Compiled:  $COMPILED_SIZE"
+echo "  Original source:  $ORIGINAL_SIZE"
+echo "  Compiled build:   $COMPILED_SIZE"
+echo ""
+
+echo "Build modes:"
+echo "  ./compile.sh              - Development (full source with docstrings)"
+echo "  ./compile.sh --production - Production (minified, no docstrings/comments)"
 echo ""

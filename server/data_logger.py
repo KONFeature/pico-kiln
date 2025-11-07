@@ -121,7 +121,7 @@ class DataLogger:
 
         # Check if enough time has passed since last log
         current_time = time.time()
-        current_state = status.get('state')
+        current_state = status['state']  # Safe: guaranteed by StatusMessage template
 
         # Use shorter interval for TUNING to capture detailed response curve
         interval = 2.0 if current_state == 'TUNING' else self.logging_interval
@@ -133,30 +133,33 @@ class DataLogger:
 
         try:
             # Extract fields from status message
-            timestamp = status.get('timestamp', time.time())
-            elapsed = status.get('elapsed', 0)
-            current_temp = status.get('current_temp', 0.0)
-            target_temp = status.get('target_temp', 0.0)
-            ssr_output = status.get('ssr_output', 0.0)
-            state = status.get('state', 'UNKNOWN')
-            progress = status.get('progress', 0.0)
+            # Safe: All fields guaranteed by StatusMessage template
+            timestamp = status['timestamp']
+            elapsed = status['elapsed']
+            current_temp = status['current_temp']
+            target_temp = status['target_temp']
+            ssr_output = status['ssr_output']
+            state = status['state']
+            progress = status['progress']
 
             # Check if we're in recovery mode
-            is_recovering = status.get('is_recovering', False)
+            # Safe: Field guaranteed by StatusMessage template
+            is_recovering = status['is_recovering']
 
             if is_recovering:
                 # In recovery mode - use special markers
                 step_name = 'RECOVERY'
                 step_index = -1
-                total_steps = status.get('total_steps', '')
+                total_steps = status['total_steps'] or ''  # Convert None to empty string
                 current_rate = 0.0  # No rate during recovery
             else:
                 # Normal logging - extract step info (populated for both tuning and profile runs)
-                step_name = status.get('step_name', '')
-                step_index = status.get('step_index', '')
-                total_steps = status.get('total_steps', '')
+                # Safe: Fields guaranteed by StatusMessage template, but can be None
+                step_name = status['step_name'] or ''  # Convert None to empty string
+                step_index = str(status['step_index']) if status['step_index'] is not None else ''
+                total_steps = status['total_steps'] or ''
                 # Extract rate info (for adaptive control)
-                current_rate = status.get('current_rate', 0.0)
+                current_rate = status['current_rate']
 
             # Format row
             timestamp_iso = self._format_timestamp_iso(timestamp)
@@ -212,15 +215,16 @@ class DataLogger:
 
         try:
             # Extract fields from status message
-            timestamp = current_status.get('timestamp', time.time())
+            # Safe: All fields guaranteed by StatusMessage template
+            timestamp = current_status['timestamp']
             elapsed = recovery_info.elapsed_seconds
-            current_temp = current_status.get('current_temp', recovery_info.last_temp)
-            target_temp = current_status.get('target_temp', recovery_info.last_target_temp)
-            ssr_output = current_status.get('ssr_output', 0.0)
-            progress = current_status.get('progress', 0.0)
+            current_temp = current_status['current_temp']
+            target_temp = current_status['target_temp']
+            ssr_output = current_status['ssr_output']
+            progress = current_status['progress']
 
             # Extract rate info (for adaptive control)
-            current_rate = current_status.get('current_rate', 0.0)
+            current_rate = current_status['current_rate']
 
             # Format row with RECOVERY marker in state column
             timestamp_iso = self._format_timestamp_iso(timestamp)
@@ -306,8 +310,9 @@ class DataLogger:
         Args:
             status: Status dictionary from StatusMessage.build()
         """
-        current_state = status.get('state')
-        profile_name = status.get('profile_name')
+        # Safe: Fields guaranteed by StatusMessage template
+        current_state = status['state']
+        profile_name = status['profile_name']
 
         # Start logging when entering RUNNING state
         if current_state == 'RUNNING' and self.previous_state != 'RUNNING':

@@ -7,6 +7,10 @@
 import asyncio
 import time
 from machine import I2C, Pin
+from micropython import const
+
+# Performance: const() declaration for button debouncing
+BUTTON_DEBOUNCE_MS = const(300)  # Button debounce time in milliseconds
 
 class Screen:
     """Screen identifiers"""
@@ -77,7 +81,7 @@ class LCDManager:
         # Button debouncing
         self.btn_next_last_press = 0
         self.btn_select_last_press = 0
-        self.btn_debounce_ms = 300  # 300ms debounce
+        self.btn_debounce_ms = BUTTON_DEBOUNCE_MS
 
         # WiFi status (not in StatusCache)
         self.wifi_ip = None

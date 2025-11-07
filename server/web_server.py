@@ -26,6 +26,11 @@ command_queue = None
 MAX_CONCURRENT_CONNECTIONS = const(2)      # Limit to 2 concurrent connections on Pico
 MAX_PROFILE_SIZE = const(10240)            # 10KB max for profile uploads
 
+# Performance: const() declarations for server loop timing
+SERVER_LOOP_INTERVAL = 0.1  # 100ms between accept() calls
+MAX_SOCKET_ERRORS = const(50)  # 5 seconds of errors at 100ms interval
+MAX_SOCKET_ERROR_PRINT = const(3)  # Only print first N errors to reduce USB spam
+
 # Connection tracking
 active_connections = 0
 
@@ -80,12 +85,13 @@ def handle_api_state(conn):
         'ssr_output', 'current_temp', 'target_temp', 'profile_name', 'state'
     )
 
+    # Safe: StatusMessage template guarantees these fields exist
     response = {
-        "ssr_state": cached.get('ssr_output', 0.0) > 0,  # True if SSR has any output
-        "current_temp": cached.get('current_temp', 0.0),
-        "target_temp": cached.get('target_temp', 0.0),
-        "current_program": cached.get('profile_name'),
-        "program_running": cached.get('state') == "RUNNING"
+        "ssr_state": cached['ssr_output'] > 0,  # True if SSR has any output
+        "current_temp": cached['current_temp'],
+        "target_temp": cached['target_temp'],
+        "current_program": cached['profile_name'],
+        "program_running": cached['state'] == "RUNNING"
     }
     send_json_response(conn, response)
 
@@ -380,26 +386,27 @@ async def handle_index(conn):
 
         # MEMORY OPTIMIZED: Build single JSON object for client-side rendering
         # This reduces 8 string.replace() calls to just 2, saving ~10KB in temporary allocations
-        ssr_output = cached.get('ssr_output', 0.0)
+        # Safe: StatusMessage template guarantees all these fields exist
+        ssr_output = cached['ssr_output']
         status_data = {
             'status': f'{ssr_output:.0f}%' if ssr_output > 0 else 'OFF',
-            'current_temp': cached.get('current_temp', 0.0),
-            'target_temp': cached.get('target_temp', 0.0),
-            'program': cached.get('profile_name') or 'None',
-            'state': cached.get('state', 'IDLE'),
+            'current_temp': cached['current_temp'],
+            'target_temp': cached['target_temp'],
+            'program': cached['profile_name'] or 'None',
+            'state': cached['state'],
             # Step information
-            'step_index': cached.get('step_index'),
-            'step_name': cached.get('step_name'),
-            'total_steps': cached.get('total_steps'),
+            'step_index': cached['step_index'],
+            'step_name': cached['step_name'],
+            'total_steps': cached['total_steps'],
             # Rate information
-            'desired_rate': cached.get('desired_rate', 0),
-            'current_rate': cached.get('current_rate', 0),
-            'actual_rate': cached.get('actual_rate', 0),
-            'min_rate': cached.get('min_rate', 0),
-            'adaptation_count': cached.get('adaptation_count', 0),
+            'desired_rate': cached['desired_rate'],
+            'current_rate': cached['current_rate'],
+            'actual_rate': cached['actual_rate'],
+            'min_rate': cached['min_rate'],
+            'adaptation_count': cached['adaptation_count'],
             # Recovery mode
-            'is_recovering': cached.get('is_recovering', False),
-            'recovery_target_temp': cached.get('recovery_target_temp')
+            'is_recovering': cached['is_recovering'],
+            'recovery_target_temp': cached['recovery_target_temp']
         }
 
         # MEMORY OPTIMIZED: Combine replacements to reduce string allocations
@@ -573,13 +580,13 @@ async def start_server(cmd_queue):
     print("[Web Server] HTTP server listening!")
 
     socket_error_count = 0
-    max_socket_errors = 50  # Allow 5 seconds of errors (50 * 0.1s)
+    max_socket_errors = MAX_SOCKET_ERRORS  # Allow 5 seconds of errors
 
     while True:
         try:
             # Check if we're at connection limit before accepting
             if active_connections >= MAX_CONCURRENT_CONNECTIONS:
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(SERVER_LOOP_INTERVAL)
                 continue
 
             conn, addr = s.accept()
@@ -595,7 +602,7 @@ async def start_server(cmd_queue):
             else:
                 # Real socket error - count and potentially recover
                 socket_error_count += 1
-                if socket_error_count <= 3:  # Only print first few errors to avoid spam
+                if socket_error_count <= MAX_SOCKET_ERROR_PRINT:  # Only print first few errors to avoid spam
                     print(f"[Web Server] Socket error ({socket_error_count}/{max_socket_errors}): {e}")
 
                 if socket_error_count >= max_socket_errors:
@@ -615,4 +622,4 @@ async def start_server(cmd_queue):
                         print("[Web Server] Giving up on web server - Core 1 continues")
                         return  # Exit web server but let Core 1 continue
 
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(SERVER_LOOP_INTERVAL)

@@ -16,9 +16,14 @@ from server import web_server
 from server.wifi_manager import WiFiManager
 from server.status_receiver import get_status_receiver
 from server.data_logger import DataLogger
+from micropython import const
 
 # Import control thread
 from kiln.control_thread import start_control_thread
+
+# Performance: const() declarations for boot sequence timing
+ERROR_LOG_FLUSH_INTERVAL = const(10)  # Seconds between error log flushes
+WIFI_CONNECT_TIMEOUT = const(15)  # WiFi connection timeout in seconds
 
 
 def format_timestamp(timestamp):
@@ -38,7 +43,7 @@ async def error_logger_loop(error_log):
     """
     print("[Error Logger] Starting error logger loop")
     error_file = '/errors.log'
-    flush_interval = 10  # Flush every 10 seconds
+    flush_interval = ERROR_LOG_FLUSH_INTERVAL
 
     while True:
         try:
@@ -209,7 +214,7 @@ async def main():
 
     # WiFi connects in background (15s timeout for cold hardware)
     wifi_mgr = WiFiManager(config.WIFI_SSID, config.WIFI_PASSWORD)
-    wifi_task = asyncio.create_task(wifi_connect_background(wifi_mgr, timeout=15))
+    wifi_task = asyncio.create_task(wifi_connect_background(wifi_mgr, timeout=WIFI_CONNECT_TIMEOUT))
     print("[Main] WiFi connection started (background)")
 
     # ========================================================================

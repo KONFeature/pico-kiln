@@ -6,6 +6,10 @@ import asyncio
 import network
 import time
 from machine import Pin
+from micropython import const
+
+# Performance: const() declaration for AP scan caching
+AP_CACHE_TTL = const(120)  # AP scan cache lifetime in seconds (2 minutes)
 
 try:
     import ntptime
@@ -43,7 +47,7 @@ class WiFiManager:
         self.cached_bssid = None
         self.cached_rssi = None
         self.cache_timestamp = 0
-        self.cache_ttl = 120  # 2 minutes cache lifetime
+        self.cache_ttl = AP_CACHE_TTL
 
         # Initialize status LED
         self.status_led = Pin(status_led_pin, Pin.OUT)
@@ -252,9 +256,15 @@ class WiFiManager:
 
                     # Attempt reconnection
                     self.wlan.disconnect()
-                    await self.connect(timeout=30)
+                    ip_address = await self.connect(timeout=30)
 
-                    # Success - reset failure counter
+                    # Success - update LCD and reset failure counter
+                    if ip_address:
+                        from server.lcd_manager import get_lcd_manager
+                        lcd_manager = get_lcd_manager()
+                        if lcd_manager and lcd_manager.enabled:
+                            lcd_manager.set_wifi_status(True, ip_address)
+
                     reconnect_failures = 0
 
                 except Exception as e:

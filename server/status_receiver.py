@@ -7,6 +7,10 @@
 
 import asyncio
 from kiln.comms import QueueHelper, StatusCache
+from micropython import const
+
+# Performance: const() declaration for hot path interval
+STATUS_CHECK_INTERVAL = 0.1  # Check status queue at 10 Hz
 
 try:
     from _thread import allocate_lock
@@ -166,7 +170,7 @@ class StatusReceiver:
                     except Exception as e:
                         print(f"[StatusReceiver] Error in listener {listener.__name__}: {e}")
 
-            await asyncio.sleep(0.1)  # Check 10 times per second
+            await asyncio.sleep(STATUS_CHECK_INTERVAL)  # Check 10 times per second
 
 
 # Global singleton instance

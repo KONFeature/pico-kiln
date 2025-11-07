@@ -414,10 +414,12 @@ class StatusMessage:
             # Get step type (ramp/hold) for current step
             if controller.current_step_index < len(profile.steps):
                 current_step = profile.steps[controller.current_step_index]
-                status['step_name'] = current_step.get('type', '')
+                # Safe: 'type' and 'desired_rate' are required in validated profile steps
+                status['step_name'] = current_step['type']
 
                 # Add rate information for this step
-                status['desired_rate'] = current_step.get('desired_rate', 0)
+                status['desired_rate'] = current_step['desired_rate']
+                # Keep .get() for min_rate - it's optional
                 status['min_rate'] = current_step.get('min_rate', 0)
             else:
                 status['step_name'] = ''
@@ -470,9 +472,10 @@ class StatusMessage:
         # progress and profile_name already set to 0 and None in template
         status['tuning'] = tuner_status
         # Expose step fields at top level for easy logging
-        status['step_name'] = tuner_status.get('step_name')
-        status['step_index'] = tuner_status.get('step_index')
-        status['total_steps'] = tuner_status.get('total_steps')
+        # Safe: tuner_status from get_status() always includes these fields
+        status['step_name'] = tuner_status['step_name']
+        status['step_index'] = tuner_status['step_index']
+        status['total_steps'] = tuner_status['total_steps']
 
         return status
 
