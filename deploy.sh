@@ -4,6 +4,12 @@
 
 set -e  # Exit on error
 
+# Parse arguments
+CLEAN_DEPLOY=false
+if [[ "$1" == "--clean" ]]; then
+    CLEAN_DEPLOY=true
+fi
+
 echo "======================================"
 echo "Pico Kiln Deployment Script"
 echo "======================================"
@@ -14,6 +20,20 @@ if ! command -v mpremote &> /dev/null; then
     echo "Install with: pip install mpremote"
     exit 1
 fi
+
+# Check if build directory exists (compiled bytecode)
+if [ -d "build" ] && [ "$(ls -A build 2>/dev/null)" ]; then
+    echo "Found compiled bytecode in build/ directory"
+    echo "Deploying .mpy files for faster execution..."
+    DEPLOY_DIR="build"
+    USE_COMPILED=true
+else
+    echo "No build/ directory found - deploying source .py files"
+    echo "Tip: Run ./compile.sh first for better performance"
+    DEPLOY_DIR="."
+    USE_COMPILED=false
+fi
+echo ""
 
 # Check if config.py exists
 if [ ! -f "config.py" ]; then
@@ -34,18 +54,46 @@ fi
 echo "Connecting to Pico..."
 mpremote connect list || true
 
+# Clean deployment if requested
+if [ "$CLEAN_DEPLOY" = true ]; then
+    echo ""
+    echo "======================================"
+    echo "Performing clean deployment..."
+    echo "======================================"
+    echo "Removing old directories on Pico:"
+
+    echo "  -> Removing lib/"
+    mpremote rm -rf :lib 2>/dev/null || echo "     (lib/ not found, skipping)"
+
+    echo "  -> Removing kiln/"
+    mpremote rm -rf :kiln 2>/dev/null || echo "     (kiln/ not found, skipping)"
+
+    echo "  -> Removing server/"
+    mpremote rm -rf :server 2>/dev/null || echo "     (server/ not found, skipping)"
+
+    echo "  -> Removing static/"
+    mpremote rm -rf :static 2>/dev/null || echo "     (static/ not found, skipping)"
+
+    # Also remove any .mpy files in root that might be lingering
+    echo "  -> Cleaning root directory of old .mpy files"
+    mpremote exec "import os; [os.remove(f) for f in os.listdir('/') if f.endswith('.mpy')]" 2>/dev/null || true
+
+    echo "Clean complete!"
+fi
+
 echo ""
 echo "Copying Python files..."
 
-# Copy main Python files (excluding test files)
-for file in *.py; do
+# Copy main Python files from DEPLOY_DIR
+for file in "$DEPLOY_DIR"/*.py; do
     if [ -f "$file" ]; then
+        filename=$(basename "$file")
         # Skip test files and example config
-        if [[ "$file" == "temp.py" ]] || [[ "$file" == "config.example.py" ]]; then
-            echo "  -> Skipping $file (test/example file)"
+        if [[ "$filename" == "temp.py" ]] || [[ "$filename" == "config.example.py" ]] || [[ "$filename" == "mpy-detect.py" ]]; then
+            echo "  -> Skipping $filename (test/example file)"
             continue
         fi
-        echo "  -> $file"
+        echo "  -> $filename"
         mpremote cp "$file" :
     fi
 done
@@ -57,9 +105,9 @@ echo "Copying lib folder..."
 mpremote mkdir :lib 2>/dev/null || true
 
 # Copy lib folder contents if it exists (including subdirectories)
-if [ -d "lib" ]; then
-    # First copy files directly in lib/
-    for file in lib/*; do
+if [ -d "$DEPLOY_DIR/lib" ]; then
+    # First copy files directly in lib/ (.py or .mpy)
+    for file in "$DEPLOY_DIR/lib"/*; do
         if [ -f "$file" ]; then
             filename=$(basename "$file")
             echo "  -> lib/$filename"
@@ -68,7 +116,7 @@ if [ -d "lib" ]; then
     done
 
     # Then handle subdirectories (like adafruit_bus_device)
-    for dir in lib/*/; do
+    for dir in "$DEPLOY_DIR/lib"/*/; do
         if [ -d "$dir" ]; then
             dirname=$(basename "$dir")
             echo "  -> lib/$dirname/"
@@ -94,8 +142,8 @@ echo "Copying static folder..."
 mpremote mkdir :static 2>/dev/null || true
 
 # Copy static folder contents if it exists
-if [ -d "static" ] && [ "$(ls -A static)" ]; then
-    for file in static/*; do
+if [ -d "$DEPLOY_DIR/static" ] && [ "$(ls -A "$DEPLOY_DIR/static" 2>/dev/null)" ]; then
+    for file in "$DEPLOY_DIR/static"/*; do
         if [ -f "$file" ]; then
             filename=$(basename "$file")
             echo "  -> static/$filename"
@@ -112,10 +160,10 @@ echo "Copying kiln module..."
 # Create kiln directory on Pico if it doesn't exist
 mpremote mkdir :kiln 2>/dev/null || true
 
-# Copy kiln folder contents if it exists
-if [ -d "kiln" ]; then
-    for file in kiln/*.py; do
-        if [ -f "$file" ]; then
+# Copy kiln folder contents if it exists (.py or .mpy)
+if [ -d "$DEPLOY_DIR/kiln" ]; then
+    for file in "$DEPLOY_DIR/kiln"/*; do
+        if [ -f "$file" ] && [[ "$file" == *.py ]] || [[ "$file" == *.mpy ]]; then
             filename=$(basename "$file")
             echo "  -> kiln/$filename"
             mpremote cp "$file" :kiln/
@@ -126,13 +174,16 @@ else
     exit 1
 fi
 
+echo ""
+echo "Copying server module..."
+
 # Create server directory on Pico if it doesn't exist
 mpremote mkdir :server 2>/dev/null || true
 
-# Copy server folder contents if it exists
-if [ -d "server" ]; then
-    for file in server/*.py; do
-        if [ -f "$file" ]; then
+# Copy server folder contents if it exists (.py or .mpy)
+if [ -d "$DEPLOY_DIR/server" ]; then
+    for file in "$DEPLOY_DIR/server"/*; do
+        if [ -f "$file" ] && [[ "$file" == *.py ]] || [[ "$file" == *.mpy ]]; then
             filename=$(basename "$file")
             echo "  -> server/$filename"
             mpremote cp "$file" :server/
@@ -148,11 +199,28 @@ echo "======================================"
 echo "Deployment complete!"
 echo "======================================"
 echo ""
-echo "Files deployed:"
-echo "  - Root: main.py, web_server.py, config.py"
-echo "  - lib/: wrapper.py, busio.py, adafruit_max31856.py, etc."
-echo "  - kiln/: __init__.py, profile.py, pid.py, state.py, hardware.py"
-echo "  - static/: HTML/CSS/JS files (if present)"
+
+if [ "$USE_COMPILED" = true ]; then
+    echo "Deployed compiled bytecode (.mpy files) for optimal performance!"
+    echo ""
+    echo "Files deployed:"
+    echo "  - Root: main.py, boot.py, config.py (as .py)"
+    echo "  - lib/: *.mpy (compiled bytecode)"
+    echo "  - kiln/: *.mpy (compiled bytecode)"
+    echo "  - server/: *.mpy (compiled bytecode)"
+    echo "  - static/: HTML/CSS/JS files (if present)"
+else
+    echo "Deployed source code (.py files)"
+    echo "Tip: Run ./compile.sh before deploying for better performance"
+    echo ""
+    echo "Files deployed:"
+    echo "  - Root: main.py, boot.py, config.py"
+    echo "  - lib/: *.py"
+    echo "  - kiln/: *.py"
+    echo "  - server/: *.py"
+    echo "  - static/: HTML/CSS/JS files (if present)"
+fi
+
 echo ""
 echo "To sync firing profiles, run:"
 echo "  ./sync_profiles.sh"
@@ -167,4 +235,8 @@ echo "To view serial output:"
 echo "  mpremote connect /dev/ttyACM0"
 echo "  or simply:"
 echo "  mpremote"
+echo ""
+echo "Usage notes:"
+echo "  - For clean deployment: ./deploy.sh --clean"
+echo "  - This removes all old .py/.mpy files before deploying"
 echo ""
