@@ -144,25 +144,6 @@ else
 fi
 
 echo ""
-echo "Copying profiles..."
-
-# Create profiles directory on Pico if it doesn't exist
-mpremote mkdir :profiles 2>/dev/null || true
-
-# Copy profile JSON files if they exist
-if [ -d "profiles" ] && [ "$(ls -A profiles/*.json 2>/dev/null)" ]; then
-    for file in profiles/*.json; do
-        if [ -f "$file" ]; then
-            filename=$(basename "$file")
-            echo "  -> profiles/$filename"
-            mpremote cp "$file" :profiles/
-        fi
-    done
-else
-    echo "  No profile files found (add some .json profiles to the profiles/ directory)"
-fi
-
-echo ""
 echo "======================================"
 echo "Deployment complete!"
 echo "======================================"
@@ -171,8 +152,10 @@ echo "Files deployed:"
 echo "  - Root: main.py, web_server.py, config.py"
 echo "  - lib/: wrapper.py, busio.py, adafruit_max31856.py, etc."
 echo "  - kiln/: __init__.py, profile.py, pid.py, state.py, hardware.py"
-echo "  - profiles/: *.json firing profiles"
 echo "  - static/: HTML/CSS/JS files (if present)"
+echo ""
+echo "To sync firing profiles, run:"
+echo "  ./sync_profiles.sh"
 echo ""
 echo "To run the program:"
 echo "  mpremote run main.py"
