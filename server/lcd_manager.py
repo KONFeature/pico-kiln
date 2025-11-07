@@ -52,43 +52,12 @@ class LCDManager:
             self.btn_next = None
             self.btn_select = None
             return
-        
-        # Initialize hardware
-        try:
-            # Initialize I2C
-            i2c = I2C(
-                config.LCD_I2C_ID,
-                scl=Pin(config.LCD_I2C_SCL),
-                sda=Pin(config.LCD_I2C_SDA),
-                freq=config.LCD_I2C_FREQ
-            )
-            
-            # Initialize LCD
-            from lib.lcd1602_i2c import LCD1602
-            self.lcd = LCD1602(i2c, addr=config.LCD_I2C_ADDR)
-            print(f"[LCD] Display initialized at I2C address 0x{config.LCD_I2C_ADDR:02x}")
-            
-            # Initialize buttons if configured
-            self.btn_next = None
-            self.btn_select = None
-            
-            if hasattr(config, 'LCD_BTN_NEXT_PIN'):
-                self.btn_next = Pin(config.LCD_BTN_NEXT_PIN, Pin.IN, Pin.PULL_UP)
-                print(f"[LCD] Next button configured on pin {config.LCD_BTN_NEXT_PIN}")
-            
-            if hasattr(config, 'LCD_BTN_SELECT_PIN'):
-                self.btn_select = Pin(config.LCD_BTN_SELECT_PIN, Pin.IN, Pin.PULL_UP)
-                print(f"[LCD] Select button configured on pin {config.LCD_BTN_SELECT_PIN}")
-            
-        except Exception as e:
-            print(f"[LCD] Failed to initialize LCD hardware: {e}")
-            print("[LCD] Display disabled")
-            self.lcd = None
-            self.btn_next = None
-            self.btn_select = None
-            self.enabled = False
-            return
-        
+
+        # Hardware components (initialized separately via initialize_hardware)
+        self.lcd = None
+        self.btn_next = None
+        self.btn_select = None
+
         # Screen state
         self.current_screen = Screen.WIFI
         self.screen_order = [
@@ -115,7 +84,75 @@ class LCDManager:
         
         # Initialization tracking
         self.init_steps_completed = []
-        
+
+    async def initialize_hardware(self, timeout_ms=500):
+        """
+        Initialize LCD hardware (async, non-blocking)
+
+        Uses asyncio.sleep() to avoid blocking the event loop during initialization.
+        Has timeout protection to prevent system freeze if LCD hardware fails.
+
+        Args:
+            timeout_ms: Timeout in milliseconds (default: 500ms)
+
+        Returns:
+            True if initialization successful, False otherwise
+        """
+        if not self.enabled:
+            return False
+
+        print(f"[LCD] Initializing hardware with {timeout_ms}ms timeout...")
+
+        try:
+            # Initialize I2C
+            i2c = I2C(
+                self.config.LCD_I2C_ID,
+                scl=Pin(self.config.LCD_I2C_SCL),
+                sda=Pin(self.config.LCD_I2C_SDA),
+                freq=self.config.LCD_I2C_FREQ
+            )
+
+            # Create LCD object (does not initialize hardware yet)
+            from lib.lcd1602_i2c import LCD1602
+            self.lcd = LCD1602(i2c, addr=self.config.LCD_I2C_ADDR)
+
+            # Initialize LCD hardware with timeout using asyncio.wait_for
+            await asyncio.wait_for(
+                self.lcd.initialize(),
+                timeout_ms / 1000.0  # Convert to seconds
+            )
+
+            print(f"[LCD] Display initialized at I2C address 0x{self.config.LCD_I2C_ADDR:02x}")
+
+            # Initialize buttons if configured
+            if hasattr(self.config, 'LCD_BTN_NEXT_PIN'):
+                self.btn_next = Pin(self.config.LCD_BTN_NEXT_PIN, Pin.IN, Pin.PULL_UP)
+                print(f"[LCD] Next button configured on pin {self.config.LCD_BTN_NEXT_PIN}")
+
+            if hasattr(self.config, 'LCD_BTN_SELECT_PIN'):
+                self.btn_select = Pin(self.config.LCD_BTN_SELECT_PIN, Pin.IN, Pin.PULL_UP)
+                print(f"[LCD] Select button configured on pin {self.config.LCD_BTN_SELECT_PIN}")
+
+            return True
+
+        except asyncio.TimeoutError:
+            print(f"[LCD] Hardware initialization TIMED OUT after {timeout_ms}ms")
+            print("[LCD] Display disabled (event loop NOT blocked)")
+            self.lcd = None
+            self.btn_next = None
+            self.btn_select = None
+            self.enabled = False
+            return False
+
+        except Exception as e:
+            print(f"[LCD] Failed to initialize LCD hardware: {e}")
+            print("[LCD] Display disabled")
+            self.lcd = None
+            self.btn_next = None
+            self.btn_select = None
+            self.enabled = False
+            return False
+
     def show_init_message(self, message):
         """
         Show initialization message during startup

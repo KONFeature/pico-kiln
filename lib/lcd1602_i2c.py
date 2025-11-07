@@ -4,6 +4,7 @@
 # This driver supports the common PCF8574-based I2C backpack for 1602 LCD displays
 
 import time
+import asyncio
 
 class LCD1602:
     """
@@ -67,10 +68,12 @@ class LCD1602:
 
     def __init__(self, i2c, addr=0x27, cols=16, rows=2, pinmap=None):
         """
-        Initialize LCD display
+        Initialize LCD display object (does NOT initialize hardware)
+
+        After creating instance, call await initialize() to set up hardware.
 
         Args:
-            i2c: MicroPython I2C object
+            i2c: MicroPython I2C object (with timeout configured)
             addr: I2C address (default 0x27, some use 0x3F)
             cols: Number of columns (default 16)
             rows: Number of rows (default 2)
@@ -97,35 +100,45 @@ class LCD1602:
         else:
             self.backlight = self.backlight_bit  # Active high
 
+    async def initialize(self):
+        """
+        Initialize LCD hardware (async, non-blocking)
+
+        Must be called after __init__ to set up hardware.
+        Uses asyncio.sleep() to avoid blocking the event loop.
+
+        Raises:
+            OSError: If I2C communication fails
+        """
         # Initialize display - wait for power-on
-        time.sleep_ms(50)  # Wait >40ms after power on
+        await asyncio.sleep_ms(50)  # Wait >40ms after power on
 
         # Try to ensure we're in a known state - send 0x00 to clear any garbage
         try:
             self.i2c.writeto(self.addr, bytes([self.backlight]))
-            time.sleep_ms(10)
+            await asyncio.sleep_ms(10)
         except:
             pass
 
         # Put LCD into 4-bit mode (HD44780 initialization sequence)
         # This sequence works regardless of whether LCD is in 4-bit or 8-bit mode
         self._write4bits(0x03 << 4)
-        time.sleep_ms(5)  # Wait >4.1ms
+        await asyncio.sleep_ms(5)  # Wait >4.1ms
         self._write4bits(0x03 << 4)
-        time.sleep_ms(5)  # Wait >100us (using 5ms to be safe)
+        await asyncio.sleep_ms(5)  # Wait >100us (using 5ms to be safe)
         self._write4bits(0x03 << 4)
-        time.sleep_ms(1)
+        await asyncio.sleep_ms(1)
         self._write4bits(0x02 << 4)  # Switch to 4-bit mode
-        time.sleep_ms(1)
+        await asyncio.sleep_ms(1)
 
         # Display initialization with proper delays
         self._send_command(self.LCD_FUNCTIONSET | self.LCD_4BITMODE | self.LCD_2LINE | self.LCD_5x8DOTS)
-        time.sleep_ms(1)
+        await asyncio.sleep_ms(1)
         self._send_command(self.LCD_DISPLAYCONTROL | self.LCD_DISPLAYON | self.LCD_CURSOROFF | self.LCD_BLINKOFF)
-        time.sleep_ms(1)
-        self.clear()
+        await asyncio.sleep_ms(1)
+        await self.clear_async()
         self._send_command(self.LCD_ENTRYMODESET | self.LCD_ENTRYLEFT | self.LCD_ENTRYSHIFTDECREMENT)
-        time.sleep_ms(2)
+        await asyncio.sleep_ms(2)
     
     def _write4bits(self, data):
         """
@@ -172,12 +185,17 @@ class LCD1602:
         self._write4bits(low_bits)
     
     def clear(self):
-        """Clear display"""
+        """Clear display (blocking)"""
         self._send_command(self.LCD_CLEARDISPLAY)
         time.sleep_ms(5)  # Clear needs up to 1.52ms, use 5ms to be safe
 
+    async def clear_async(self):
+        """Clear display (async, non-blocking)"""
+        self._send_command(self.LCD_CLEARDISPLAY)
+        await asyncio.sleep_ms(5)  # Clear needs up to 1.52ms, use 5ms to be safe
+
     def home(self):
-        """Return cursor to home position"""
+        """Return cursor to home position (blocking)"""
         self._send_command(self.LCD_RETURNHOME)
         time.sleep_ms(5)  # Home needs up to 1.52ms, use 5ms to be safe
     

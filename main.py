@@ -118,27 +118,23 @@ async def main():
     status_receiver = get_status_receiver()
     status_receiver.initialize(status_queue)
     
-    # Initialize LCD manager (optional hardware)
+    # Initialize LCD manager (optional hardware) - defer hardware init until after WiFi
     print("[Main] Initializing LCD manager...")
     from server.lcd_manager import initialize_lcd_manager
     lcd_manager = initialize_lcd_manager(config, command_queue)
+
+    # Register LCD as status listener early (will queue updates until LCD ready)
     if lcd_manager and lcd_manager.enabled:
-        lcd_manager.show_init_message("Status receiver")
-        # Register LCD as status listener
         status_receiver.register_listener(lcd_manager.update_status)
 
     # Initialize and register data logger
     print("[Main] Initializing data logger...")
     data_logger = DataLogger(config.LOGS_DIR, config.LOGGING_INTERVAL)
     status_receiver.register_listener(data_logger.on_status_update)
-    if lcd_manager and lcd_manager.enabled:
-        lcd_manager.show_init_message("Data logger")
 
     # Initialize WiFi manager (early, so recovery can use it for NTP callbacks)
     print("[Main] Initializing WiFi manager...")
     wifi_mgr = WiFiManager(config.WIFI_SSID, config.WIFI_PASSWORD)
-    if lcd_manager and lcd_manager.enabled:
-        lcd_manager.show_init_message("WiFi manager")
 
     # Initialize and register recovery listener (with wifi_mgr for NTP retry)
     print("[Main] Initializing recovery listener...")
@@ -147,34 +143,14 @@ async def main():
     recovery_listener.set_status_receiver(status_receiver)
     status_receiver.register_listener(recovery_listener.on_status_update)
     print("[Main] Recovery listener will check on first valid temperature reading")
-    if lcd_manager and lcd_manager.enabled:
-        lcd_manager.show_init_message("Recovery check")
 
     # Start status receiver
     print("[Main] Starting status receiver...")
     receiver_task = asyncio.create_task(status_receiver.run())
 
-    # Pre-load HTML files into cache (eliminates blocking file I/O during requests)
-    print("[Main] Pre-loading HTML files into cache...")
-    from server.html_cache import get_html_cache
-    html_cache = get_html_cache()
-    html_cache.preload({
-        'index': 'static/index.html',
-        'tuning': 'static/tuning.html'
-    })
-
-    # Pre-load profiles into cache (eliminates blocking file I/O during requests)
-    print("[Main] Pre-loading profiles into cache...")
-    from server.profile_cache import get_profile_cache
-    profile_cache = get_profile_cache()
-    profile_cache.preload(config.PROFILES_DIR)
-
-    # Connect to WiFi (Core 2)
+    # Connect to WiFi FIRST (minimal interference from other operations)
     # Note: WiFi manager was initialized earlier to allow recovery NTP callbacks
     print("[Main] Connecting to WiFi...")
-    if lcd_manager and lcd_manager.enabled:
-        lcd_manager.show_init_message("Connecting WiFi")
-    
     ip_address = await wifi_mgr.connect(timeout=30)
 
     if not ip_address:
@@ -183,11 +159,33 @@ async def main():
         print("[Main] - Control thread is still running")
         print("[Main] - WiFi monitor will keep trying to connect")
         ip_address = "N/A"
-        if lcd_manager and lcd_manager.enabled:
-            lcd_manager.set_wifi_status(False, None)
-    else:
-        if lcd_manager and lcd_manager.enabled:
+
+    # Initialize LCD hardware AFTER WiFi to avoid timing interference
+    if lcd_manager and lcd_manager.enabled:
+        print("[Main] Initializing LCD hardware...")
+        await lcd_manager.initialize_hardware(timeout_ms=500)
+
+    # Update LCD with WiFi status
+    if lcd_manager and lcd_manager.enabled:
+        if ip_address != "N/A":
             lcd_manager.set_wifi_status(True, ip_address)
+        else:
+            lcd_manager.set_wifi_status(False, None)
+
+    # Pre-load HTML files into cache (after WiFi to avoid interference)
+    print("[Main] Pre-loading HTML files into cache...")
+    from server.html_cache import get_html_cache
+    html_cache = get_html_cache()
+    html_cache.preload({
+        'index': 'static/index.html',
+        'tuning': 'static/tuning.html'
+    })
+
+    # Pre-load profiles into cache (after WiFi to avoid interference)
+    print("[Main] Pre-loading profiles into cache...")
+    from server.profile_cache import get_profile_cache
+    profile_cache = get_profile_cache()
+    profile_cache.preload(config.PROFILES_DIR)
 
     # Start async tasks on Core 2
     print("[Main] Starting web server...")
