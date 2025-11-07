@@ -9,6 +9,7 @@
 # and must receive ThreadSafeQueue instances for communication.
 
 import time
+import micropython
 from machine import Pin, SPI, WDT
 from wrapper import DigitalInOut, SPIWrapper
 from kiln import TemperatureSensor, SSRController, PID, KilnController, Profile
@@ -470,6 +471,8 @@ class ControlThread:
             # NOTE: Do NOT feed watchdog on error - let it reset if we're stuck in error loop
             time.sleep(1)
 
+    # Performance optimization: Main control loop orchestrating all operations at 1 Hz
+    @micropython.native
     def control_loop_iteration(self):
         """
         Single iteration of the control loop
@@ -510,11 +513,18 @@ class ControlThread:
                 # Continuous gain scheduling based on temperature
                 # Physics: gain_scale(T) = 1 + h*(T - T_ambient)
                 # This compensates for increased heat loss at higher temperatures
-                if self.thermal_h > 0:
-                    gain_scale = 1.0 + self.thermal_h * (current_temp - self.thermal_t_ambient)
-                    kp = self.pid_kp_base * gain_scale
-                    ki = self.pid_ki_base * gain_scale
-                    kd = self.pid_kd_base * gain_scale
+                # Cache thermal attributes (hot path optimization - called every control loop)
+                thermal_h = self.thermal_h
+                if thermal_h > 0:
+                    thermal_t_ambient = self.thermal_t_ambient
+                    pid_kp_base = self.pid_kp_base
+                    pid_ki_base = self.pid_ki_base
+                    pid_kd_base = self.pid_kd_base
+
+                    gain_scale = 1.0 + thermal_h * (current_temp - thermal_t_ambient)
+                    kp = pid_kp_base * gain_scale
+                    ki = pid_ki_base * gain_scale
+                    kd = pid_kd_base * gain_scale
 
                     # Only update gains if they changed significantly (absolute threshold)
                     # Using absolute thresholds avoids division by zero

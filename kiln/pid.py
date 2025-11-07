@@ -2,6 +2,7 @@
 # PID controller with anti-windup
 
 import time
+import micropython
 
 class PID:
     """
@@ -51,6 +52,8 @@ class PID:
             'output_raw': 0  # Before clamping
         }
 
+    # Performance optimization: Called every control cycle (1 Hz) with heavy floating-point math
+    @micropython.native
     def update(self, setpoint, measured_value, current_time=None):
         """
         Calculate PID output

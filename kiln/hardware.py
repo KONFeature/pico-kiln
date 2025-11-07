@@ -2,6 +2,12 @@
 # Hardware abstraction layer for temperature sensor and SSR control
 
 import time
+from micropython import const
+
+# Module-level constants for sensor fault detection and temperature ranges
+MAX_CONSECUTIVE_FAULTS = const(10)  # Emergency shutdown after this many consecutive faults
+TEMP_MIN_RANGE = const(-50)         # Minimum reasonable temperature in °C
+TEMP_MAX_RANGE = const(1500)        # Maximum reasonable temperature in °C
 
 class TemperatureSensor:
     """
@@ -38,7 +44,6 @@ class TemperatureSensor:
             self.last_good_temp = None  # No fake default - require first valid read
             self.initialized = False  # Track if we've ever had a valid reading
             self.fault_count = 0
-            self.max_consecutive_faults = 10  # Emergency shutdown after this many consecutive faults
 
             # Perform initial conversion to clear power-up faults
             # The chip needs ~160ms to complete first conversion
@@ -48,7 +53,7 @@ class TemperatureSensor:
             # Attempt initial read (don't block startup on retries - will retry during operation)
             try:
                 temp = self.sensor.temperature
-                if temp is not None and -50 <= temp <= 1500:
+                if temp is not None and TEMP_MIN_RANGE <= temp <= TEMP_MAX_RANGE:
                     self.last_good_temp = temp + self.offset
                     self.initialized = True
                     print(f"Temperature sensor ready: {self.last_good_temp:.1f}°C")
@@ -61,6 +66,8 @@ class TemperatureSensor:
             print(f"Error initializing temperature sensor: {e}")
             raise
 
+    # Performance optimization: Called every control cycle (1 Hz) on SPI read path
+    @micropython.native
     def read(self):
         """
         Read temperature with fault checking
@@ -85,7 +92,7 @@ class TemperatureSensor:
                 raise Exception(f"Thermocouple faults: {', '.join(fault_list)}")
 
             # Sanity check: temperature should be in reasonable range
-            if temp < -50 or temp > 1500:
+            if temp < TEMP_MIN_RANGE or temp > TEMP_MAX_RANGE:
                 raise Exception(f"Temperature {temp}°C out of reasonable range")
 
             # Apply calibration offset
@@ -114,12 +121,12 @@ class TemperatureSensor:
                 raise Exception(error_msg)
 
             # Log error
-            self._log_error(f"Temperature read error ({self.fault_count}/{self.max_consecutive_faults}): {e}")
+            self._log_error(f"Temperature read error ({self.fault_count}/{MAX_CONSECUTIVE_FAULTS}): {e}")
 
             # Check if we've hit the consecutive fault limit
-            if self.fault_count >= self.max_consecutive_faults:
+            if self.fault_count >= MAX_CONSECUTIVE_FAULTS:
                 # Emergency shutdown - sensor is genuinely failing
-                error_msg = f"EMERGENCY SHUTDOWN: {self.max_consecutive_faults} consecutive sensor failures: {e}"
+                error_msg = f"EMERGENCY SHUTDOWN: {MAX_CONSECUTIVE_FAULTS} consecutive sensor failures: {e}"
                 self._log_error(error_msg)
                 raise Exception(error_msg)
             else:
@@ -202,6 +209,8 @@ class SSRController:
         """
         self.duty_cycle = max(0.0, min(100.0, percent))
 
+    # Performance optimization: CRITICAL - Called 10 times per second for time-proportional control
+    @micropython.native
     def update(self):
         """
         Update SSR state based on time-proportional control

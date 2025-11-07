@@ -8,6 +8,7 @@ import asyncio
 import json
 import socket
 import gc
+from micropython import const
 import config
 from kiln.comms import CommandMessage, QueueHelper
 from kiln.tuner import MODE_SAFE, MODE_STANDARD, MODE_THOROUGH, MODE_HIGH_TEMP
@@ -21,12 +22,12 @@ HTTP_500 = "HTTP/1.1 500 Internal Server Error\r\n"
 # Global communication channels (initialized in start_server)
 command_queue = None
 
-# Connection limiting to prevent memory exhaustion
-active_connections = 0
-MAX_CONCURRENT_CONNECTIONS = 2  # Limit to 2 concurrent connections on Pico
+# Module-level constants for connection and request limits
+MAX_CONCURRENT_CONNECTIONS = const(2)      # Limit to 2 concurrent connections on Pico
+MAX_PROFILE_SIZE = const(10240)            # 10KB max for profile uploads
 
-# Request size limits
-MAX_PROFILE_SIZE = 10240  # 10KB max for profile uploads
+# Connection tracking
+active_connections = 0
 
 def parse_request(data):
     """Parse HTTP request and return method, path, headers, and body"""

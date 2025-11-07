@@ -2,15 +2,20 @@
 # Kiln state machine and controller with adaptive rate control
 
 import time
+from micropython import const
 from kiln.rate_monitor import TempHistory
 
+# Module-level constants for temperature thresholds and SSR saturation
+TEMP_LOSS_THRESHOLD = const(5)  # Temperature loss tolerance in °C for recovery detection
+SSR_SATURATION_THRESHOLD = const(95)  # SSR saturation threshold in % for adaptation
+
 class KilnState:
-    """Kiln state constants"""
-    IDLE = "IDLE"           # Not running
-    RUNNING = "RUNNING"     # Actively following profile
-    TUNING = "TUNING"       # PID auto-tuning in progress
-    COMPLETE = "COMPLETE"   # Profile finished
-    ERROR = "ERROR"         # Fault condition
+    """Kiln state constants - using integer const for memory optimization"""
+    IDLE = const(0)        # Not running
+    RUNNING = const(1)     # Actively following profile
+    TUNING = const(2)      # PID auto-tuning in progress
+    COMPLETE = const(3)    # Profile finished
+    ERROR = const(4)       # Fault condition
 
 class KilnController:
     """
@@ -103,7 +108,8 @@ class KilnController:
 
         # Initialize rate from first step
         first_step = profile.steps[0]
-        self.current_rate = first_step.get('desired_rate', 0)
+        # Safe: desired_rate must exist in all profile steps
+        self.current_rate = first_step['desired_rate']
 
         # Reset adaptation tracking
         self.temp_history.clear()
@@ -161,7 +167,8 @@ class KilnController:
             print(f"Resuming with adapted rate: {current_rate:.1f}°C/h")
         else:
             # Use desired rate from step
-            self.current_rate = current_step.get('desired_rate', 0)
+            # Safe: desired_rate must exist in all profile steps
+            self.current_rate = current_step['desired_rate']
 
         # Reset adaptation tracking
         self.temp_history.clear()
@@ -171,7 +178,6 @@ class KilnController:
         self.adaptation_count = 0
 
         # Check for temperature loss and enter recovery mode if needed
-        TEMP_LOSS_THRESHOLD = 5.0  # °C tolerance
         if last_logged_temp is not None and current_temp is not None:
             temp_loss = last_logged_temp - current_temp
             if temp_loss > TEMP_LOSS_THRESHOLD:
@@ -211,7 +217,8 @@ class KilnController:
             elif step['type'] == 'ramp':
                 target = step['target_temp']
                 dtemp = abs(target - current_temp)
-                rate = step.get('desired_rate', 100)
+                # Safe: desired_rate must exist in all profile steps
+                rate = step['desired_rate']
                 step_duration = (dtemp / rate) * 3600 if rate > 0 else 0
             else:
                 step_duration = 0
@@ -349,9 +356,14 @@ class KilnController:
                 return target
 
         # Check for adaptation (every minute for ramp steps)
+        # Cache self references (hot path optimization - called every control loop)
+        adaptation_enabled = self.adaptation_enabled
+        last_adaptation_check = self.last_adaptation_check
+        adaptation_check_interval = self.adaptation_check_interval
+
         if (current_step['type'] == 'ramp' and
-            self.adaptation_enabled and
-            elapsed - self.last_adaptation_check >= self.adaptation_check_interval):
+            adaptation_enabled and
+            elapsed - last_adaptation_check >= adaptation_check_interval):
 
             self.last_adaptation_check = elapsed
             self._check_and_adapt_rate(elapsed, current_step)
@@ -412,7 +424,8 @@ class KilnController:
 
         # Reset for new step
         next_step = self.active_profile.steps[self.current_step_index]
-        self.current_rate = next_step.get('desired_rate', 0)
+        # Safe: desired_rate must exist in all profile steps
+        self.current_rate = next_step['desired_rate']
         self.temp_history.clear()
         self.last_adaptation_check = elapsed
         self.last_adaptation_time = elapsed
@@ -507,7 +520,6 @@ class KilnController:
         # This prevents death spiral where adaptation reduces rate, SSR drops,
         # rate drops further, triggers another adaptation, etc.
         # The kiln can only be "underpowered" if it's already at full power!
-        SSR_SATURATION_THRESHOLD = 95.0  # Consider saturated at 95%+
         if self.ssr_output < SSR_SATURATION_THRESHOLD:
             # SSR not saturated - PID has headroom, so rate issue is transient
             # Don't adapt - let PID controller increase output naturally
@@ -599,7 +611,9 @@ class KilnController:
             if self.current_step_index < len(self.active_profile.steps):
                 current_step = self.active_profile.steps[self.current_step_index]
                 status['step_type'] = current_step['type']
-                status['desired_rate'] = current_step.get('desired_rate', 0)
+                # Safe: desired_rate must exist in all profile steps
+                status['desired_rate'] = current_step['desired_rate']
+                # Keep .get() for min_rate - it's optional and may not exist in all profiles
                 status['min_rate'] = current_step.get('min_rate', 0)
 
         return status
