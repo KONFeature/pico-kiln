@@ -24,7 +24,7 @@ class ControlThread:
     All hardware access happens exclusively in this thread to avoid race conditions.
     """
 
-    def __init__(self, command_queue, status_queue, config, error_log=None):
+    def __init__(self, command_queue, status_queue, config, error_log=None, ready_flag=None, quiet_mode=None):
         """
         Initialize control thread
 
@@ -33,11 +33,15 @@ class ControlThread:
             status_queue: ThreadSafeQueue for sending status updates to Core 2
             config: Configuration object with hardware and control parameters
             error_log: ErrorLog instance for cross-core error logging (optional)
+            ready_flag: ReadyFlag for signaling Core 2 when hardware is ready (optional)
+            quiet_mode: QuietMode for suppressing status updates during boot (optional)
         """
         self.command_queue = command_queue
         self.status_queue = status_queue
         self.config = config
         self.error_log = error_log
+        self.ready_flag = ready_flag
+        self.quiet_mode = quiet_mode
         self.running = True
 
         # Hardware components (initialized in setup)
@@ -167,6 +171,11 @@ class ControlThread:
             print("[Control Thread] Watchdog DISABLED")
 
         print("[Control Thread] All hardware initialized successfully")
+
+        # Signal Core 2 that we're ready
+        if self.ready_flag:
+            self.ready_flag.set_ready()
+            print("[Control Thread] Ready flag set - Core 2 can proceed")
 
     def load_profile_with_retry(self, filename, max_attempts=3):
         """
@@ -329,6 +338,10 @@ class ControlThread:
 
         This is called periodically to update the web server with current status
         """
+        # Check quiet mode - suppress status updates during boot WiFi phase
+        if self.quiet_mode and self.quiet_mode.is_quiet():
+            return
+
         try:
             # Safety check: if state is TUNING but tuner is None, fix the inconsistency
             if self.controller.state == KilnState.TUNING and not self.tuner:
@@ -591,7 +604,7 @@ class ControlThread:
         self.running = False
 
 
-def start_control_thread(command_queue, status_queue, config, error_log=None):
+def start_control_thread(command_queue, status_queue, config, error_log=None, ready_flag=None, quiet_mode=None):
     """
     Thread entry point - starts the control loop
 
@@ -603,6 +616,8 @@ def start_control_thread(command_queue, status_queue, config, error_log=None):
         status_queue: ThreadSafeQueue for sending status updates
         config: Configuration object
         error_log: ErrorLog instance for cross-core error logging (optional)
+        ready_flag: ReadyFlag for signaling Core 2 when hardware is ready (optional)
+        quiet_mode: QuietMode for suppressing status updates during boot (optional)
     """
-    control = ControlThread(command_queue, status_queue, config, error_log)
+    control = ControlThread(command_queue, status_queue, config, error_log, ready_flag, quiet_mode)
     control.run()

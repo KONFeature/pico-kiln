@@ -115,6 +115,78 @@ class ThreadSafeQueue:
         finally:
             self._lock.release()
 
+
+class ReadyFlag:
+    """
+    Thread-safe ready flag for Core 1 synchronization
+
+    Used to signal when Core 1 has completed hardware initialization
+    and is ready to receive commands. Core 2 waits for this flag before
+    proceeding with operations that depend on Core 1 being operational.
+    """
+
+    def __init__(self):
+        self._ready = False
+        self._lock = allocate_lock()
+
+    def set_ready(self):
+        """Signal that Core 1 is ready (called from Core 1)"""
+        with self._lock:
+            self._ready = True
+
+    def is_ready(self):
+        """Check if Core 1 is ready (thread-safe)"""
+        with self._lock:
+            return self._ready
+
+    async def wait_ready(self, timeout=5.0):
+        """
+        Wait for Core 1 to be ready (async, called from Core 2)
+
+        Args:
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if Core 1 became ready, False if timeout
+        """
+        import asyncio
+        import time
+
+        start = time.time()
+        while not self.is_ready():
+            if time.time() - start > timeout:
+                return False
+            await asyncio.sleep(0.1)
+        return True
+
+
+class QuietMode:
+    """
+    Thread-safe quiet mode flag for boot optimization
+
+    During WiFi connection phase, Core 1 operates in "quiet mode":
+    - Temperature monitoring continues (safety)
+    - Hardware control continues (SSR, PID)
+    - Status updates are suppressed (reduces queue contention)
+
+    This gives WiFi maximum CPU time during the critical connection phase.
+    """
+
+    def __init__(self):
+        self._quiet = False
+        self._lock = allocate_lock()
+
+    def set_quiet(self, quiet):
+        """Set quiet mode on/off (called from Core 2)"""
+        with self._lock:
+            self._quiet = quiet
+
+    def is_quiet(self):
+        """Check if in quiet mode (called from Core 1)"""
+        with self._lock:
+            return self._quiet
+
+
 class MessageType:
     """Command message types (Core 2 -> Core 1)"""
     RUN_PROFILE = 'run_profile'

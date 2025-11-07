@@ -39,13 +39,36 @@ class WiFiManager:
         self.time_synced = False  # Track if NTP sync was successful
         self.ntp_sync_callbacks = []  # Callbacks to invoke when NTP syncs
 
+        # AP scan cache for faster reconnections
+        self.cached_bssid = None
+        self.cached_rssi = None
+        self.cache_timestamp = 0
+        self.cache_ttl = 120  # 2 minutes cache lifetime
+
         # Initialize status LED
         self.status_led = Pin(status_led_pin, Pin.OUT)
         self.status_led.off()
 
-    def _find_best_ap(self):
-        """Scan and find the best AP for our SSID"""
+    def _find_best_ap(self, use_cache=True):
+        """
+        Scan and find the best AP for our SSID
+
+        Args:
+            use_cache: If True, return cached BSSID if still valid (default: True)
+
+        Returns:
+            Tuple of (bssid, rssi) or (None, None) if not found
+        """
+        # Check cache first (if enabled and valid)
+        if use_cache and self.cached_bssid:
+            cache_age = time.time() - self.cache_timestamp
+            if cache_age < self.cache_ttl:
+                print(f"[WiFi] Using cached AP (age: {cache_age:.1f}s, RSSI: {self.cached_rssi})")
+                return self.cached_bssid, self.cached_rssi
+
+        # Cache miss or expired - perform scan
         try:
+            print("[WiFi] Scanning for APs...")
             networks = self.wlan.scan()
             best_bssid = None
             best_rssi = -100
@@ -60,6 +83,11 @@ class WiFiManager:
                     best_bssid = bssid
 
             if best_bssid:
+                # Update cache
+                self.cached_bssid = best_bssid
+                self.cached_rssi = best_rssi
+                self.cache_timestamp = time.time()
+                print(f"[WiFi] Best AP found: RSSI {best_rssi} (cached for {self.cache_ttl}s)")
                 return best_bssid, best_rssi
 
         except Exception as e:
@@ -148,8 +176,17 @@ class WiFiManager:
         # Clear callbacks after invoking (one-time use)
         self.ntp_sync_callbacks.clear()
 
-    async def connect(self, timeout=30):
-        """Connect to the best available AP"""
+    async def connect(self, timeout=30, use_cache=True):
+        """
+        Connect to the best available AP
+
+        Args:
+            timeout: Connection timeout in seconds (default: 30)
+            use_cache: Use cached AP BSSID if available (default: True)
+
+        Returns:
+            IP address if successful, None if failed
+        """
         print(f"[WiFi] Connecting to {self.ssid}...")
 
         # Initialize WLAN if needed
@@ -158,11 +195,11 @@ class WiFiManager:
 
         self.wlan.active(True)
 
-        # Find and connect to best AP
-        best_bssid, best_rssi = self._find_best_ap()
+        # Find and connect to best AP (with optional caching)
+        best_bssid, best_rssi = self._find_best_ap(use_cache=use_cache)
 
         if best_bssid:
-            print(f"[WiFi] Found AP with RSSI {best_rssi}, connecting...")
+            print(f"[WiFi] Connecting to AP (RSSI {best_rssi})...")
             self.wlan.connect(self.ssid, self.password, bssid=best_bssid)
         else:
             print(f"[WiFi] No specific AP found, connecting to {self.ssid}...")
@@ -190,8 +227,8 @@ class WiFiManager:
         ip = self.wlan.ifconfig()[0]
         print(f"[WiFi] Connected! IP: {ip}")
 
-        # Sync time with NTP server
-        self.sync_time_ntp()
+        # NTP sync moved to background task - don't block here
+        print("[WiFi] Connection complete (NTP sync will happen in background)")
 
         return ip
 
