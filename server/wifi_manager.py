@@ -248,8 +248,7 @@ class WiFiManager:
         best_bssid, best_rssi = self._find_best_ap(use_cache=use_cache)
 
         if best_bssid:
-            bssid_str = ":".join([f"{b:02x}" for b in best_bssid])
-            print(f"[WiFi] Connecting to AP {bssid_str} (RSSI {best_rssi}dBm)...")
+            print(f"[WiFi] Connecting to AP (RSSI {best_rssi}dBm)...")
             self.wlan.connect(self.ssid, self.password, bssid=best_bssid)
         else:
             print(f"[WiFi] No specific AP found, connecting to {self.ssid}...")

@@ -204,80 +204,66 @@ class LCDManager:
         self.wifi_error = error
         # Re-render if currently showing WiFi screen
         if self.current_screen == Screen.WIFI:
-            asyncio.create_task(self._render_current_screen())
-    
-    def _render_current_screen_sync(self):
-        """Render the current screen (synchronous, can block)"""
-        if not self.enabled or not self.lcd:
-            return
+            self._schedule_render()
 
-        if self.current_screen == Screen.WIFI:
-            self._render_wifi_screen()
-        elif self.current_screen == Screen.STATE:
-            self._render_state_screen()
-        elif self.current_screen == Screen.TEMP:
-            self._render_temp_screen()
-        elif self.current_screen == Screen.PROFILE:
-            self._render_profile_screen()
-        elif self.current_screen == Screen.RATE:
-            self._render_rate_screen()
-        elif self.current_screen == Screen.TUNING_DETAIL:
-            self._render_tuning_detail_screen()
-        elif self.current_screen == Screen.STOP:
-            self._render_stop_screen()
-        elif self.current_screen == Screen.STOP_CONFIRM:
-            self._render_stop_confirm_screen()
+    def _schedule_render(self):
+        """Schedule a render task with exception handling (fire-and-forget)"""
+        async def _render_with_error_handling():
+            try:
+                await self._render_current_screen()
+            except Exception as e:
+                print(f"[LCD] Render task failed: {e}")
+
+        asyncio.create_task(_render_with_error_handling())
 
     async def _render_current_screen(self):
-        """Render the current screen with timeout protection"""
+        """Render the current screen (async)"""
         if not self.enabled or not self.lcd:
             return
 
         try:
-            # Wrap render in timeout - if it takes >200ms, something is wrong
-            await asyncio.wait_for(
-                self._render_sync_as_async(),
-                timeout=0.2  # 200ms timeout
-            )
-        except asyncio.TimeoutError:
-            print(f"[LCD] Render timeout on screen {self.current_screen}")
-            raise Exception("LCD render timeout")
+            if self.current_screen == Screen.WIFI:
+                await self._render_wifi_screen()
+            elif self.current_screen == Screen.STATE:
+                await self._render_state_screen()
+            elif self.current_screen == Screen.TEMP:
+                await self._render_temp_screen()
+            elif self.current_screen == Screen.PROFILE:
+                await self._render_profile_screen()
+            elif self.current_screen == Screen.RATE:
+                await self._render_rate_screen()
+            elif self.current_screen == Screen.TUNING_DETAIL:
+                await self._render_tuning_detail_screen()
+            elif self.current_screen == Screen.STOP:
+                await self._render_stop_screen()
+            elif self.current_screen == Screen.STOP_CONFIRM:
+                await self._render_stop_confirm_screen()
         except Exception as e:
-            print(f"[LCD] Error rendering screen: {e}")
+            print(f"[LCD] Error rendering {self.current_screen}: {e}")
             raise
-
-    async def _render_sync_as_async(self):
-        """Wrapper to run synchronous render in async context"""
-        self._render_current_screen_sync()
-        await asyncio.sleep(0)  # Yield to event loop
     
-    def _render_wifi_screen(self):
+    async def _render_wifi_screen(self):
         """Render WiFi status screen"""
         if self.wifi_connected and self.wifi_ip:
             self.lcd.print("WiFi: Connected", row=0)
-            # Truncate IP if too long
             ip_text = self.wifi_ip[:16]
             self.lcd.print(ip_text, row=1)
         elif self.wifi_error:
-            # Show error status
             self.lcd.print("WiFi: Failed", row=0)
             self.lcd.print(self.wifi_error[:16], row=1)
         else:
             self.lcd.print("WiFi: Not Conn.", row=0)
             self.lcd.print("", row=1)
+        await asyncio.sleep(0)
     
-    def _render_state_screen(self):
+    async def _render_state_screen(self):
         """Render current state screen"""
         state = self.status_receiver.get_status_field('state', 'UNKNOWN')
-
-        # Show state on first line
         self.lcd.print(f"State: {state[:9]}", row=0)
 
-        # Show additional info on second line based on state
         if state == 'RUNNING':
             is_recovering = self.status_receiver.get_status_field('is_recovering', False)
             if is_recovering:
-                # Show recovery target and distance
                 recovery_target = self.status_receiver.get_status_field('recovery_target_temp')
                 current_temp = self.status_receiver.get_status_field('current_temp', 0.0)
                 if recovery_target:
@@ -292,55 +278,44 @@ class LCDManager:
         elif state == 'TUNING':
             self.lcd.print("Auto-tuning PID", row=1)
         elif state == 'ERROR':
-            # Show actual error message (truncated to fit)
             error_msg = self.status_receiver.get_status_field('error', 'Unknown error')
             self.lcd.print(error_msg[:16], row=1)
         elif state == 'COMPLETE':
             self.lcd.print("Profile Done!", row=1)
         else:
             self.lcd.print("", row=1)
+        await asyncio.sleep(0)
     
-    def _render_temp_screen(self):
+    async def _render_temp_screen(self):
         """Render temperature screen with SSR output"""
         current = self.status_receiver.get_status_field('current_temp', 0.0)
         target = self.status_receiver.get_status_field('target_temp', 0.0)
         ssr_output = self.status_receiver.get_status_field('ssr_output', 0.0)
 
-        # Format temperatures to fit: "Cur: 999C"
         self.lcd.print(f"Cur:{current:4.0f}C", row=0)
-
         if target > 0:
-            # Show target and SSR output on second line
             self.lcd.print(f"Tgt:{target:4.0f}C {ssr_output:.0f}%", row=1)
         else:
             self.lcd.print(f"Tgt: -- SSR:{ssr_output:.0f}%", row=1)
+        await asyncio.sleep(0)
     
-    def _render_profile_screen(self):
+    async def _render_profile_screen(self):
         """Render profile/tuning method screen with time estimates"""
         state = self.status_receiver.get_status_field('state', 'IDLE')
 
         if state == 'RUNNING':
             profile_name = self.status_receiver.get_status_field('profile', 'Unknown')
-            elapsed = self.status_receiver.get_status_field('elapsed', 0)
             remaining = self.status_receiver.get_status_field('remaining', 0)
             progress = self.status_receiver.get_status_field('progress', 0)
 
-            # First line: Profile name (truncated)
             self.lcd.print(profile_name[:16], row=0)
-
-            # Second line: Progress and time
             if remaining > 0:
-                # Format time: hours and minutes
                 remain_hours = int(remaining / 3600)
                 remain_mins = int((remaining % 3600) / 60)
-                if remain_hours > 0:
-                    time_str = f"{remain_hours}h{remain_mins:02d}m"
-                else:
-                    time_str = f"{remain_mins}m"
+                time_str = f"{remain_hours}h{remain_mins:02d}m" if remain_hours > 0 else f"{remain_mins}m"
                 self.lcd.print(f"{progress:3.0f}% {time_str:>9}", row=1)
             else:
                 self.lcd.print(f"Progress: {progress:.0f}%", row=1)
-
         elif state == 'TUNING':
             tuning_mode = self.status_receiver.get_status_field('tuning_mode', 'Unknown')
             self.lcd.print("Tuning Mode:", row=0)
@@ -348,8 +323,9 @@ class LCDManager:
         else:
             self.lcd.print("Profile:", row=0)
             self.lcd.print("None", row=1)
+        await asyncio.sleep(0)
     
-    def _render_stop_screen(self):
+    async def _render_stop_screen(self):
         """Render stop menu screen"""
         state = self.status_receiver.get_status_field('state', 'IDLE')
 
@@ -359,60 +335,51 @@ class LCDManager:
         else:
             self.lcd.print("Stop Program", row=0)
             self.lcd.print("(Not running)", row=1)
-    
-    def _render_stop_confirm_screen(self):
+        await asyncio.sleep(0)
+
+    async def _render_stop_confirm_screen(self):
         """Render stop confirmation screen"""
         self.lcd.print("Are you sure?", row=0)
         self.lcd.print("Press Select", row=1)
-    
-    def _render_rate_screen(self):
+        await asyncio.sleep(0)
+
+    async def _render_rate_screen(self):
         """Render rate monitoring screen (only during RUNNING)"""
         state = self.status_receiver.get_status_field('state', 'IDLE')
 
         if state != 'RUNNING':
             self.lcd.print("Rate Monitor", row=0)
             self.lcd.print("(Not running)", row=1)
-            return
-
-        # Show rate information with adaptation count
-        desired_rate = self.status_receiver.get_status_field('desired_rate', 0)
-        actual_rate = self.status_receiver.get_status_field('actual_rate', 0)
-        current_rate = self.status_receiver.get_status_field('current_rate', 0)
-        adaptation_count = self.status_receiver.get_status_field('adaptation_count', 0)
-
-        # First line: Desired vs Actual with warning if significantly behind
-        rate_warning = ""
-        if desired_rate > 0 and actual_rate < desired_rate * 0.85:
-            rate_warning = "!"
-        self.lcd.print(f"D:{desired_rate:3.0f} A:{actual_rate:3.0f}{rate_warning}", row=0)
-
-        # Second line: Current (adapted) rate and adaptation count
-        if adaptation_count > 0:
-            self.lcd.print(f"Now:{current_rate:3.0f} Ad:{adaptation_count}", row=1)
         else:
-            self.lcd.print(f"Current:{current_rate:3.0f}", row=1)
-    
+            desired_rate = self.status_receiver.get_status_field('desired_rate', 0)
+            actual_rate = self.status_receiver.get_status_field('actual_rate', 0)
+            current_rate = self.status_receiver.get_status_field('current_rate', 0)
+            adaptation_count = self.status_receiver.get_status_field('adaptation_count', 0)
 
-    def _render_tuning_detail_screen(self):
+            rate_warning = "!" if desired_rate > 0 and actual_rate < desired_rate * 0.85 else ""
+            self.lcd.print(f"D:{desired_rate:3.0f} A:{actual_rate:3.0f}{rate_warning}", row=0)
+
+            if adaptation_count > 0:
+                self.lcd.print(f"Now:{current_rate:3.0f} Ad:{adaptation_count}", row=1)
+            else:
+                self.lcd.print(f"Current:{current_rate:3.0f}", row=1)
+        await asyncio.sleep(0)
+
+    async def _render_tuning_detail_screen(self):
         """Render detailed tuning progress screen"""
         state = self.status_receiver.get_status_field('state', 'IDLE')
 
         if state != 'TUNING':
             self.lcd.print("Tuning Detail", row=0)
             self.lcd.print("(Not tuning)", row=1)
-            return
+        else:
+            tuning_step = self.status_receiver.get_status_field('tuning_step', 'Unknown')
+            tuning_progress = self.status_receiver.get_status_field('tuning_progress', '?/?')
+            current_temp = self.status_receiver.get_status_field('current_temp', 0.0)
 
-        # Show tuning progress details
-        # Note: These fields would need to be added to tuning status
-        tuning_step = self.status_receiver.get_status_field('tuning_step', 'Unknown')
-        tuning_progress = self.status_receiver.get_status_field('tuning_progress', '?/?')
-        current_temp = self.status_receiver.get_status_field('current_temp', 0.0)
-
-        # First line: Step and progress
-        self.lcd.print(f"{tuning_step[:10]}{tuning_progress:>6}", row=0)
-
-        # Second line: Current temperature
-        self.lcd.print(f"Temp: {current_temp:.0f}C", row=1)
+            self.lcd.print(f"{tuning_step[:10]}{tuning_progress:>6}", row=0)
+            self.lcd.print(f"Temp: {current_temp:.0f}C", row=1)
+        await asyncio.sleep(0)
     
     def _handle_next_button(self):
         """Handle next button press - change screen and render immediately"""
@@ -444,20 +411,16 @@ class LCDManager:
             attempts += 1
 
         print(f"[LCD] Screen changed to: {self.current_screen}")
-        # Render the new screen immediately
-        asyncio.create_task(self._render_current_screen())
-    
+        self._schedule_render()
+
     def _handle_select_button(self):
         """Handle select button press - refresh data and re-render"""
         if self.current_screen == Screen.STOP:
-            # Check if something is running
             state = self.status_receiver.get_status_field('state', 'IDLE')
             if state in ['RUNNING', 'TUNING']:
-                # Show confirmation screen
                 self.current_screen = Screen.STOP_CONFIRM
-                asyncio.create_task(self._render_current_screen())
+                self._schedule_render()
         elif self.current_screen == Screen.STOP_CONFIRM:
-            # Confirmed - send stop command
             print("[LCD] Stop confirmed, sending stop command")
             from kiln.comms import CommandMessage, QueueHelper
             command = CommandMessage.stop()
@@ -467,12 +430,15 @@ class LCDManager:
             else:
                 print("[LCD] Failed to send stop command (queue full)")
 
-            # Return to state screen after short delay (will render there)
-            asyncio.create_task(self._return_to_state_screen_delayed())
+            async def _delayed_return():
+                try:
+                    await self._return_to_state_screen_delayed()
+                except Exception as e:
+                    print(f"[LCD] Delayed return task failed: {e}")
+            asyncio.create_task(_delayed_return())
         else:
-            # On any other screen, select button refreshes the display
             print(f"[LCD] Refreshing screen: {self.current_screen}")
-            asyncio.create_task(self._render_current_screen())
+            self._schedule_render()
     
     async def _return_to_state_screen_delayed(self):
         """Return to state screen after 2 seconds"""
