@@ -7,6 +7,7 @@ set -e  # Exit on error
 # Parse arguments
 MINIFY=false
 MODE="development"
+OPTIMIZE_LEVEL=""  # Will be set based on mode if not specified
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -15,13 +16,28 @@ while [[ $# -gt 0 ]]; do
             MODE="production"
             shift
             ;;
+        --optimize|-O)
+            OPTIMIZE_LEVEL="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: ./compile.sh [--production]"
+            echo "Usage: ./compile.sh [--production] [--optimize N]"
+            echo "  --production    : Full optimization (minify + remove prints)"
+            echo "  --optimize N    : Set bytecode optimization level (0-3)"
             exit 1
             ;;
     esac
 done
+
+# Set default optimization levels if not specified
+if [ -z "$OPTIMIZE_LEVEL" ]; then
+    if [ "$MODE" = "production" ]; then
+        OPTIMIZE_LEVEL=3  # Maximum optimization for production
+    else
+        OPTIMIZE_LEVEL=0  # No optimization for development (keeps assertions)
+    fi
+fi
 
 echo "======================================"
 echo "Pico Kiln Bytecode Compiler"
@@ -45,11 +61,13 @@ fi
 
 # Architecture flags from mpy-detect.py output
 # Pico 2 uses armv7emsp (ARMv7E-M with single precision FPU)
-ARCH_FLAGS="-march=armv7emsp"
+ARCH_FLAGS="-march=armv7emsp -O${OPTIMIZE_LEVEL}"
 
 echo "Using architecture: armv7emsp"
 echo "Build mode: $MODE"
+echo "Bytecode optimization: -O${OPTIMIZE_LEVEL}"
 if [ "$MINIFY" = true ]; then
+    echo "  - Removing print statements"
     echo "  - Removing docstrings and comments"
     echo "  - Minifying code"
     echo "  - Preserving type annotations"
@@ -81,16 +99,22 @@ compile_file() {
 
     local processed_file="$src_file"
 
-    # Minify if requested
+    # Production: remove prints + minify
     if [ "$MINIFY" = true ]; then
+        # Step 1: Remove print statements using AST
+        local temp_no_prints="$TEMP_DIR/no_prints_${filename}"
+        python3 scripts/remove_prints.py "$src_file" "$temp_no_prints"
+
+        # Step 2: Minify the result
         local temp_minified="$TEMP_DIR/minified_${filename}"
         python3 -m python_minifier \
             --no-remove-annotations \
             --remove-literal-statements \
             --output "$temp_minified" \
-            "$src_file"
+            "$temp_no_prints"
+
         processed_file="$temp_minified"
-        echo "  -> Compiling $src_file (minified)"
+        echo "  -> Compiling $src_file (prints removed + minified)"
     else
         echo "  -> Compiling $src_file"
     fi
@@ -185,15 +209,19 @@ echo ""
 case $MODE in
     "production")
         echo "Production build complete!"
+        echo "  ✓ Print statements removed"
         echo "  ✓ Docstrings removed"
         echo "  ✓ Comments removed"
         echo "  ✓ Code minified"
         echo "  ✓ Type annotations preserved"
+        echo "  ✓ Bytecode optimization: -O${OPTIMIZE_LEVEL} (maximum)"
         ;;
     "development")
         echo "Development build complete!"
+        echo "  • Print statements included"
         echo "  • Docstrings and comments included"
-        echo "Tip: Use './compile.sh --production' for deployment (smaller, faster)"
+        echo "  • Bytecode optimization: -O${OPTIMIZE_LEVEL} (debug friendly)"
+        echo "Tip: Use './compile.sh --production' for deployment (smaller, faster, no logs)"
         ;;
 esac
 
@@ -212,6 +240,14 @@ echo "  Compiled build:   $COMPILED_SIZE"
 echo ""
 
 echo "Build modes:"
-echo "  ./compile.sh              - Development (full source with docstrings)"
-echo "  ./compile.sh --production - Production (minified, no docstrings/comments)"
+echo "  ./compile.sh                    - Development (prints + docstrings, -O0)"
+echo "  ./compile.sh --production       - Production (optimized, minified, -O3)"
+echo "  ./compile.sh --optimize N       - Development with custom optimization (0-3)"
+echo "  ./compile.sh --production -O 2  - Production with custom optimization"
+echo ""
+echo "Optimization levels:"
+echo "  -O0: No optimization (keeps assertions, best for debugging)"
+echo "  -O1: Basic optimization (removes assertions)"
+echo "  -O2: Standard optimization"
+echo "  -O3: Maximum optimization (smallest, fastest)"
 echo ""
