@@ -5,8 +5,11 @@
 # and provides recovery information to automatically resume the program.
 #
 # Recovery uses only the CSV logs directory - no additional state files needed.
+#
+# Safety mechanism: Temperature deviation is the primary check. If the current
+# temperature matches the last logged temperature, the crash was recent enough
+# to safely resume. No time-based checking needed.
 
-import time
 import os
 import gc
 
@@ -23,7 +26,7 @@ class RecoveryListener:
     unregisters itself to avoid interfering with normal operation.
     """
 
-    def __init__(self, command_queue, data_logger, config, wifi_manager=None):
+    def __init__(self, command_queue, data_logger, config):
         """
         Initialize recovery listener
 
@@ -31,14 +34,11 @@ class RecoveryListener:
             command_queue: ThreadSafeQueue for sending commands to control thread
             data_logger: DataLogger instance to set recovery context
             config: Configuration object with recovery settings
-            wifi_manager: WiFiManager instance for time sync checking (optional)
         """
         self.command_queue = command_queue
         self.data_logger = data_logger
         self.config = config
-        self.wifi_manager = wifi_manager
         self.recovery_attempted = False
-        self.had_time_issue = False
         self.status_receiver = None
         self.min_valid_temp = 20.0  # Minimum temp to consider valid (avoid false readings)
 
@@ -49,17 +49,7 @@ class RecoveryListener:
         Args:
             status: Status dictionary from StatusMessage.build()
         """
-        # If we had a time issue, check if time is now synced and retry
-        if self.recovery_attempted and self.had_time_issue:
-            if self.wifi_manager and self.wifi_manager.time_synced:
-                print("[Recovery] Time now synced, retrying recovery check...")
-                self.recovery_attempted = False  # Reset to retry
-                self.had_time_issue = False
-            else:
-                # Still waiting for time sync
-                return
-
-        # Only attempt recovery once (unless reset by time sync above)
+        # Only attempt recovery once
         if self.recovery_attempted:
             return
 
@@ -79,7 +69,6 @@ class RecoveryListener:
         recovery_info = check_recovery(
             self.config.LOGS_DIR,
             current_temp,
-            self.config.MAX_RECOVERY_DURATION,
             self.config.MAX_RECOVERY_TEMP_DELTA
         )
 
@@ -87,14 +76,6 @@ class RecoveryListener:
             self._attempt_recovery(recovery_info, current_temp)
         else:
             print(f"[Recovery] No recovery needed: {recovery_info.recovery_reason}")
-
-            # If recovery failed due to time issues, keep listening for time sync
-            if recovery_info.had_time_issue and self.wifi_manager:
-                print(f"[Recovery] Time sync issue detected - will retry when time syncs")
-                self.had_time_issue = True
-                # Keep recovery_attempted = True so retry check works on next update
-                # Don't unregister yet - keep listening for time sync
-                return
 
         # Unregister this listener - we're done
         if self.status_receiver:
@@ -157,12 +138,8 @@ class RecoveryInfo:
         elapsed_seconds: How far through the program execution
         last_temp: Last recorded temperature
         last_target_temp: Last target temperature
-        last_timestamp: Unix timestamp of last log entry
-        time_since_last_log: Seconds since last log entry
         log_file: Path to the log file being recovered from
         recovery_reason: String explaining why recovery is/isn't possible
-        had_time_issue: Whether recovery failed due to time sync issues
-        used_mtime_fallback: Whether mtime was used instead of log timestamp
         current_rate: Last adapted rate (for adaptive control)
     """
     def __init__(self):
@@ -171,16 +148,12 @@ class RecoveryInfo:
         self.elapsed_seconds = 0.0
         self.last_temp = 0.0
         self.last_target_temp = 0.0
-        self.last_timestamp = 0
-        self.time_since_last_log = 0
         self.log_file = None
         self.recovery_reason = "No recovery needed"
-        self.had_time_issue = False
-        self.used_mtime_fallback = False
-        self.current_rate = None  # Adapted rate from CSV (None if not available)
+        self.current_rate = None  # Adapted rate from CSV
 
 
-def check_recovery(logs_dir, current_temp, max_recovery_duration, max_temp_delta):
+def check_recovery(logs_dir, current_temp, max_temp_delta):
     """
     Check if program recovery should be attempted
 
@@ -190,13 +163,15 @@ def check_recovery(logs_dir, current_temp, max_recovery_duration, max_temp_delta
     Recovery conditions:
     1. Most recent log file found
     2. Last state was RUNNING (not COMPLETE, ERROR, or IDLE)
-    3. Time since last log entry < max_recovery_duration
-    4. Current temperature within max_temp_delta of last logged temperature
+    3. Current temperature within max_temp_delta of last logged temperature
+
+    Temperature deviation is the primary safety mechanism. If current temperature
+    matches the last logged temperature, the crash was recent enough to resume.
+    No time-based checking needed - temperature is a more reliable indicator.
 
     Args:
         logs_dir: Directory containing CSV log files
         current_temp: Current measured temperature (°C)
-        max_recovery_duration: Maximum seconds since last log to allow recovery
         max_temp_delta: Maximum temperature deviation (°C) to allow recovery
 
     Returns:
@@ -222,9 +197,8 @@ def check_recovery(logs_dir, current_temp, max_recovery_duration, max_temp_delta
         # Extract recovery information
         info.last_temp = last_entry['current_temp']
         info.last_target_temp = last_entry['target_temp']
-        info.last_timestamp = last_entry['timestamp']
         info.elapsed_seconds = last_entry['elapsed']
-        info.current_rate = last_entry.get('current_rate')  # May be None for old logs
+        info.current_rate = last_entry['current_rate']
 
         # Extract profile name from filename
         # Format: {profile_name}_{YYYY-MM-DD}_{HH-MM-SS}.csv
@@ -245,55 +219,8 @@ def check_recovery(logs_dir, current_temp, max_recovery_duration, max_temp_delta
             info.recovery_reason = f"Last state was {last_entry['state']}, not RUNNING"
             return info
 
-        # 2. Is it within recovery time window?
-        # Use timestamp validation with mtime fallback for robustness
-        current_time = time.time()
-
-        # Validate timestamp sanity (year >= 2020)
-        # MicroPython epoch is 2000-01-01, so timestamps before 2020 indicate no NTP sync
-        MIN_VALID_TIMESTAMP = 631152000  # 2020-01-01 00:00:00 UTC (20 years * 365.25 * 86400)
-        timestamp_is_valid = info.last_timestamp >= MIN_VALID_TIMESTAMP
-        current_time_is_valid = current_time >= MIN_VALID_TIMESTAMP
-
-        if timestamp_is_valid and current_time_is_valid:
-            # Both timestamps are valid - use log timestamp
-            info.time_since_last_log = current_time - info.last_timestamp
-            info.used_mtime_fallback = False
-            print(f"[Recovery] Using log timestamp for time calculation")
-        else:
-            # One or both timestamps invalid - fallback to file mtime
-            try:
-                stat = os.stat(log_file)
-                file_mtime = stat[8]
-                info.time_since_last_log = current_time - file_mtime
-                info.used_mtime_fallback = True
-                print(f"[Recovery] WARNING: Invalid timestamp detected, using file mtime fallback")
-                print(f"[Recovery]   Log timestamp valid: {timestamp_is_valid}, Current time valid: {current_time_is_valid}")
-            except OSError:
-                # Can't get mtime - mark as time issue and skip time check
-                info.had_time_issue = True
-                info.time_since_last_log = 0
-                print(f"[Recovery] WARNING: Cannot determine time delta, skipping time check")
-
-        # Check if time delta makes sense (not negative, not absurdly large)
-        if info.time_since_last_log < 0:
-            info.recovery_reason = "Clock went backwards - time sync issue"
-            info.had_time_issue = True
-            return info
-
-        # If time check is unreliable, we'll rely purely on temperature validation
-        if not info.had_time_issue and info.time_since_last_log > max_recovery_duration:
-            info.recovery_reason = (
-                f"Too much time elapsed: {info.time_since_last_log:.0f}s "
-                f"(max: {max_recovery_duration}s)"
-            )
-            # If we used mtime fallback and failed, this might be a time issue
-            if info.used_mtime_fallback:
-                info.had_time_issue = True
-            return info
-
-        # 3. Is temperature within acceptable range?
-        # This is the most reliable check and works regardless of time sync
+        # 2. Is temperature within acceptable range?
+        # This is the primary safety check - if temperature matches, the crash was recent
         temp_deviation = abs(current_temp - info.last_temp)
 
         if temp_deviation > max_temp_delta:
@@ -305,11 +232,7 @@ def check_recovery(logs_dir, current_temp, max_recovery_duration, max_temp_delta
 
         # All checks passed - recovery is safe!
         info.can_recover = True
-        time_info = f"{info.time_since_last_log:.0f}s elapsed" if not info.had_time_issue else "time uncertain"
-        info.recovery_reason = (
-            f"Recovery OK: {time_info}, "
-            f"temp deviation {temp_deviation:.1f}°C"
-        )
+        info.recovery_reason = f"Recovery OK: temp deviation {temp_deviation:.1f}°C"
 
         return info
 
@@ -323,8 +246,6 @@ def _find_most_recent_log(logs_dir):
     Find the most recent CSV log file in the logs directory
 
     Uses file modification time (mtime) to find the most recent file.
-    This is robust to clock sync issues - even if timestamps are wrong,
-    the relative ordering of file mtimes is preserved within a boot session.
 
     Filters out tuning logs (files starting with "tuning_") since they
     are not profile runs and should not be candidates for recovery.
@@ -346,8 +267,7 @@ def _find_most_recent_log(logs_dir):
         if not csv_files:
             return None
 
-        # Sort by file modification time (mtime) instead of filename
-        # This is robust to clock sync issues
+        # Sort by file modification time (mtime)
         csv_files_with_mtime = []
         for f in csv_files:
             try:
@@ -378,8 +298,7 @@ def _parse_last_log_entry(log_file):
     Parse the last line of a CSV log file
 
     MEMORY OPTIMIZED: Reads file line-by-line, keeping only the last non-empty line
-    in memory instead of loading the entire file. This reduces memory usage from
-    ~120KB (for a 10-hour log) to <1KB.
+    in memory instead of loading the entire file.
 
     CSV format:
     timestamp,elapsed_seconds,current_temp_c,target_temp_c,
@@ -414,31 +333,17 @@ def _parse_last_log_entry(log_file):
         # Parse CSV values
         values = last_line.split(',')
 
-        # Need at least 7 core columns (step columns are optional)
-        if len(values) < 7:
+        # Need exactly 10 columns (fixed CSV scheme)
+        if len(values) != 10:
             return None
 
-        # Parse timestamp (ISO format: YYYY-MM-DD HH:MM:SS)
-        timestamp_str = values[0]
-        timestamp_unix = _parse_iso_timestamp(timestamp_str)
-
         result = {
-            'timestamp': timestamp_unix,
             'elapsed': float(values[1]),
             'current_temp': float(values[2]),
             'target_temp': float(values[3]),
-            'ssr_output': float(values[4]),
-            'state': values[5]
+            'state': values[5],
+            'current_rate': float(values[9]) if values[9] else None
         }
-
-        # Parse current_rate (column 10, index 9)
-        if len(values) >= 10 and values[9]:
-            try:
-                result['current_rate'] = float(values[9])
-            except (ValueError, IndexError):
-                result['current_rate'] = None
-        else:
-            result['current_rate'] = None
 
         # Force garbage collection after parsing
         gc.collect()
@@ -448,50 +353,3 @@ def _parse_last_log_entry(log_file):
     except Exception as e:
         print(f"[Recovery] Error parsing log entry: {e}")
         return None
-
-
-def _parse_iso_timestamp(timestamp_str):
-    """
-    Parse ISO timestamp string to unix timestamp
-
-    Format: YYYY-MM-DD HH:MM:SS
-
-    Args:
-        timestamp_str: ISO formatted timestamp string
-
-    Returns:
-        Unix timestamp (seconds since epoch)
-    """
-    # Split date and time parts
-    parts = timestamp_str.split(' ')
-    if len(parts) != 2:
-        return 0
-
-    date_part = parts[0]
-    time_part = parts[1]
-
-    # Parse date: YYYY-MM-DD
-    date_values = date_part.split('-')
-    if len(date_values) != 3:
-        return 0
-
-    year = int(date_values[0])
-    month = int(date_values[1])
-    day = int(date_values[2])
-
-    # Parse time: HH:MM:SS
-    time_values = time_part.split(':')
-    if len(time_values) != 3:
-        return 0
-
-    hour = int(time_values[0])
-    minute = int(time_values[1])
-    second = int(time_values[2])
-
-    # Convert to unix timestamp
-    # MicroPython's time.mktime expects tuple:
-    # (year, month, day, hour, minute, second, weekday, yearday)
-    # weekday and yearday can be 0 for mktime
-    time_tuple = (year, month, day, hour, minute, second, 0, 0)
-
-    return time.mktime(time_tuple)

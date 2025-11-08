@@ -276,7 +276,7 @@ async def main():
 
         # Register recovery listener
         from server.recovery import RecoveryListener
-        recovery_listener = RecoveryListener(command_queue, data_logger, config, wifi_mgr)
+        recovery_listener = RecoveryListener(command_queue, data_logger, config)
         recovery_listener.set_status_receiver(status_receiver)
         status_receiver.register_listener(recovery_listener.on_status_update)
         print("[Main] Recovery listener registered (will check on first temp)")
