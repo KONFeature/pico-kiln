@@ -94,24 +94,6 @@ def send_html_response(conn, html, status=200):
 
 # === API Handlers ===
 
-def handle_api_state(conn):
-    """GET /api/state - Return current system state (legacy endpoint)"""
-    # MEMORY OPTIMIZED: Use get_fields() to avoid full status copy
-    receiver = get_status_receiver()
-    cached = receiver.status_cache.get_fields(
-        'ssr_output', 'current_temp', 'target_temp', 'profile_name', 'state'
-    )
-
-    # Safe: StatusMessage template guarantees these fields exist
-    response = {
-        "ssr_state": cached['ssr_output'] > 0,  # True if SSR has any output
-        "current_temp": cached['current_temp'],
-        "target_temp": cached['target_temp'],
-        "current_program": cached['profile_name'],
-        "program_running": cached['state'] == "RUNNING"
-    }
-    send_json_response(conn, response)
-
 def handle_api_shutdown(conn):
     """POST /api/shutdown - Emergency shutdown: turn off SSR and stop program"""
     # Send shutdown command to control thread
@@ -130,91 +112,6 @@ def handle_api_shutdown(conn):
             "success": False,
             "error": "Command queue full, please retry"
         }, 500)
-
-def handle_api_info(conn):
-    """GET /api/info - Return system info"""
-    # Import here to avoid circular dependency
-    import network
-
-    # Get IP address from WiFi interface
-    wlan = network.WLAN(network.STA_IF)
-    ip_address = wlan.ifconfig()[0] if wlan.isconnected() else "Not connected"
-
-    info = {
-        "name": "Pico Kiln Controller",
-        "version": "0.2.0",
-        "hardware": "Raspberry Pi Pico 2 (Dual Core)",
-        "sensor": "MAX31856",
-        "architecture": "Multi-threaded (Core 1: Control, Core 2: Web)",
-        "ip_address": ip_address
-    }
-    send_json_response(conn, info)
-
-# === Profile Management Handlers ===
-
-def handle_api_profile_get(conn, profile_name):
-    """GET /api/profile/<name> - Get specific profile"""
-    try:
-        # Verify profile exists in cache first (fast check)
-        from server.profile_cache import get_profile_cache
-        if not get_profile_cache().exists(profile_name):
-            send_json_response(conn, {'success': False, 'error': 'Profile not found'}, 404)
-            return
-
-        # Read profile data from disk (acceptable since downloads are infrequent)
-        import os
-        filename = f"{config.PROFILES_DIR}/{profile_name}.json"
-
-        with open(filename, 'r') as f:
-            profile_data = json.load(f)
-
-        send_json_response(conn, {'profile': profile_data, 'success': True})
-    except Exception as e:
-        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
-
-def handle_api_profile_upload(conn, body):
-    """POST /api/profile - Upload new profile"""
-    try:
-        from kiln.profile import Profile
-        import os
-
-        # Check profile size limit to prevent memory exhaustion
-        if len(body) > MAX_PROFILE_SIZE:
-            send_json_response(conn, {
-                'success': False,
-                'error': f'Profile too large (max {MAX_PROFILE_SIZE} bytes)'
-            }, 400)
-            return
-
-        # MEMORY OPTIMIZED: Force garbage collection before parsing large JSON
-        gc.collect()
-
-        profile_data = json.loads(body.decode())
-
-        # Validate profile by trying to create it
-        profile = Profile(profile_data)
-
-        # Save to file
-        filename = f"{config.PROFILES_DIR}/{profile.name}.json"
-
-        # Create profiles directory if it doesn't exist
-        try:
-            os.mkdir(config.PROFILES_DIR)
-        except:
-            pass
-
-        with open(filename, 'w') as f:
-            json.dump(profile_data, f)
-
-        # Add filename to cache so it appears in profile list immediately
-        from server.profile_cache import get_profile_cache
-        get_profile_cache().add(profile.name)
-
-        print(f"Profile '{profile.name}' uploaded")
-        send_json_response(conn, {'success': True, 'message': f'Profile {profile.name} saved'})
-    except Exception as e:
-        print(f"Error uploading profile: {e}")
-        send_json_response(conn, {'success': False, 'error': str(e)}, 400)
 
 # === Control Command Handlers ===
 
@@ -509,32 +406,11 @@ async def handle_client(conn, addr):
         elif path == '/tuning' or path == '/tuning.html':
             handle_tuning_page(conn)
 
-        elif path == '/api/state':
-            handle_api_state(conn)
-
         elif path == '/api/status':
             handle_api_status(conn)
 
-        elif path == '/api/info':
-            handle_api_info(conn)
-
         elif path == '/api/shutdown':
             handle_api_shutdown(conn)
-
-        # Profile management
-        elif path == '/api/profile':
-            if method == 'POST':
-                handle_api_profile_upload(conn, body)
-            else:
-                send_response(conn, 405, b'Method not allowed', 'text/plain')
-
-        elif path.startswith('/api/profile/'):
-            # Extract profile name from path: GET /api/profile/<name>
-            profile_name = path.split('/')[-1]
-            if method == 'GET':
-                handle_api_profile_get(conn, profile_name)
-            else:
-                send_response(conn, 405, b'Method not allowed', 'text/plain')
 
         # Control commands
         elif path == '/api/run':
