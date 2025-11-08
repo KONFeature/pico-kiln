@@ -175,7 +175,8 @@ class DataLogger:
             # Use pre-allocated buffer instead of f-string concatenation
             buf = self._csv_buffer
             buf.seek(0)  # Reset to start
-            buf.truncate()  # Clear contents
+            # Note: MicroPython's StringIO doesn't have truncate()
+            # seek(0) + write will overwrite previous content
 
             # Build CSV line in buffer
             buf.write(timestamp_iso)
@@ -258,7 +259,8 @@ class DataLogger:
             # Use pre-allocated recovery buffer instead of f-string concatenation
             buf = self._csv_buffer_recovery
             buf.seek(0)  # Reset to start
-            buf.truncate()  # Clear contents
+            # Note: MicroPython's StringIO doesn't have truncate()
+            # seek(0) + write will overwrite previous content
 
             # Build CSV line in buffer
             buf.write(timestamp_iso)
