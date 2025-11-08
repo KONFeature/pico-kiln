@@ -86,6 +86,7 @@ class LCDManager:
         # WiFi status (not in StatusCache)
         self.wifi_ip = None
         self.wifi_connected = False
+        self.wifi_error = None  # WiFi error message (if any)
 
         # Initialization tracking
         self.init_steps_completed = []
@@ -189,16 +190,18 @@ class LCDManager:
         except Exception as e:
             print(f"[LCD] Error showing init message: {e}")
     
-    def set_wifi_status(self, connected, ip_address=None):
+    def set_wifi_status(self, connected, ip_address=None, error=None):
         """
         Update WiFi connection status and re-render if on WiFi screen
 
         Args:
             connected: True if WiFi connected
             ip_address: IP address if connected
+            error: Error message if connection failed (e.g., "Status: -1")
         """
         self.wifi_connected = connected
         self.wifi_ip = ip_address
+        self.wifi_error = error
         # Re-render if currently showing WiFi screen
         if self.current_screen == Screen.WIFI:
             asyncio.create_task(self._render_current_screen())
@@ -255,6 +258,10 @@ class LCDManager:
             # Truncate IP if too long
             ip_text = self.wifi_ip[:16]
             self.lcd.print(ip_text, row=1)
+        elif self.wifi_error:
+            # Show error status
+            self.lcd.print("WiFi: Failed", row=0)
+            self.lcd.print(self.wifi_error[:16], row=1)
         else:
             self.lcd.print("WiFi: Not Conn.", row=0)
             self.lcd.print("", row=1)

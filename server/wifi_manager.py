@@ -53,6 +53,27 @@ class WiFiManager:
         self.status_led = Pin(status_led_pin, Pin.OUT)
         self.status_led.off()
 
+    def _update_lcd_error(self, error):
+        """
+        Update LCD with WiFi error (if LCD is available)
+
+        Args:
+            error: Error status code (int) or error message (str)
+        """
+        try:
+            from server.lcd_manager import get_lcd_manager
+            lcd_manager = get_lcd_manager()
+            if lcd_manager and lcd_manager.enabled:
+                # Format error message
+                if isinstance(error, int):
+                    error_msg = f"Status: {error}"
+                else:
+                    error_msg = str(error)
+                lcd_manager.set_wifi_status(False, error=error_msg)
+        except Exception as e:
+            # Don't crash WiFi manager if LCD update fails
+            print(f"[WiFi] Failed to update LCD with error: {e}")
+
     def _find_best_ap(self, use_cache=True):
         """
         Scan and find the best AP for our SSID
@@ -197,7 +218,16 @@ class WiFiManager:
         if not self.wlan:
             self.wlan = network.WLAN(network.STA_IF)
 
+        # Activate WiFi and give hardware time to stabilize
+        # The Pico W WiFi chip needs ~500ms to fully initialize after activation
+        was_active = self.wlan.active()
         self.wlan.active(True)
+
+        if not was_active:
+            # Hardware was just powered on - give it time to stabilize
+            # Without this delay, we get status -3 (STAT_NO_AP_FOUND/CONNECT_FAIL)
+            print("[WiFi] Waiting for WiFi hardware to initialize...")
+            await asyncio.sleep(0.5)
 
         # Find and connect to best AP (with optional caching)
         best_bssid, best_rssi = self._find_best_ap(use_cache=use_cache)
@@ -213,10 +243,26 @@ class WiFiManager:
         start_time = time.time()
         led_state = False
 
-        while not self.wlan.isconnected():
-            if time.time() - start_time > timeout:
-                print(f"[WiFi] Connection timeout after {timeout}s")
+        while True:
+            status = self.wlan.status()
+
+            # Check if connection failed (status < 0) or succeeded (status >= 3)
+            if status < 0:
+                print(f"[WiFi] Connection failed with status {status}")
                 self.status_led.off()
+                # Update LCD with error status
+                self._update_lcd_error(status)
+                return None
+            elif status >= 3:
+                # Connected!
+                break
+
+            # Check timeout
+            if time.time() - start_time > timeout:
+                print(f"[WiFi] Connection timeout after {timeout}s (status: {status})")
+                self.status_led.off()
+                # Update LCD with timeout error
+                self._update_lcd_error(f"Timeout (st:{status})")
                 return None
 
             # Blink LED while connecting
