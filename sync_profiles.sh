@@ -58,18 +58,32 @@ echo ""
 echo -e "${YELLOW}Step 3: Uploading profiles...${NC}"
 echo ""
 
-# Counter for uploaded files
+# Build list of profile files
+PROFILE_FILES=()
 count=0
 
-# Copy all profile JSON files
 for file in profiles/*.json; do
     if [ -f "$file" ]; then
         filename=$(basename "$file")
-        echo "  → Uploading $filename"
-        mpremote cp "$file" :profiles/
+        echo "  → $filename"
+        PROFILE_FILES+=("$file")
         count=$((count + 1))
     fi
 done
+
+# Upload all profiles in one batched command
+if [ $count -gt 0 ]; then
+    CMD="mpremote"
+    for file in "${PROFILE_FILES[@]}"; do
+        CMD="$CMD cp \"$file\" :profiles/ +"
+    done
+    # Remove trailing +
+    CMD="${CMD% +}"
+
+    echo ""
+    echo "Uploading in batched mode..."
+    eval $CMD
+fi
 
 echo ""
 echo -e "${GREEN}✓ Successfully uploaded $count profile(s)${NC}"

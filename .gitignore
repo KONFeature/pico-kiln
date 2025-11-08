@@ -134,3 +134,6 @@ dmypy.json
 
 # Config (contains WiFi credentials - keep a config.example.py in the repo)
 config.py
+
+# Debug tool backups
+.debug_backups/

@@ -25,6 +25,14 @@ SSR_PIN = 15
 WIFI_SSID = "your_wifi_ssid"
 WIFI_PASSWORD = "your_wifi_password"
 
+# Static IP Configuration (optional - leave commented for DHCP)
+# Setting static IP can speed up connection by ~1-2 seconds
+# Uncomment and configure all 4 values to enable:
+# WIFI_STATIC_IP = "192.168.1.100"      # Static IP address for Pico
+# WIFI_SUBNET = "255.255.255.0"         # Subnet mask
+# WIFI_GATEWAY = "192.168.1.1"          # Router gateway address
+# WIFI_DNS = "8.8.8.8"                  # DNS server (Google DNS or router IP)
+
 # Web Server
 WEB_SERVER_HOST = "0.0.0.0"
 WEB_SERVER_PORT = 80

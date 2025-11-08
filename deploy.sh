@@ -61,30 +61,31 @@ if [ "$CLEAN_DEPLOY" = true ]; then
     echo "Performing clean deployment..."
     echo "======================================"
     echo "Removing old directories on Pico:"
-
-    echo "  -> Removing lib/"
-    mpremote rm -rf :lib 2>/dev/null || echo "     (lib/ not found, skipping)"
-
-    echo "  -> Removing kiln/"
-    mpremote rm -rf :kiln 2>/dev/null || echo "     (kiln/ not found, skipping)"
-
-    echo "  -> Removing server/"
-    mpremote rm -rf :server 2>/dev/null || echo "     (server/ not found, skipping)"
-
-    echo "  -> Removing static/"
-    mpremote rm -rf :static 2>/dev/null || echo "     (static/ not found, skipping)"
-
-    # Also remove any .mpy files in root that might be lingering
+    echo "  -> Removing lib/, kiln/, server/, static/"
     echo "  -> Cleaning root directory of old .mpy files"
-    mpremote exec "import os; [os.remove(f) for f in os.listdir('/') if f.endswith('.mpy')]" 2>/dev/null || true
+
+    # Batch all clean operations together
+    mpremote rm -rf :lib + rm -rf :kiln + rm -rf :server + rm -rf :static + exec "import os; [os.remove(f) for f in os.listdir('/') if f.endswith('.mpy')]" 2>/dev/null || true
 
     echo "Clean complete!"
 fi
 
 echo ""
-echo "Copying Python files..."
+echo "Preparing file list..."
 
-# Copy main Python files from DEPLOY_DIR
+# Verify required directories exist
+if [ ! -d "$DEPLOY_DIR/kiln" ]; then
+    echo "  Error: kiln folder not found!"
+    exit 1
+fi
+
+if [ ! -d "$DEPLOY_DIR/server" ]; then
+    echo "  Error: server folder not found!"
+    exit 1
+fi
+
+# Build list of root Python files to copy (excluding test files)
+ROOT_FILES=()
 for file in "$DEPLOY_DIR"/*.py; do
     if [ -f "$file" ]; then
         filename=$(basename "$file")
@@ -94,105 +95,69 @@ for file in "$DEPLOY_DIR"/*.py; do
             continue
         fi
         echo "  -> $filename"
-        mpremote cp "$file" :
+        ROOT_FILES+=("$file")
     fi
 done
 
-echo ""
-echo "Copying lib folder..."
+# Check which optional directories exist
+HAS_LIB=false
+HAS_STATIC=false
 
-# Create lib directory on Pico if it doesn't exist
-mpremote mkdir :lib 2>/dev/null || true
-
-# Copy lib folder contents if it exists (including subdirectories)
 if [ -d "$DEPLOY_DIR/lib" ]; then
-    # First copy files directly in lib/ (.py or .mpy)
-    for file in "$DEPLOY_DIR/lib"/*; do
-        if [ -f "$file" ]; then
-            filename=$(basename "$file")
-            echo "  -> lib/$filename"
-            mpremote cp "$file" :lib/
-        fi
-    done
-
-    # Then handle subdirectories (like adafruit_bus_device)
-    for dir in "$DEPLOY_DIR/lib"/*/; do
-        if [ -d "$dir" ]; then
-            dirname=$(basename "$dir")
-            echo "  -> lib/$dirname/"
-            mpremote mkdir :lib/$dirname 2>/dev/null || true
-
-            for file in "$dir"*; do
-                if [ -f "$file" ]; then
-                    filename=$(basename "$file")
-                    echo "     -> lib/$dirname/$filename"
-                    mpremote cp "$file" :lib/$dirname/
-                fi
-            done
-        fi
-    done
+    echo "  -> lib/ (recursive)"
+    HAS_LIB=true
 else
-    echo "  No lib folder found (this is OK if you don't have external libraries yet)"
+    echo "  -> No lib folder found (this is OK if you don't have external libraries yet)"
 fi
 
-echo ""
-echo "Copying static folder..."
-
-# Create static directory on Pico if it doesn't exist
-mpremote mkdir :static 2>/dev/null || true
-
-# Copy static folder contents if it exists
 if [ -d "$DEPLOY_DIR/static" ] && [ "$(ls -A "$DEPLOY_DIR/static" 2>/dev/null)" ]; then
-    for file in "$DEPLOY_DIR/static"/*; do
-        if [ -f "$file" ]; then
-            filename=$(basename "$file")
-            echo "  -> static/$filename"
-            mpremote cp "$file" :static/
-        fi
-    done
+    echo "  -> static/ (recursive)"
+    HAS_STATIC=true
 else
-    echo "  No static files found (this is OK, using fallback HTML)"
+    echo "  -> No static files found (this is OK, using fallback HTML)"
 fi
 
-echo ""
-echo "Copying kiln module..."
+echo "  -> kiln/ (recursive)"
+echo "  -> server/ (recursive)"
 
-# Create kiln directory on Pico if it doesn't exist
+echo ""
+echo "Deploying files in batched mode (faster)..."
+
+# Create directories (ignore errors if they exist)
+echo "Creating directories..."
+if [ "$HAS_LIB" = true ]; then
+    mpremote mkdir :lib 2>/dev/null || true
+fi
+if [ "$HAS_STATIC" = true ]; then
+    mpremote mkdir :static 2>/dev/null || true
+fi
 mpremote mkdir :kiln 2>/dev/null || true
-
-# Copy kiln folder contents if it exists (.py or .mpy)
-if [ -d "$DEPLOY_DIR/kiln" ]; then
-    for file in "$DEPLOY_DIR/kiln"/*; do
-        if [ -f "$file" ] && [[ "$file" == *.py ]] || [[ "$file" == *.mpy ]]; then
-            filename=$(basename "$file")
-            echo "  -> kiln/$filename"
-            mpremote cp "$file" :kiln/
-        fi
-    done
-else
-    echo "  Warning: kiln folder not found!"
-    exit 1
-fi
-
-echo ""
-echo "Copying server module..."
-
-# Create server directory on Pico if it doesn't exist
 mpremote mkdir :server 2>/dev/null || true
 
-# Copy server folder contents if it exists (.py or .mpy)
-if [ -d "$DEPLOY_DIR/server" ]; then
-    for file in "$DEPLOY_DIR/server"/*; do
-        if [ -f "$file" ] && [[ "$file" == *.py ]] || [[ "$file" == *.mpy ]]; then
-            filename=$(basename "$file")
-            echo "  -> server/$filename"
-            mpremote cp "$file" :server/
-        fi
-    done
-else
-    echo "  Warning: server folder not found!"
-    exit 1
+# Build the batched mpremote command for copying files
+CMD="mpremote"
+
+# Copy root files
+for file in "${ROOT_FILES[@]}"; do
+    CMD="$CMD cp \"$file\" : +"
+done
+
+# Copy directories recursively
+if [ "$HAS_LIB" = true ]; then
+    CMD="$CMD cp -r \"$DEPLOY_DIR/lib/\"* :lib/ +"
 fi
+
+if [ "$HAS_STATIC" = true ]; then
+    CMD="$CMD cp -r \"$DEPLOY_DIR/static/\"* :static/ +"
+fi
+
+# Always copy kiln and server
+CMD="$CMD cp -r \"$DEPLOY_DIR/kiln/\"* :kiln/ +"
+CMD="$CMD cp -r \"$DEPLOY_DIR/server/\"* :server/"
+
+# Execute the batched command
+echo "Copying files..."
+eval $CMD
 
 echo ""
 echo "======================================"

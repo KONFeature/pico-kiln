@@ -28,17 +28,23 @@ class WiFiManager:
     - Status LED indication
     """
 
-    def __init__(self, ssid, password, status_led_pin="LED"):
+    def __init__(self, config, status_led_pin="LED"):
         """
         Initialize WiFi manager
 
         Args:
-            ssid: WiFi network name
-            password: WiFi password
+            config: Configuration object with WiFi settings
             status_led_pin: Pin for status LED (default: "LED")
         """
-        self.ssid = ssid
-        self.password = password
+        self.ssid = config.WIFI_SSID
+        self.password = config.WIFI_PASSWORD
+
+        # Optional static IP configuration
+        self.static_ip = getattr(config, 'WIFI_STATIC_IP', None)
+        self.subnet = getattr(config, 'WIFI_SUBNET', None)
+        self.gateway = getattr(config, 'WIFI_GATEWAY', None)
+        self.dns = getattr(config, 'WIFI_DNS', None)
+
         self.wlan = None
         self.time_synced = False  # Track if NTP sync was successful
         self.ntp_sync_callbacks = []  # Callbacks to invoke when NTP syncs
@@ -203,7 +209,7 @@ class WiFiManager:
 
     async def connect(self, timeout=30, use_cache=True):
         """
-        Connect to the best available AP
+        Connect to the best available AP using MicroPython's built-in features
 
         Args:
             timeout: Connection timeout in seconds (default: 30)
@@ -218,22 +224,32 @@ class WiFiManager:
         if not self.wlan:
             self.wlan = network.WLAN(network.STA_IF)
 
-        # Activate WiFi and give hardware time to stabilize
-        # The Pico W WiFi chip needs ~500ms to fully initialize after activation
+        # Activate WiFi interface
         was_active = self.wlan.active()
         self.wlan.active(True)
 
         if not was_active:
-            # Hardware was just powered on - give it time to stabilize
-            # Without this delay, we get status -3 (STAT_NO_AP_FOUND/CONNECT_FAIL)
-            print("[WiFi] Waiting for WiFi hardware to initialize...")
-            await asyncio.sleep(0.5)
+            # Configure WiFi for maximum reliability (first time only)
+            print("[WiFi] Configuring WiFi hardware...")
+
+            # PM_NONE: Disable power saving for maximum reliability
+            # Note: reconnects parameter not supported on Pico 2W
+            self.wlan.config(pm=network.WLAN.PM_NONE)
+            print("[WiFi] Power management: PM_NONE (max reliability)")
+
+            # Set static IP if configured (faster than DHCP)
+            if self.static_ip and self.subnet and self.gateway and self.dns:
+                print(f"[WiFi] Configuring static IP: {self.static_ip}")
+                self.wlan.ifconfig((self.static_ip, self.subnet, self.gateway, self.dns))
+            else:
+                print("[WiFi] Using DHCP for IP address")
 
         # Find and connect to best AP (with optional caching)
         best_bssid, best_rssi = self._find_best_ap(use_cache=use_cache)
 
         if best_bssid:
-            print(f"[WiFi] Connecting to AP (RSSI {best_rssi})...")
+            bssid_str = ":".join([f"{b:02x}" for b in best_bssid])
+            print(f"[WiFi] Connecting to AP {bssid_str} (RSSI {best_rssi}dBm)...")
             self.wlan.connect(self.ssid, self.password, bssid=best_bssid)
         else:
             print(f"[WiFi] No specific AP found, connecting to {self.ssid}...")
@@ -311,14 +327,19 @@ class WiFiManager:
                         if lcd_manager and lcd_manager.enabled:
                             lcd_manager.set_wifi_status(True, ip_address)
 
-                    reconnect_failures = 0
+                        reconnect_failures = 0
+                    else:
+                        # Connection failed, increment counter
+                        reconnect_failures += 1
+                        print(f"[WiFi] Reconnect attempt failed ({reconnect_failures}/{max_consecutive_failures})")
 
                 except Exception as e:
                     reconnect_failures += 1
                     print(f"[WiFi] Reconnect failed ({reconnect_failures}/{max_consecutive_failures}): {e}")
 
-                    if reconnect_failures >= max_consecutive_failures:
-                        # Too many failures - wait longer before next attempt
-                        print("[WiFi] Max reconnect failures reached - waiting 60s before retry")
-                        reconnect_failures = 0  # Reset to try again later
-                        await asyncio.sleep(60)  # Extended wait
+                # Check if we've hit max failures
+                if reconnect_failures >= max_consecutive_failures:
+                    # Too many failures - wait longer before next attempt
+                    print("[WiFi] Max reconnect failures reached - waiting 60s before retry")
+                    reconnect_failures = 0  # Reset to try again later
+                    await asyncio.sleep(60)  # Extended wait

@@ -1,30 +1,170 @@
-# main.py
-# Entry point for pico-kiln controller
+# main_safe.py
+# Safe wrapper around main.py with comprehensive error catching and logging
 #
-# Multi-threaded architecture with optimized boot sequence:
-# - Core 1: Control thread (temperature reading, PID, SSR control)
-# - Core 2: Web server + WiFi management (this main thread)
+# This version adds:
+# - Immediate LED initialization for visual feedback
+# - File-based error logging that survives crashes
+# - Exception catching at every critical stage
+# - LED blink patterns for different boot stages
 #
-# Boot optimization: Core 1 starts first for immediate temperature monitoring,
-# WiFi connects in parallel with reduced interference via "quiet mode"
+# To use:
+#   1. Backup current main.py: mv main.py main_original.py
+#   2. Copy this to main.py: cp main_safe.py main.py
+#   3. Copy main_original.py content into the "ORIGINAL MAIN CODE" section below
 
-import asyncio
 import time
-import _thread
-import config
-from server import web_server
-from server.wifi_manager import WiFiManager
-from server.status_receiver import get_status_receiver
-from server.data_logger import DataLogger
+from machine import Pin
+import sys
+
+# ============================================================================
+# EARLY INITIALIZATION - Before any other imports
+# ============================================================================
+
+# Initialize LED FIRST - before anything can fail
+LED = Pin("LED", Pin.OUT)
+LED.off()
+
+ERROR_LOG = '/boot_error.log'
+STAGE_LOG = '/boot_stages.log'
+
+def write_log(filepath, message, timestamp=True):
+    """Write to log file with optional timestamp"""
+    try:
+        with open(filepath, 'a') as f:
+            if timestamp:
+                t = time.time()
+                f.write(f"[{t:.3f}] {message}\n")
+            else:
+                f.write(f"{message}\n")
+    except Exception as e:
+        # Logging failed - try LED indication
+        blink_error_pattern()
+
+def clear_logs():
+    """Clear log files at boot start"""
+    try:
+        with open(STAGE_LOG, 'w') as f:
+            f.write("=== BOOT STAGE LOG ===\n")
+            f.write(f"Time: {time.time()}\n\n")
+    except:
+        pass
+
+    try:
+        with open(ERROR_LOG, 'w') as f:
+            f.write("=== BOOT ERROR LOG ===\n")
+            f.write(f"Time: {time.time()}\n\n")
+    except:
+        pass
+
+def blink_stage(stage_num):
+    """Blink LED to indicate boot stage (1-9 blinks)"""
+    for _ in range(stage_num):
+        LED.on()
+        time.sleep(0.15)
+        LED.off()
+        time.sleep(0.15)
+    time.sleep(0.5)
+
+def blink_error_pattern():
+    """Fast continuous blinking indicates error"""
+    for _ in range(20):
+        LED.on()
+        time.sleep(0.05)
+        LED.off()
+        time.sleep(0.05)
+
+def log_exception(stage, exception):
+    """Log exception with full details"""
+    error_msg = f"STAGE {stage} FAILED: {exception}\n"
+    error_msg += f"  Type: {type(exception).__name__}\n"
+    error_msg += f"  Args: {exception.args}\n"
+
+    # Try to get traceback
+    try:
+        import io
+        buf = io.StringIO()
+        sys.print_exception(exception, buf)
+        error_msg += f"  Traceback:\n{buf.getvalue()}\n"
+    except:
+        error_msg += "  (Could not generate traceback)\n"
+
+    write_log(ERROR_LOG, error_msg, timestamp=True)
+    write_log(STAGE_LOG, f"STAGE {stage}: FAILED - {exception}", timestamp=True)
+    print(error_msg)
+
+# ============================================================================
+# START BOOT SEQUENCE
+# ============================================================================
+
+clear_logs()
+write_log(STAGE_LOG, "Boot sequence started", timestamp=True)
+
+# Stage 1: LED test
+write_log(STAGE_LOG, "STAGE 1: LED initialization", timestamp=True)
+blink_stage(1)
+write_log(STAGE_LOG, "STAGE 1: SUCCESS", timestamp=True)
+
+# ============================================================================
+# STAGE 2: Core imports
+# ============================================================================
+try:
+    write_log(STAGE_LOG, "STAGE 2: Core imports (asyncio, _thread, config)", timestamp=True)
+    blink_stage(2)
+
+    import asyncio
+    import _thread
+    import config
+
+    write_log(STAGE_LOG, "STAGE 2: SUCCESS", timestamp=True)
+
+except Exception as e:
+    log_exception(2, e)
+    blink_error_pattern()
+    raise
+
+# ============================================================================
+# STAGE 3: Server imports
+# ============================================================================
+try:
+    write_log(STAGE_LOG, "STAGE 3: Server imports", timestamp=True)
+    blink_stage(3)
+
+    from server import web_server
+    from server.wifi_manager import WiFiManager
+    from server.status_receiver import get_status_receiver
+    from server.data_logger import DataLogger
+
+    write_log(STAGE_LOG, "STAGE 3: SUCCESS", timestamp=True)
+
+except Exception as e:
+    log_exception(3, e)
+    blink_error_pattern()
+    raise
+
+# ============================================================================
+# STAGE 4: Kiln imports
+# ============================================================================
+try:
+    write_log(STAGE_LOG, "STAGE 4: Kiln imports", timestamp=True)
+    blink_stage(4)
+
+    from kiln.control_thread import start_control_thread
+
+    write_log(STAGE_LOG, "STAGE 4: SUCCESS", timestamp=True)
+
+except Exception as e:
+    log_exception(4, e)
+    blink_error_pattern()
+    raise
+
+# ============================================================================
+# STAGE 5: Copy original main() function here
+# ============================================================================
+
+# Import the constants from original main
 from micropython import const
-
-# Import control thread
-from kiln.control_thread import start_control_thread
-
-# Performance: const() declarations for boot sequence timing
-ERROR_LOG_FLUSH_INTERVAL = const(10)  # Seconds between error log flushes
-WIFI_CONNECT_TIMEOUT = const(15)  # WiFi connection timeout in seconds
-
+ERROR_LOG_FLUSH_INTERVAL = const(10)
+WIFI_CONNECT_TIMEOUT = const(15)
 
 def format_timestamp(timestamp):
     """Format timestamp for error log file"""
@@ -33,7 +173,6 @@ def format_timestamp(timestamp):
         return f"{t[0]}-{t[1]:02d}-{t[2]:02d} {t[3]:02d}:{t[4]:02d}:{t[5]:02d}"
     except:
         return f"{int(timestamp)}"
-
 
 async def error_logger_loop(error_log):
     """
@@ -71,7 +210,6 @@ async def error_logger_loop(error_log):
 
         await asyncio.sleep(flush_interval)
 
-
 async def wifi_connect_background(wifi_mgr, timeout=15):
     """
     Connect to WiFi in background with smart timeout
@@ -94,7 +232,6 @@ async def wifi_connect_background(wifi_mgr, timeout=15):
         print(f"[WiFi Background] Monitor will retry with cached AP")
 
     return ip_address
-
 
 async def ntp_sync_background(wifi_mgr):
     """
@@ -124,7 +261,6 @@ async def ntp_sync_background(wifi_mgr):
 
     return success
 
-
 async def lcd_init_background(lcd_manager):
     """
     Initialize LCD hardware in background with retries
@@ -153,7 +289,6 @@ async def lcd_init_background(lcd_manager):
     print("[LCD Background] Initialization failed after all attempts")
     return False
 
-
 async def main():
     """
     Main entry point for multi-threaded kiln controller
@@ -165,8 +300,12 @@ async def main():
     4. Non-critical tasks (LCD, NTP) deferred to background
     """
     print("=" * 50)
-    print("Pico Kiln Controller - Optimized Boot")
+    print("Pico Kiln Controller - Safe Boot Mode")
     print("=" * 50)
+
+    # Mark that we've reached main()
+    write_log(STAGE_LOG, "STAGE 5: Entering main()", timestamp=True)
+    blink_stage(5)
 
     # ========================================================================
     # STAGE 1: Create communication infrastructure
@@ -188,6 +327,8 @@ async def main():
     quiet_mode = QuietMode()
 
     print("[Main] Infrastructure ready")
+    write_log(STAGE_LOG, "STAGE 6: Infrastructure created", timestamp=True)
+    blink_stage(6)
 
     # ========================================================================
     # STAGE 2: Start Core 1 IMMEDIATELY (quiet mode)
@@ -200,6 +341,8 @@ async def main():
         (command_queue, status_queue, config, error_log, ready_flag, quiet_mode)
     )
     print("[Main] Core 1 started (initializing hardware...)")
+    write_log(STAGE_LOG, "STAGE 7: Core 1 started", timestamp=True)
+    blink_stage(7)
 
     # ========================================================================
     # STAGE 3: Start status receiver and WiFi in parallel
@@ -225,9 +368,12 @@ async def main():
 
     if core1_ready:
         print("[Main] Core 1 hardware ready")
+        write_log(STAGE_LOG, "STAGE 8: Core 1 ready", timestamp=True)
+        blink_stage(8)
     else:
         print("[Main] Core 1 not ready after 20s - CRITICAL ERROR")
         print("[Main] System unsafe to operate - check hardware connections")
+        write_log(ERROR_LOG, "CRITICAL: Core 1 timeout", timestamp=True)
         raise Exception("Core 1 initialization timeout")
 
     # ========================================================================
@@ -344,6 +490,12 @@ async def main():
         print("Web interface: Unavailable (no WiFi)")
     print("=" * 50)
 
+    write_log(STAGE_LOG, "STAGE 9: Boot complete - system ready!", timestamp=True)
+    blink_stage(9)
+
+    # Solid LED on = system running
+    LED.on()
+
     # ========================================================================
     # Run all async tasks
     # ========================================================================
@@ -353,17 +505,32 @@ async def main():
 
     await asyncio.gather(*tasks)
 
-
+# ============================================================================
+# ENTRY POINT with full exception handling
+# ============================================================================
 if __name__ == "__main__":
     try:
+        write_log(STAGE_LOG, "Starting asyncio.run(main())", timestamp=True)
         asyncio.run(main())
+
     except KeyboardInterrupt:
+        write_log(STAGE_LOG, "Keyboard interrupt", timestamp=True)
         print("\n[Main] Keyboard interrupt received")
         print("[Main] Shutting down gracefully...")
         print("[Main] Control thread will turn off SSR automatically")
         print("[Main] Shutdown complete")
 
     except Exception as e:
+        write_log(ERROR_LOG, "FATAL ERROR in main:", timestamp=True)
+        log_exception("MAIN", e)
         print(f"[Main] Fatal error: {e}")
         print("[Main] Emergency shutdown - control thread should have turned off SSR")
-        raise
+        print(f"[Main] Check logs: {ERROR_LOG} and {STAGE_LOG}")
+
+        # Fast blink forever to indicate fatal error
+        blink_error_pattern()
+        while True:
+            LED.on()
+            time.sleep(0.1)
+            LED.off()
+            time.sleep(0.1)
