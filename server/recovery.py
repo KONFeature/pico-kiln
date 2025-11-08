@@ -31,14 +31,14 @@ class RecoveryListener:
             command_queue: ThreadSafeQueue for sending commands to control thread
             data_logger: DataLogger instance to set recovery context
             config: Configuration object with recovery settings
-            wifi_manager: WiFiManager instance for NTP sync callback (optional)
+            wifi_manager: WiFiManager instance for time sync checking (optional)
         """
         self.command_queue = command_queue
         self.data_logger = data_logger
         self.config = config
         self.wifi_manager = wifi_manager
         self.recovery_attempted = False
-        self.ntp_retry_registered = False
+        self.had_time_issue = False
         self.status_receiver = None
         self.min_valid_temp = 20.0  # Minimum temp to consider valid (avoid false readings)
 
@@ -49,7 +49,17 @@ class RecoveryListener:
         Args:
             status: Status dictionary from StatusMessage.build()
         """
-        # Only attempt recovery once
+        # If we had a time issue, check if time is now synced and retry
+        if self.recovery_attempted and self.had_time_issue:
+            if self.wifi_manager and self.wifi_manager.time_synced:
+                print("[Recovery] Time now synced, retrying recovery check...")
+                self.recovery_attempted = False  # Reset to retry
+                self.had_time_issue = False
+            else:
+                # Still waiting for time sync
+                return
+
+        # Only attempt recovery once (unless reset by time sync above)
         if self.recovery_attempted:
             return
 
@@ -78,12 +88,12 @@ class RecoveryListener:
         else:
             print(f"[Recovery] No recovery needed: {recovery_info.recovery_reason}")
 
-            # If recovery failed due to time issues, register retry callback for NTP sync
-            if recovery_info.had_time_issue and self.wifi_manager and not self.ntp_retry_registered:
-                print(f"[Recovery] Time sync issue detected - will retry after NTP sync")
-                self.wifi_manager.register_ntp_sync_callback(self._retry_recovery_after_ntp)
-                self.ntp_retry_registered = True
-                # Don't unregister yet - keep listening for temperature updates
+            # If recovery failed due to time issues, keep listening for time sync
+            if recovery_info.had_time_issue and self.wifi_manager:
+                print(f"[Recovery] Time sync issue detected - will retry when time syncs")
+                self.had_time_issue = True
+                # Keep recovery_attempted = True so retry check works on next update
+                # Don't unregister yet - keep listening for time sync
                 return
 
         # Unregister this listener - we're done
@@ -99,23 +109,6 @@ class RecoveryListener:
             status_receiver: StatusReceiver instance
         """
         self.status_receiver = status_receiver
-
-    def _retry_recovery_after_ntp(self):
-        """
-        Retry recovery after NTP sync completes
-
-        This is called as a callback when NTP sync succeeds, allowing
-        recovery to retry with correct timestamps.
-        """
-        print(f"[Recovery] NTP sync completed - retrying recovery...")
-
-        # Get current temperature from latest status
-        # We need to wait for a status update with valid temp
-        # For now, just trigger a new check on next status update
-        self.recovery_attempted = False
-        self.ntp_retry_registered = False
-
-        print(f"[Recovery] Recovery retry will occur on next temperature reading")
 
     def _attempt_recovery(self, recovery_info, current_temp):
         """
