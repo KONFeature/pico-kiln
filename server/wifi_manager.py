@@ -160,15 +160,6 @@ class WiFiManager:
                     print(f"[WiFi] Reconnected! IP: {ip}")
                     self.status_led.on()
 
-                    # Update LCD
-                    try:
-                        from server.lcd_manager import get_lcd_manager
-                        lcd = get_lcd_manager()
-                        if lcd and lcd.enabled:
-                            lcd.set_wifi_status(True, ip)
-                    except Exception as e:
-                        print(f"[WiFi] LCD update failed: {e}")
-
                     # Re-sync time if needed
                     if not self.time_synced:
                         self.sync_time_ntp()
@@ -176,14 +167,5 @@ class WiFiManager:
                     # Connection lost
                     print("[WiFi] Connection lost (auto-reconnecting...)")
                     self.status_led.off()
-
-                    # Update LCD
-                    try:
-                        from server.lcd_manager import get_lcd_manager
-                        lcd = get_lcd_manager()
-                        if lcd and lcd.enabled:
-                            lcd.set_wifi_status(False, error="Reconnecting...")
-                    except Exception as e:
-                        print(f"[WiFi] LCD update failed: {e}")
 
                 was_connected = is_connected

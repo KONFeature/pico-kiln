@@ -65,11 +65,6 @@ async def wifi_connect_background(wifi_mgr, timeout=15):
 
         if ip_address:
             print(f"[WiFi Background] Connected: {ip_address}")
-            # Update LCD if available
-            from server.lcd_manager import get_lcd_manager
-            lcd_manager = get_lcd_manager()
-            if lcd_manager and lcd_manager.enabled:
-                lcd_manager.set_wifi_status(True, ip_address)
         else:
             print(f"[WiFi Background] Connection failed/timeout")
             print(f"[WiFi Background] Monitor will retry with cached AP")
@@ -78,7 +73,6 @@ async def wifi_connect_background(wifi_mgr, timeout=15):
     except Exception as e:
         error_msg = f"WiFi background task error: {e}"
         print(f"[WiFi Background] {error_msg}")
-        log_error_to_file("WiFi", error_msg)
         return None
 
 
@@ -113,7 +107,6 @@ async def ntp_sync_background(wifi_mgr):
     except Exception as e:
         error_msg = f"NTP sync error: {e}"
         print(f"[NTP Background] {error_msg}")
-        log_error_to_file("NTP", error_msg)
         return False
 
 
@@ -149,8 +142,6 @@ async def lcd_init_background(lcd_manager):
             except Exception as e:
                 error_msg = f"LCD init attempt {attempt + 1} error: {e}"
                 print(f"[LCD Background] {error_msg}")
-                if attempt == max_attempts - 1:
-                    log_error_to_file("LCD", f"LCD initialization failed after {max_attempts} attempts")
 
             # Determine retry delay
             if attempt < max_attempts - 1:
@@ -170,7 +161,6 @@ async def lcd_init_background(lcd_manager):
     except Exception as e:
         error_msg = f"LCD background task error: {e}"
         print(f"[LCD Background] {error_msg}")
-        log_error_to_file("LCD", error_msg)
         return False
 
 
@@ -277,7 +267,7 @@ async def main():
 
         # Create LCD manager (reads directly from StatusCache, no listener needed)
         from server.lcd_manager import initialize_lcd_manager
-        lcd_manager = initialize_lcd_manager(config, command_queue, status_receiver)
+        lcd_manager = initialize_lcd_manager(config, status_receiver)
 
         # Register data logger
         data_logger = DataLogger(config.LOGS_DIR, config.LOGGING_INTERVAL)
@@ -357,9 +347,7 @@ async def main():
             lcd_task = asyncio.create_task(lcd_manager.run())
             print("[Main] LCD manager started")
 
-        # Update LCD with WiFi status
-        if lcd_manager and lcd_manager.enabled and ip_address:
-            lcd_manager.set_wifi_status(True, ip_address)
+
 
         # ========================================================================
         # BOOT COMPLETE
