@@ -162,7 +162,27 @@ class KilnController:
 
         self.current_step_index = step_index
         self.step_start_time = elapsed_seconds - time_in_step
-        self.step_start_temp = step_start_temp
+        
+        # For ramp steps, calculate step_start_temp by working backwards from last_logged_temp
+        # This ensures target temp calculation continues smoothly from where it left off
+        current_step = profile.steps[step_index]
+        if current_step['type'] == 'ramp' and last_logged_temp is not None and time_in_step > 0:
+            # Work backwards: step_start_temp = current_temp - (rate * time_in_step)
+            rate = current_rate if current_rate is not None else current_step['desired_rate']
+            hours_in_step = time_in_step / 3600.0
+            temp_change = rate * hours_in_step
+            
+            # Calculate what the start temp must have been
+            target = current_step['target_temp']
+            if target > last_logged_temp:  # Heating ramp
+                self.step_start_temp = last_logged_temp - temp_change
+            else:  # Cooling ramp
+                self.step_start_temp = last_logged_temp + temp_change
+            
+            print(f"[Recovery] Calculated step_start_temp: {self.step_start_temp:.1f}°C (working backwards from {last_logged_temp:.1f}°C)")
+        else:
+            # Hold step or no time elapsed yet
+            self.step_start_temp = step_start_temp
 
         # Restore or initialize rate
         current_step = profile.steps[step_index]
@@ -213,15 +233,16 @@ class KilnController:
             return 0, 0, self.current_temp
 
         cumulative_time = 0
-        current_temp = self.current_temp
+        # Track theoretical temperature progression through profile
+        profile_temp = self.current_temp  # Start from current temp for first step
 
         for i, step in enumerate(self.active_profile.steps):
-            # Estimate step duration
+            # Estimate step duration based on theoretical progression
             if step['type'] == 'hold':
                 step_duration = step['duration']
             elif step['type'] == 'ramp':
                 target = step['target_temp']
-                dtemp = abs(target - current_temp)
+                dtemp = abs(target - profile_temp)
                 # Safe: desired_rate must exist in all profile steps
                 rate = step['desired_rate']
                 step_duration = (dtemp / rate) * 3600 if rate > 0 else 0
@@ -229,17 +250,17 @@ class KilnController:
                 step_duration = 0
 
             if cumulative_time + step_duration >= elapsed_seconds:
-                # We're in this step
+                # We're in this step - profile_temp is where this step started
                 time_in_step = elapsed_seconds - cumulative_time
-                return i, time_in_step, current_temp
+                return i, time_in_step, profile_temp
 
             # Move to next step
             cumulative_time += step_duration
             if step['type'] == 'ramp':
-                current_temp = step['target_temp']
+                profile_temp = step['target_temp']
 
         # Past all steps - return last step
-        return len(self.active_profile.steps) - 1, 0, current_temp
+        return len(self.active_profile.steps) - 1, 0, profile_temp
 
     def stop(self):
         """
