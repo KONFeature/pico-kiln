@@ -49,21 +49,13 @@ class LCD1602:
     LCD_BACKLIGHT = 0x08
     LCD_NOBACKLIGHT = 0x00
 
-    # Pin mapping presets for different PCF8574 modules
+    # Pin mapping for PCF8574 module
     # Format: (Rs, Rw, En, Backlight)
     PINMAP_STANDARD = {
         'Rs': 0b00000001,  # P0
         'Rw': 0b00000010,  # P1
         'En': 0b00000100,  # P2
         'BL': 0b00001000,  # P3
-    }
-
-    PINMAP_ALTERNATE = {
-        'Rs': 0b00000001,  # P0
-        'Rw': 0b00000010,  # P1
-        'En': 0b00000100,  # P2
-        'BL': 0b00001000,  # P3 (inverted logic)
-        'BL_INVERTED': True
     }
 
     def __init__(self, i2c, addr=0x27, cols=16, rows=2, pinmap=None):
@@ -189,16 +181,6 @@ class LCD1602:
         self._send_command(self.LCD_CLEARDISPLAY)
         time.sleep_ms(5)  # Clear needs up to 1.52ms, use 5ms to be safe
 
-    async def clear_async(self):
-        """Clear display (async, non-blocking)"""
-        self._send_command(self.LCD_CLEARDISPLAY)
-        await asyncio.sleep(0.005)  # Clear needs up to 1.52ms, use 5ms to be safe
-
-    def home(self):
-        """Return cursor to home position (blocking)"""
-        self._send_command(self.LCD_RETURNHOME)
-        time.sleep_ms(5)  # Home needs up to 1.52ms, use 5ms to be safe
-    
     def set_cursor(self, col, row):
         """
         Set cursor position
@@ -224,7 +206,7 @@ class LCD1602:
     
     def print(self, text, row=0):
         """
-        Print text on specified row (centered or left-aligned)
+        Print text on specified row (left-aligned)
 
         Args:
             text: Text to display
@@ -238,33 +220,3 @@ class LCD1602:
         text = text + ' ' * (self.cols - len(text))
         self.set_cursor(0, row)
         self.write_string(text)
-    
-    def backlight_on(self):
-        """Turn backlight on"""
-        if self.backlight_inverted:
-            self.backlight = 0x00  # Active low
-        else:
-            self.backlight = self.backlight_bit  # Active high
-        try:
-            self.i2c.writeto(self.addr, bytes([self.backlight]))
-        except OSError:
-            pass
-
-    def backlight_off(self):
-        """Turn backlight off"""
-        if self.backlight_inverted:
-            self.backlight = self.backlight_bit  # Active low (set bit to turn off)
-        else:
-            self.backlight = 0x00  # Active high (clear bit to turn off)
-        try:
-            self.i2c.writeto(self.addr, bytes([self.backlight]))
-        except OSError:
-            pass
-    
-    def display_on(self):
-        """Turn display on"""
-        self._send_command(self.LCD_DISPLAYCONTROL | self.LCD_DISPLAYON | self.LCD_CURSOROFF | self.LCD_BLINKOFF)
-    
-    def display_off(self):
-        """Turn display off"""
-        self._send_command(self.LCD_DISPLAYCONTROL | self.LCD_DISPLAYOFF)

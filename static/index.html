@@ -3,171 +3,142 @@
 <head>
 <title>Pico Kiln</title>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-h1 { color: #333; }
-h2 { color: #555; margin-top: 20px; }
-.status-box { background: white; padding: 15px; margin: 10px 0; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-.recovery-warning { background: #ff6b6b; color: white; padding: 15px; margin: 10px 0; border-radius: 5px; font-weight: bold; }
-.rate-panel { background: white; padding: 15px; margin: 10px 0; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-.rate-good { color: #2ecc71; }
-.rate-adapted { color: #f39c12; }
-.rate-critical { color: #e74c3c; }
-.step-info { background: #3498db; color: white; padding: 10px; border-radius: 5px; display: inline-block; margin: 10px 0; }
-</style>
+<meta name="viewport" content="width=device-width,initial-scale=1">
 </head>
 <body>
-<h1>Pico Kiln Controller</h1>
+<h1>Pico Kiln</h1>
 
-<!-- Recovery Mode Warning -->
-<div id="recovery-warning" class="recovery-warning" style="display: none;">
-<span style="font-size: 1.2em;">⚠ RECOVERY MODE ⚠</span><br>
-Recovering temperature before resuming profile<br>
+<div id="recovery-warning" style="display:none">
+<b>⚠ RECOVERY MODE ⚠</b><br>
 Target: <span id="recovery-target">--</span>°C
 </div>
 
-<!-- Step Progress -->
-<div id="step-info" class="step-info" style="display: none;">
+<div id="step-info" style="display:none">
 Step <span id="step-progress">-/-</span> (<span id="step-type">-</span>)
 </div>
 
-<div class="status-box">
-<h2>SSR: <span id="status">--</span></h2>
-<p>Current: <span id="current_temp">--</span>C | Target: <span id="target_temp">--</span>C | State: <span id="state">--</span></p>
-<p>Program: <span id="program">--</span></p>
+<div>
+<h2>Status</h2>
+<p>SSR: <b id="status">--</b></p>
+<p>Temp: <b id="current_temp">--</b>°C | Target: <b id="target_temp">--</b>°C</p>
+<p>State: <b id="state">--</b></p>
+<p>Profile: <b id="program">--</b></p>
 </div>
 
-<!-- Rate Information Panel (only shown during RUNNING) -->
-<div id="rate-panel" class="rate-panel" style="display: none;">
+<div id="rate-panel" style="display:none">
 <h3>Rate Control</h3>
-<table style="width: 100%; border-collapse: collapse;">
-<tr><td><strong>Desired Rate:</strong></td><td><span id="rate-desired">--</span> °C/h</td></tr>
-<tr><td><strong>Current Rate:</strong></td><td><span id="rate-current" class="rate-good">--</span> °C/h</td></tr>
-<tr><td><strong>Actual Rate:</strong></td><td><span id="rate-actual">--</span> °C/h</td></tr>
-<tr><td><strong>Minimum Rate:</strong></td><td><span id="rate-min">--</span> °C/h</td></tr>
-<tr id="adaptation-row" style="display: none;"><td><strong>Adaptations:</strong></td><td><span id="adaptation-count">0</span></td></tr>
-</table>
+<p>Desired: <b id="rate-desired">--</b>°C/h</p>
+<p>Current: <b id="rate-current">--</b>°C/h</p>
+<p>Actual: <b id="rate-actual">--</b>°C/h</p>
+<p>Min: <b id="rate-min">--</b>°C/h</p>
+<p id="adaptation-row" style="display:none">Adaptations: <b id="adaptation-count">0</b></p>
 </div>
 
 <h2>Profiles</h2>
 {profiles_list}
 
 <h2>Controls</h2>
-<button onclick="location.reload()">Refresh</button>
-<button onclick="stopProgram()">Stop Program</button>
-<button onclick="emergencyShutdown()">Emergency Shutdown</button>
+<button onclick="refresh()">Refresh</button>
+<button onclick="stopProgram()">Stop</button>
+<button onclick="emergencyShutdown()">Emergency Stop</button>
 <br><br>
 <button onclick="location.href='/tuning'">PID Tuning</button>
 
-<hr>
-<p><small>
-<a href="/api/status">API Status</a>
-</small></p>
-
 <script>
-// Injected data from server (single JSON replacement)
-const data = {DATA};
+let autoRefresh = true;
 
-// Populate status fields on page load
-document.getElementById('status').textContent = data.status;
-document.getElementById('current_temp').textContent = data.current_temp.toFixed(1);
-document.getElementById('target_temp').textContent = data.target_temp.toFixed(1);
-document.getElementById('program').textContent = data.program;
-document.getElementById('state').textContent = data.state;
+function refresh() {
+  fetch('/api/status')
+  .then(r => r.json())
+  .then(d => {
+    document.getElementById('status').textContent = d.ssr_output > 0 ? d.ssr_output.toFixed(0) + '%' : 'OFF';
+    document.getElementById('current_temp').textContent = d.current_temp.toFixed(1);
+    document.getElementById('target_temp').textContent = d.target_temp.toFixed(1);
+    document.getElementById('program').textContent = d.profile_name || 'None';
+    document.getElementById('state').textContent = d.state;
 
-// Show recovery warning if in recovery mode
-if (data.is_recovering && data.recovery_target_temp !== null) {
-    document.getElementById('recovery-warning').style.display = 'block';
-    document.getElementById('recovery-target').textContent = data.recovery_target_temp.toFixed(1);
-} else {
-    document.getElementById('recovery-warning').style.display = 'none';
-}
-
-// Show step information if program is running
-if (data.state === 'RUNNING' && data.step_index !== null && data.total_steps !== null) {
-    document.getElementById('step-info').style.display = 'inline-block';
-    document.getElementById('step-progress').textContent = (data.step_index + 1) + '/' + data.total_steps;
-    document.getElementById('step-type').textContent = data.step_name || '-';
-} else {
-    document.getElementById('step-info').style.display = 'none';
-}
-
-// Show rate panel if program is running and step has rate info
-if (data.state === 'RUNNING' && data.step_name === 'ramp' && data.desired_rate > 0) {
-    document.getElementById('rate-panel').style.display = 'block';
-    document.getElementById('rate-desired').textContent = data.desired_rate.toFixed(0);
-    document.getElementById('rate-current').textContent = data.current_rate.toFixed(1);
-    document.getElementById('rate-actual').textContent = data.actual_rate.toFixed(1);
-    document.getElementById('rate-min').textContent = data.min_rate.toFixed(0);
-
-    // Color code the current rate based on adaptation status
-    const currentRateElem = document.getElementById('rate-current');
-    const rateRatio = data.current_rate / data.desired_rate;
-
-    if (rateRatio >= 0.95) {
-        // Good - at or near desired rate
-        currentRateElem.className = 'rate-good';
-    } else if (data.current_rate >= data.min_rate * 1.1) {
-        // Adapted but safe
-        currentRateElem.className = 'rate-adapted';
+    // Recovery warning
+    if (d.is_recovering && d.recovery_target_temp !== null) {
+      document.getElementById('recovery-warning').style.display = 'block';
+      document.getElementById('recovery-target').textContent = d.recovery_target_temp.toFixed(1);
     } else {
-        // Critical - near minimum
-        currentRateElem.className = 'rate-critical';
+      document.getElementById('recovery-warning').style.display = 'none';
     }
 
-    // Show adaptation count if any adaptations occurred
-    if (data.adaptation_count > 0) {
-        document.getElementById('adaptation-row').style.display = 'table-row';
-        document.getElementById('adaptation-count').textContent = data.adaptation_count;
+    // Step info
+    if (d.state === 'RUNNING' && d.step_index !== null && d.total_steps !== null) {
+      document.getElementById('step-info').style.display = 'block';
+      document.getElementById('step-progress').textContent = (d.step_index + 1) + '/' + d.total_steps;
+      document.getElementById('step-type').textContent = d.step_name || '-';
     } else {
+      document.getElementById('step-info').style.display = 'none';
+    }
+
+    // Rate panel
+    if (d.state === 'RUNNING' && d.step_name === 'ramp' && d.desired_rate > 0) {
+      document.getElementById('rate-panel').style.display = 'block';
+      document.getElementById('rate-desired').textContent = d.desired_rate.toFixed(0);
+      document.getElementById('rate-current').textContent = d.current_rate.toFixed(1);
+      document.getElementById('rate-actual').textContent = d.actual_rate.toFixed(1);
+      document.getElementById('rate-min').textContent = d.min_rate.toFixed(0);
+
+      if (d.adaptation_count > 0) {
+        document.getElementById('adaptation-row').style.display = 'block';
+        document.getElementById('adaptation-count').textContent = d.adaptation_count;
+      } else {
         document.getElementById('adaptation-row').style.display = 'none';
+      }
+    } else {
+      document.getElementById('rate-panel').style.display = 'none';
     }
-} else {
-    document.getElementById('rate-panel').style.display = 'none';
+  })
+  .catch(e => console.error('Refresh failed:', e));
 }
 
-function startProfile(profileName) {
-if (confirm('Start: ' + profileName + '?')) {
-fetch('/api/run', {
-method: 'POST',
-headers: {'Content-Type': 'application/json'},
-body: JSON.stringify({profile: profileName})
-})
-.then(r => r.json())
-.then(d => {
-alert(d.success ? 'Started: ' + profileName : 'Error: ' + d.error);
-location.reload();
-})
-.catch(e => alert('Failed: ' + e));
-}
+function startProfile(name) {
+  if (!confirm('Start: ' + name + '?')) return;
+  fetch('/api/run', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({profile: name})
+  })
+  .then(r => r.json())
+  .then(d => {
+    alert(d.success ? 'Started' : 'Error: ' + d.error);
+    refresh();
+  })
+  .catch(e => alert('Failed: ' + e));
 }
 
 function stopProgram() {
-if (confirm('Stop current program?')) {
-fetch('/api/stop', {method: 'POST'})
-.then(r => r.json())
-.then(d => {
-alert(d.success ? 'Stopped' : 'Error: ' + d.error);
-location.reload();
-})
-.catch(e => alert('Failed: ' + e));
-}
+  if (!confirm('Stop program?')) return;
+  fetch('/api/stop', {method: 'POST'})
+  .then(r => r.json())
+  .then(d => {
+    alert(d.success ? 'Stopped' : 'Error: ' + d.error);
+    refresh();
+  })
+  .catch(e => alert('Failed: ' + e));
 }
 
 function emergencyShutdown() {
-if (confirm('EMERGENCY SHUTDOWN?')) {
-fetch('/api/shutdown', {method: 'POST'})
-.then(r => r.json())
-.then(d => {
-alert(d.message);
-location.reload();
-})
-.catch(e => alert('Failed: ' + e));
-}
+  if (!confirm('EMERGENCY SHUTDOWN?')) return;
+  fetch('/api/shutdown', {method: 'POST'})
+  .then(r => r.json())
+  .then(d => {
+    alert(d.message);
+    refresh();
+  })
+  .catch(e => alert('Failed: ' + e));
 }
 
-setTimeout(() => location.reload(), 5000);
+// Initial load
+refresh();
+
+// Auto-refresh every 5 seconds
+setInterval(function() {
+  if (autoRefresh) refresh();
+}, 5000);
 </script>
 </body>
 </html>

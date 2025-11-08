@@ -48,66 +48,8 @@ def format_timestamp(timestamp):
         return f"{int(timestamp)}"
 
 
-def log_error_to_file(source, message):
-    """
-    Log error directly to errors.log file
-
-    Used for critical errors that occur outside the error_log queue system
-    (e.g., main thread initialization failures, fatal exceptions)
-    """
-    try:
-        timestamp_str = format_timestamp(time.time())
-        with open('/errors.log', 'a') as f:
-            f.write(f"[{timestamp_str}] [{source}] {message}\n")
-    except Exception as e:
-        print(f"[Error Logger] Failed to write error to file: {e}")
-
-
-async def error_logger_loop(error_log):
-    """
-    Async loop that periodically flushes errors from queue to log file
-
-    Runs on Core 2 to avoid blocking Core 1's control loop with I/O operations.
-    Includes log rotation to prevent disk space exhaustion.
-    Also logs periodic memory stats for runtime debugging.
-    """
-    print("[Error Logger] Starting error logger loop")
-    error_file = '/errors.log'
-    flush_interval = LOG_FLUSH_INTERVAL
-    memory_log_counter = 0
-    memory_log_frequency = 6  # Log memory every 6 flushes (every 60s if flush_interval=10s)
-
-    while True:
-        try:
-            errors, dropped_count = error_log.get_errors()
-
-            if errors or dropped_count > 0:
-                try:
-                    with open(error_file, 'a') as f:
-                        if dropped_count > 0:
-                            timestamp_str = format_timestamp(time.time())
-                            f.write(f"[{timestamp_str}] [ErrorLog] WARNING: {dropped_count} errors dropped due to full queue\n")
-
-                        for error in errors:
-                            timestamp_str = format_timestamp(error['timestamp'])
-                            f.write(f"[{timestamp_str}] [{error['source']}] {error['message']}\n")
-
-                    if errors:
-                        print(f"[Error Logger] Flushed {len(errors)} errors to {error_file}")
-
-                except Exception as e:
-                    print(f"[Error Logger] Failed to write error log: {e}")
-
-            # Periodic memory logging
-            memory_log_counter += 1
-            if memory_log_counter >= memory_log_frequency:
-                print_memory_info("Runtime")
-                memory_log_counter = 0
-
-        except Exception as e:
-            print(f"[Error Logger] Error in logger loop: {e}")
-
-        await asyncio.sleep(flush_interval)
+# Error logging removed to reduce Core 2 load and simplify codebase
+# Errors are printed to console only
 
 
 async def wifi_connect_background(wifi_mgr, timeout=15):
@@ -257,16 +199,14 @@ async def main():
         # STAGE 1: Create communication infrastructure
         # ========================================================================
         print("[Main] Stage 1: Creating communication infrastructure...")
-        from kiln.comms import ThreadSafeQueue, ErrorLog, ReadyFlag, QuietMode
+        from kiln.comms import ThreadSafeQueue, ReadyFlag, QuietMode
 
-        # Command queue: Core 2 -> Core 1
+        # Command queue: Core 2 -> Core 1 (commands are infrequent)
         command_queue = ThreadSafeQueue(maxsize=10)
 
-        # Status queue: Core 1 -> Core 2
-        status_queue = ThreadSafeQueue(maxsize=100)
-
-        # Error log: Core 1 -> Core 2
-        error_log = ErrorLog(max_queue_size=50)
+        # Status queue: Core 1 -> Core 2 (reduced from 100 to 20 to save ~40KB RAM)
+        # At 2s update interval, this provides 40s buffer (more than enough)
+        status_queue = ThreadSafeQueue(maxsize=20)
 
         # Synchronization primitives
         ready_flag = ReadyFlag()
@@ -283,7 +223,7 @@ async def main():
 
         _thread.start_new_thread(
             start_control_thread,
-            (command_queue, status_queue, config, error_log, ready_flag, quiet_mode)
+            (command_queue, status_queue, config, ready_flag, quiet_mode)
         )
         print("[Main] Core 1 started (initializing hardware...)")
 
@@ -389,6 +329,13 @@ async def main():
         profile_cache = get_profile_cache()
         profile_cache.preload(config.PROFILES_DIR)
         print("[Main] Profile cache preloaded")
+
+        # Pre-render index page with profile list (avoids per-request rendering)
+        profile_names = profile_cache.list_profiles()
+        profiles_html = html_cache.render_profiles_list(profile_names)
+        html_cache.prerender('index', {'{profiles_list}': profiles_html})
+        print(f"[Main] Index page pre-rendered with {len(profile_names)} profiles")
+
         print_memory_info("Stage 8")
 
         # ========================================================================
@@ -404,9 +351,9 @@ async def main():
         wifi_monitor_task = asyncio.create_task(wifi_mgr.monitor())
         print("[Main] WiFi monitor started")
 
-        # Error logger (with rotation)
-        error_logger_task = asyncio.create_task(error_logger_loop(error_log))
-        print("[Main] Error logger started")
+        # Error logger DISABLED to reduce Core 2 load (errors kept in memory only)
+        # error_logger_task = asyncio.create_task(error_logger_loop(error_log))
+        # print("[Main] Error logger started")
 
         # LCD manager
         lcd_task = None
@@ -425,29 +372,26 @@ async def main():
         print("System Ready!")
         print("Core 1: Control thread (temp, PID, SSR)")
         lcd_status = " + LCD" if (lcd_manager and lcd_manager.enabled) else ""
-        print(f"Core 2: Web + WiFi + Status + Data + Errors + Stdout{lcd_status}")
+        print(f"Core 2: Web + WiFi + Status + Data{lcd_status}")
         if ip_address:
             print(f"Web interface: http://{ip_address}")
         else:
             print("Web interface: Unavailable (no WiFi)")
-        print("Logs: /errors.log, /stdout.log (auto-rotate at 100KB)")
         print_memory_info("Boot Complete")
         print("=" * 50)
 
         # ========================================================================
         # Run all async tasks
         # ========================================================================
-        tasks = [receiver_task, server_task, wifi_monitor_task, error_logger_task]
+        tasks = [receiver_task, server_task, wifi_monitor_task]
         if lcd_task:
             tasks.append(lcd_task)
 
         await asyncio.gather(*tasks)
 
     except Exception as e:
-        # Log main thread errors to errors.log
-        error_msg = f"Main thread error: {e}"
-        print(f"[Main] {error_msg}")
-        log_error_to_file("Main", error_msg)
+        # Print main thread errors to console only
+        print(f"[Main] Main thread error: {e}")
         raise
 
 
@@ -458,12 +402,9 @@ if __name__ == "__main__":
         print("\n[Main] Keyboard interrupt received")
         print("[Main] Shutting down gracefully...")
         print("[Main] Control thread will turn off SSR automatically")
-        log_error_to_file("Main", "Keyboard interrupt - graceful shutdown")
         print("[Main] Shutdown complete")
 
     except Exception as e:
-        error_msg = f"Fatal error: {e}"
-        print(f"[Main] {error_msg}")
+        print(f"[Main] Fatal error: {e}")
         print("[Main] Emergency shutdown - control thread should have turned off SSR")
-        log_error_to_file("Main", error_msg)
         raise

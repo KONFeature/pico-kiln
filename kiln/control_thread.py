@@ -19,7 +19,7 @@ from kiln.tuner import ZieglerNicholsTuner, TuningStage
 from micropython import const
 
 # Performance: const() declarations for hot path time intervals
-STATUS_UPDATE_INTERVAL = const(2)  # Status updates every 2 seconds (integer for const)
+STATUS_UPDATE_INTERVAL = const(5)  # Status updates every 5 seconds (reduced from 2s to minimize Core 2 load)
 SSR_UPDATE_INTERVAL = 0.1  # 100ms between SSR state updates (10 Hz)
 
 class ControlThread:
@@ -30,7 +30,7 @@ class ControlThread:
     All hardware access happens exclusively in this thread to avoid race conditions.
     """
 
-    def __init__(self, command_queue, status_queue, config, error_log=None, ready_flag=None, quiet_mode=None):
+    def __init__(self, command_queue, status_queue, config, ready_flag=None, quiet_mode=None):
         """
         Initialize control thread
 
@@ -38,14 +38,12 @@ class ControlThread:
             command_queue: ThreadSafeQueue for receiving commands from Core 2
             status_queue: ThreadSafeQueue for sending status updates to Core 2
             config: Configuration object with hardware and control parameters
-            error_log: ErrorLog instance for cross-core error logging (optional)
             ready_flag: ReadyFlag for signaling Core 2 when hardware is ready (optional)
             quiet_mode: QuietMode for suppressing status updates during boot (optional)
         """
         self.command_queue = command_queue
         self.status_queue = status_queue
         self.config = config
-        self.error_log = error_log
         self.ready_flag = ready_flag
         self.quiet_mode = quiet_mode
         self.running = True
@@ -110,7 +108,7 @@ class ControlThread:
 
         # Initialize temperature sensor
         self.temp_sensor = TemperatureSensor(
-            spi, cs_pin, thermocouple_type=self.config.THERMOCOUPLE_TYPE, offset=self.config.THERMOCOUPLE_OFFSET, error_log=self.error_log
+            spi, cs_pin, thermocouple_type=self.config.THERMOCOUPLE_TYPE, offset=self.config.THERMOCOUPLE_OFFSET
         )
 
         # Initialize SSR controller
@@ -118,8 +116,7 @@ class ControlThread:
         self.ssr_controller = SSRController(
             self.ssr_pin,
             cycle_time=self.config.SSR_CYCLE_TIME,
-            stagger_delay=stagger_delay,
-            error_log=self.error_log
+            stagger_delay=stagger_delay
         )
 
         # Get base PID gains and thermal parameters
@@ -619,7 +616,7 @@ class ControlThread:
         self.running = False
 
 
-def start_control_thread(command_queue, status_queue, config, error_log=None, ready_flag=None, quiet_mode=None):
+def start_control_thread(command_queue, status_queue, config, ready_flag=None, quiet_mode=None):
     """
     Thread entry point - starts the control loop
 
@@ -630,9 +627,8 @@ def start_control_thread(command_queue, status_queue, config, error_log=None, re
         command_queue: ThreadSafeQueue for receiving commands
         status_queue: ThreadSafeQueue for sending status updates
         config: Configuration object
-        error_log: ErrorLog instance for cross-core error logging (optional)
         ready_flag: ReadyFlag for signaling Core 2 when hardware is ready (optional)
         quiet_mode: QuietMode for suppressing status updates during boot (optional)
     """
-    control = ControlThread(command_queue, status_queue, config, error_log, ready_flag, quiet_mode)
+    control = ControlThread(command_queue, status_queue, config, ready_flag, quiet_mode)
     control.run()

@@ -207,14 +207,40 @@ class LCDManager:
             self._schedule_render()
 
     def _schedule_render(self):
-        """Schedule a render task with exception handling (fire-and-forget)"""
+        """
+        Schedule a render task with exception handling (fire-and-forget)
+
+        OPTIMIZED: Includes rate limiting and task deduplication to prevent
+        I2C bus saturation and memory accumulation from rapid button presses.
+        """
+        import time
+        import gc
+
+        # Rate limiting: Minimum 500ms between renders to prevent I2C saturation
+        current_time = time.ticks_ms()
+        if hasattr(self, '_last_render_time'):
+            elapsed = time.ticks_diff(current_time, self._last_render_time)
+            if elapsed < 500:  # 500ms minimum interval
+                return  # Skip render - too soon
+
+        # Task deduplication: Don't create new task if one is already running
+        if hasattr(self, '_pending_render_task'):
+            if self._pending_render_task and not self._pending_render_task.done():
+                return  # Skip render - task already in progress
+
+        # Update last render time
+        self._last_render_time = current_time
+
         async def _render_with_error_handling():
             try:
+                # Force GC before blocking I2C operations to avoid timing disruption
+                gc.collect()
                 await self._render_current_screen()
             except Exception as e:
                 print(f"[LCD] Render task failed: {e}")
 
-        asyncio.create_task(_render_with_error_handling())
+        # Create and track the render task
+        self._pending_render_task = asyncio.create_task(_render_with_error_handling())
 
     async def _render_current_screen(self):
         """Render the current screen (async)"""

@@ -65,6 +65,65 @@ class HTMLCache:
 
         return loaded
 
+    def render_profiles_list(self, profile_names):
+        """
+        Render profiles list HTML for index page
+
+        Args:
+            profile_names: List of profile names
+
+        Returns:
+            HTML string for profiles list
+        """
+        if not profile_names:
+            return '<ul><li>No profiles found</li></ul>'
+
+        parts = ['<ul>']
+        for name in profile_names:
+            parts.append(f'<li>{name} <button onclick="startProfile(\'{name}\')">Start</button></li>')
+        parts.append('</ul>')
+
+        return ''.join(parts)
+
+    def render_template(self, key, replacements):
+        """
+        Render cached template with replacements
+
+        Args:
+            key: Cache key (e.g., 'index')
+            replacements: Dict of {placeholder: value} to replace
+
+        Returns:
+            Rendered HTML string, or None if key not found
+        """
+        template = self._cache.get(key)
+        if not template:
+            return None
+
+        html = template
+        for placeholder, value in replacements.items():
+            html = html.replace(placeholder, value)
+
+        return html
+
+    def prerender(self, key, replacements):
+        """
+        Pre-render a template and cache the result
+
+        Args:
+            key: Cache key for template
+            replacements: Dict of {placeholder: value} to replace
+
+        Returns:
+            True if successful, False otherwise
+        """
+        rendered = self.render_template(key, replacements)
+        if rendered:
+            self._cache[key] = rendered
+            print(f"[HTMLCache] Pre-rendered '{key}' with {len(replacements)} replacements")
+            return True
+        return False
+
     def get(self, key):
         """
         Get cached HTML content

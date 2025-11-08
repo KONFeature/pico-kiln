@@ -3,37 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <title>PID Tuning</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-.hidden{display:none}
-body{font-family:Arial,sans-serif;margin:20px;max-width:800px}
-.mode-card{border:2px solid #ccc;padding:10px;margin:5px 0;cursor:pointer}
-.mode-card.selected{border-color:#007bff;background:#e7f3ff}
-.step{display:inline-block;width:40px;height:25px;background:#ddd;margin:2px;text-align:center;line-height:25px;font-size:11px}
-.step.active{background:#2196f3;color:white}
-.step.complete{background:#4caf50;color:white}
-.status-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
-.status-item{background:#f5f5f5;padding:8px}
-</style>
+<meta name="viewport" content="width=device-width,initial-scale=1">
 </head>
 <body>
 <h1>PID Auto-Tuning</h1>
 <p><button onclick="location.href='/'">Back</button></p>
 
-<h2>Select Tuning Mode</h2>
+<h2>Select Mode</h2>
 <div id="modeSelector">
-<div class="mode-card" onclick="selectMode('SAFE')" id="modeSAFE">
-<b>SAFE</b> (30-45 min, 100°C, 30% power) - First-time safety verification
-</div>
-<div class="mode-card selected" onclick="selectMode('STANDARD')" id="modeSTANDARD">
-<b>STANDARD</b> (1-2 hours, 150°C, 25/50/75% steps) - Normal tuning
-</div>
-<div class="mode-card" onclick="selectMode('THOROUGH')" id="modeTHOROUGH">
-<b>THOROUGH</b> (3-4 hours, 200°C, 20/40/60/80% steps) - Comprehensive
-</div>
-<div class="mode-card" onclick="selectMode('HIGH_TEMP')" id="modeHIGH_TEMP">
-<b>HIGH_TEMP</b> (3-4 hours, 500°C, fast heatup for high thermal mass) - High-temp characterization
-</div>
+<label><input type="radio" name="mode" value="SAFE" onclick="selectMode('SAFE')"> SAFE (30-45 min, 100°C)</label><br>
+<label><input type="radio" name="mode" value="STANDARD" onclick="selectMode('STANDARD')" checked> STANDARD (1-2 hrs, 150°C)</label><br>
+<label><input type="radio" name="mode" value="THOROUGH" onclick="selectMode('THOROUGH')"> THOROUGH (3-4 hrs, 200°C)</label><br>
+<label><input type="radio" name="mode" value="HIGH_TEMP" onclick="selectMode('HIGH_TEMP')"> HIGH_TEMP (3-4 hrs, 500°C)</label>
 </div>
 
 <p>Max Temp Override (°C): <input type="number" id="maxTemp" size="5" min="50" max="500"></p>
@@ -47,33 +28,33 @@ body{font-family:Arial,sans-serif;margin:20px;max-width:800px}
 
 <div id="controlButtons">
 <button id="startBtn" onclick="startTuning()">Start Tuning</button>
-<button class="hidden" id="stopBtn" onclick="stopTuning()">Stop Tuning</button>
+<button id="stopBtn" onclick="stopTuning()" style="display:none">Stop Tuning</button>
 </div>
 
 <h2>Status</h2>
-<div id="progressSection" class="hidden">
+<div id="progressSection" style="display:none">
 <p><b>Mode:</b> <span id="tuningMode">--</span> | <b>Step:</b> <span id="stepIndicator">--</span></p>
-<div id="stepProgress"></div>
+<p id="stepProgress"></p>
 <p>Progress: <span id="progressPercent">0</span>%</p>
 </div>
 
-<div class="status-grid">
-<div class="status-item"><small>Current Temp</small><br><b id="currentTemp">--</b></div>
-<div class="status-item"><small>Max Temp</small><br><b id="maxTempDisplay">--</b></div>
-<div class="status-item"><small>SSR Output</small><br><b id="ssrOutput">--</b></div>
-<div class="status-item"><small>Elapsed</small><br><b id="elapsedTime">--</b></div>
-</div>
+<table>
+<tr><td>Current Temp:</td><td><b id="currentTemp">--</b></td></tr>
+<tr><td>Max Temp:</td><td><b id="maxTempDisplay">--</b></td></tr>
+<tr><td>SSR Output:</td><td><b id="ssrOutput">--</b></td></tr>
+<tr><td>Elapsed:</td><td><b id="elapsedTime">--</b></td></tr>
+</table>
 
-<div id="stepDetails" class="hidden">
+<div id="stepDetails" style="display:none">
 <p><b>Step:</b> <span id="stepName">--</span> | <b>Time:</b> <span id="stepTime">--</span></p>
 <p><b>Plateau:</b> <span id="plateauStatus">--</span></p>
 </div>
 
-<div id="errorDisplay" class="hidden">
-<p style="color:red"><b>Error:</b> <span id="errorMessage"></span></p>
+<div id="errorDisplay" style="display:none;color:red">
+<p><b>Error:</b> <span id="errorMessage"></span></p>
 </div>
-<div id="completeDisplay" class="hidden">
-<p style="color:green"><b>Complete!</b> Data saved to CSV. Use analyze_tuning.py to calculate PID.</p>
+<div id="completeDisplay" style="display:none;color:green">
+<p><b>Complete!</b> Data saved to CSV. Use analyze_tuning.py to calculate PID.</p>
 </div>
 
 <script>
@@ -81,192 +62,174 @@ let pollingInterval = null;
 let selectedMode = 'STANDARD';
 
 function selectMode(mode) {
-selectedMode = mode;
-document.querySelectorAll('.mode-card').forEach(card => {
-card.classList.remove('selected');
-});
-document.getElementById('mode' + mode).classList.add('selected');
+  selectedMode = mode;
 }
 
 function startTuning() {
-const maxTempInput = document.getElementById('maxTemp').value;
-const maxTemp = maxTempInput ? parseFloat(maxTempInput) : null;
+  const maxTempInput = document.getElementById('maxTemp').value;
+  const maxTemp = maxTempInput ? parseFloat(maxTempInput) : null;
 
-if (maxTemp !== null && (isNaN(maxTemp) || maxTemp < 50 || maxTemp > 500)) {
-alert('Max temperature must be between 50-500°C or left blank');
-return;
-}
+  if (maxTemp !== null && (isNaN(maxTemp) || maxTemp < 50 || maxTemp > 500)) {
+    alert('Max temperature must be between 50-500°C or left blank');
+    return;
+  }
 
-const duration = {'SAFE': '30-45 min', 'STANDARD': '1-2 hours', 'THOROUGH': '3-4 hours', 'HIGH_TEMP': '3-4 hours'}[selectedMode];
-if (!confirm(`Start ${selectedMode} tuning?\n\nDuration: ${duration}\nKiln must be cool.`)) return;
+  const duration = {'SAFE': '30-45 min', 'STANDARD': '1-2 hours', 'THOROUGH': '3-4 hours', 'HIGH_TEMP': '3-4 hours'}[selectedMode];
+  if (!confirm('Start ' + selectedMode + ' tuning?\\n\\nDuration: ' + duration + '\\nKiln must be cool.')) return;
 
-setTuningActive(true);
-document.getElementById('completeDisplay').classList.add('hidden');
-document.getElementById('errorDisplay').classList.add('hidden');
-document.getElementById('progressSection').classList.remove('hidden');
+  setTuningActive(true);
+  document.getElementById('completeDisplay').style.display = 'none';
+  document.getElementById('errorDisplay').style.display = 'none';
+  document.getElementById('progressSection').style.display = 'block';
 
-fetch('/api/tuning/start', {
-method: 'POST',
-headers: {'Content-Type': 'application/json'},
-body: JSON.stringify({mode: selectedMode, max_temp: maxTemp})
-})
-.then(r => r.json())
-.then(d => {
-if (d.success) {
-startPolling();
-} else {
-alert('Error: ' + d.error);
-setTuningActive(false);
-}
-})
-.catch(e => {
-alert('Failed: ' + e);
-setTuningActive(false);
-});
+  fetch('/api/tuning/start', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mode: selectedMode, max_temp: maxTemp})
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.success) {
+      startPolling();
+    } else {
+      alert('Error: ' + d.error);
+      setTuningActive(false);
+    }
+  })
+  .catch(e => {
+    alert('Failed: ' + e);
+    setTuningActive(false);
+  });
 }
 
 function stopTuning() {
-if (!confirm('Stop tuning? Data will be lost.')) return;
-fetch('/api/tuning/stop', {method: 'POST'})
-.then(r => r.json())
-.then(d => {
-stopPolling();
-setTuningActive(false);
-})
-.catch(e => alert('Failed: ' + e));
+  if (!confirm('Stop tuning? Data will be lost.')) return;
+  fetch('/api/tuning/stop', {method: 'POST'})
+  .then(r => r.json())
+  .then(d => {
+    stopPolling();
+    setTuningActive(false);
+  })
+  .catch(e => alert('Failed: ' + e));
 }
 
 function startPolling() {
-pollingInterval = setInterval(updateStatus, 2000);
-updateStatus();
+  pollingInterval = setInterval(updateStatus, 2000);
+  updateStatus();
 }
 
 function stopPolling() {
-if (pollingInterval) {
-clearInterval(pollingInterval);
-pollingInterval = null;
-}
+  if (pollingInterval) {
+    clearInterval(pollingInterval);
+    pollingInterval = null;
+  }
 }
 
 function setTuningActive(active) {
-document.getElementById('startBtn').classList.toggle('hidden', active);
-document.getElementById('startBtn').disabled = active;
-document.getElementById('stopBtn').classList.toggle('hidden', !active);
-document.getElementById('maxTemp').disabled = active;
-document.querySelectorAll('.mode-card').forEach(card => card.style.pointerEvents = active ? 'none' : 'auto');
-}
-
-function buildStepIndicator(tuning) {
-const container = document.getElementById('stepProgress');
-container.innerHTML = '';
-const currentIndex = tuning.stage === 'cooling' ? tuning.total_steps : tuning.step_index;
-
-for (let i = 0; i < tuning.total_steps; i++) {
-const step = document.createElement('span');
-step.className = 'step';
-step.textContent = i + 1;
-if (i < currentIndex) step.classList.add('complete');
-else if (i === currentIndex) step.classList.add('active');
-container.appendChild(step);
-}
-
-// Add cooling step
-const coolStep = document.createElement('span');
-coolStep.className = 'step';
-coolStep.textContent = 'Cool';
-if (tuning.stage === 'cooling') coolStep.classList.add('active');
-else if (tuning.stage === 'complete') coolStep.classList.add('complete');
-container.appendChild(coolStep);
+  document.getElementById('startBtn').style.display = active ? 'none' : 'inline';
+  document.getElementById('startBtn').disabled = active;
+  document.getElementById('stopBtn').style.display = active ? 'inline' : 'none';
+  document.getElementById('maxTemp').disabled = active;
+  document.querySelectorAll('input[name="mode"]').forEach(function(input) {
+    input.disabled = active;
+  });
 }
 
 function updateStatus() {
-fetch('/api/tuning/status')
-.then(r => r.json())
-.then(d => {
-const isTuning = d.state === 'TUNING';
+  fetch('/api/tuning/status')
+  .then(r => r.json())
+  .then(d => {
+    const isTuning = d.state === 'TUNING';
+    setTuningActive(isTuning);
 
-// Update button states based on actual tuning state
-setTuningActive(isTuning);
+    if (!isTuning) {
+      stopPolling();
+      return;
+    }
 
-if (!isTuning) {
-stopPolling();
-return;
-}
+    const t = d.tuning;
+    if (!t) {
+      console.error('State is TUNING but tuning data is missing');
+      document.getElementById('progressSection').innerHTML = '<div style="color:red;padding:20px">Error: Tuning data unavailable. Please stop and restart tuning.</div>';
+      return;
+    }
 
-const t = d.tuning;
+    document.getElementById('progressSection').style.display = 'block';
+    document.getElementById('tuningMode').textContent = t.mode;
+    document.getElementById('stepIndicator').textContent = (t.step_index + 1) + '/' + (t.total_steps + 1);
 
-// Defensive check: if tuning data is missing, something went wrong
-if (!t) {
-console.error('State is TUNING but tuning data is missing - possible backend error');
-document.getElementById('progressSection').innerHTML = '<div style="color: red; padding: 20px;">Error: Tuning data unavailable. Please stop and restart tuning.</div>';
-return;
-}
+    // Build step progress
+    const container = document.getElementById('stepProgress');
+    container.innerHTML = '';
+    const currentIndex = t.stage === 'cooling' ? t.total_steps : t.step_index;
 
-// Show progress section
-document.getElementById('progressSection').classList.remove('hidden');
+    for (let i = 0; i < t.total_steps; i++) {
+      const step = document.createElement('span');
+      step.textContent = (i + 1) + ' ';
+      if (i < currentIndex) step.innerHTML = '<b>' + (i + 1) + '</b> ';
+      else if (i === currentIndex) step.innerHTML = '<u>' + (i + 1) + '</u> ';
+      container.appendChild(step);
+    }
 
-// Update mode and step
-document.getElementById('tuningMode').textContent = t.mode;
-document.getElementById('stepIndicator').textContent = `${t.step_index + 1}/${t.total_steps + 1}`;
+    const coolStep = document.createElement('span');
+    if (t.stage === 'cooling') coolStep.innerHTML = '<u>Cool</u>';
+    else if (t.stage === 'complete') coolStep.innerHTML = '<b>Cool</b>';
+    else coolStep.textContent = 'Cool';
+    container.appendChild(coolStep);
 
-// Build step progress indicator
-buildStepIndicator(t);
+    // Progress percentage
+    let progress = 0;
+    if (t.stage === 'cooling') {
+      progress = 90;
+    } else if (t.total_steps > 0) {
+      const stepProgress = (t.step_index / t.total_steps) * 90;
+      const withinStepProgress = t.step_duration ? (t.step_elapsed / t.step_duration) * (90 / t.total_steps) : 0;
+      progress = stepProgress + withinStepProgress;
+    }
+    document.getElementById('progressPercent').textContent = Math.min(Math.round(progress), 100);
 
-// Calculate progress percentage
-let progress = 0;
-if (t.stage === 'cooling') {
-progress = 90;
-} else if (t.total_steps > 0) {
-const stepProgress = (t.step_index / t.total_steps) * 90;
-const withinStepProgress = t.step_duration ? (t.step_elapsed / t.step_duration) * (90 / t.total_steps) : 0;
-progress = stepProgress + withinStepProgress;
-}
-document.getElementById('progressPercent').textContent = Math.min(Math.round(progress), 100);
+    // Status grid
+    document.getElementById('currentTemp').textContent = d.current_temp.toFixed(1) + '°C';
+    document.getElementById('maxTempDisplay').textContent = t.max_temp + '°C';
+    document.getElementById('ssrOutput').textContent = d.ssr_output.toFixed(0) + '%';
+    document.getElementById('elapsedTime').textContent = formatTime(t.elapsed);
 
-// Update status grid
-document.getElementById('currentTemp').textContent = d.current_temp.toFixed(1) + '°C';
-document.getElementById('maxTempDisplay').textContent = t.max_temp + '°C';
-document.getElementById('ssrOutput').textContent = d.ssr_output.toFixed(0) + '%';
-document.getElementById('elapsedTime').textContent = formatTime(t.elapsed);
+    // Step details
+    if (t.stage === 'heating') {
+      document.getElementById('stepDetails').style.display = 'block';
+      document.getElementById('stepName').textContent = t.step_name;
+      document.getElementById('stepTime').textContent = formatTime(t.step_elapsed) + ' / ' + formatTime(t.step_duration);
 
-// Update step details
-if (t.stage === 'heating') {
-document.getElementById('stepDetails').classList.remove('hidden');
-document.getElementById('stepName').textContent = t.step_name;
-document.getElementById('stepTime').textContent =
-`${formatTime(t.step_elapsed)} / ${formatTime(t.step_duration)}`;
+      if (t.plateau) {
+        document.getElementById('plateauStatus').textContent = 'Detecting (' + formatTime(t.plateau.elapsed) + ' / ' + formatTime(t.plateau.required) + ')';
+      } else {
+        document.getElementById('plateauStatus').textContent = 'Monitoring';
+      }
+    } else {
+      document.getElementById('stepDetails').style.display = 'none';
+    }
 
-if (t.plateau) {
-document.getElementById('plateauStatus').textContent =
-`Detecting (${formatTime(t.plateau.elapsed)} / ${formatTime(t.plateau.required)})`;
-} else {
-document.getElementById('plateauStatus').textContent = 'Monitoring';
-}
-} else {
-document.getElementById('stepDetails').classList.add('hidden');
-}
-
-// Check for completion or error
-if (t.stage === 'complete') {
-stopPolling();
-document.getElementById('completeDisplay').classList.remove('hidden');
-document.getElementById('progressSection').classList.add('hidden');
-setTuningActive(false);
-} else if (t.stage === 'error') {
-stopPolling();
-document.getElementById('errorMessage').textContent = t.error;
-document.getElementById('errorDisplay').classList.remove('hidden');
-document.getElementById('progressSection').classList.add('hidden');
-setTuningActive(false);
-}
-})
-.catch(e => console.error('Status error:', e));
+    // Completion/error
+    if (t.stage === 'complete') {
+      stopPolling();
+      document.getElementById('completeDisplay').style.display = 'block';
+      document.getElementById('progressSection').style.display = 'none';
+      setTuningActive(false);
+    } else if (t.stage === 'error') {
+      stopPolling();
+      document.getElementById('errorMessage').textContent = t.error;
+      document.getElementById('errorDisplay').style.display = 'block';
+      document.getElementById('progressSection').style.display = 'none';
+      setTuningActive(false);
+    }
+  })
+  .catch(e => console.error('Status error:', e));
 }
 
 function formatTime(seconds) {
-const m = Math.floor(seconds / 60);
-const s = Math.floor(seconds % 60);
-return m + ':' + (s < 10 ? '0' : '') + s;
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return m + ':' + (s < 10 ? '0' : '') + s;
 }
 
 // Check status on page load

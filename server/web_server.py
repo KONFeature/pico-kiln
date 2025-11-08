@@ -258,116 +258,17 @@ def handle_tuning_page(conn):
 # === Static File Handlers ===
 
 async def handle_index(conn):
-    """Serve index.html with current state"""
-    try:
-        # MEMORY OPTIMIZED: Force garbage collection before building large response
-        gc.collect()
+    """Serve pre-rendered index.html (profiles list already included)"""
+    # PERFORMANCE: Use pre-rendered HTML from cache (no JSON building, no replacements)
+    from server.html_cache import get_html_cache
+    html = get_html_cache().get('index')
 
-        # PERFORMANCE: Use cached HTML instead of blocking file I/O
-        from server.html_cache import get_html_cache
-        html = get_html_cache().get('index')
-
-        if not html:
-            # Fallback: cache miss (shouldn't happen if preload succeeded)
-            send_response(conn, 500, b'HTML cache miss', 'text/plain')
-            return
-
-        # Yield to event loop immediately after getting cache
-        await asyncio.sleep(0)
-
-        # MEMORY OPTIMIZED: Use get_fields() to fetch only needed fields
-        receiver = get_status_receiver()
-        cached = receiver.status_cache.get_fields(
-            'ssr_output', 'current_temp', 'target_temp', 'profile_name', 'state',
-            'step_index', 'step_name', 'total_steps',
-            'desired_rate', 'current_rate', 'actual_rate', 'min_rate', 'adaptation_count',
-            'is_recovering', 'recovery_target_temp'
-        )
-
-        # Yield before building profiles list
-        await asyncio.sleep(0)
-
-        # Build profiles list HTML (using list + join for memory efficiency)
-        # PERFORMANCE: Use cached profile list instead of blocking os.listdir()
-        from server.profile_cache import get_profile_cache
-        profiles_parts = ['<ul>']
-
-        profile_names = get_profile_cache().list_profiles()
-
-        if profile_names:
-            for profile_name in profile_names:
-                profiles_parts.append(f'<li>{profile_name} <button onclick="startProfile(\'{profile_name}\')">Start</button></li>')
-        else:
-            profiles_parts.append('<li>No profiles found</li>')
-
-        profiles_parts.append('</ul>')
-        profiles_html = ''.join(profiles_parts)
-
-        # Yield before JSON serialization
-        await asyncio.sleep(0)
-
-        # MEMORY OPTIMIZED: Build single JSON object for client-side rendering
-        # This reduces 8 string.replace() calls to just 2, saving ~10KB in temporary allocations
-        # Safe: StatusMessage template guarantees all these fields exist
-        ssr_output = cached['ssr_output']
-        status_data = {
-            'status': f'{ssr_output:.0f}%' if ssr_output > 0 else 'OFF',
-            'current_temp': cached['current_temp'],
-            'target_temp': cached['target_temp'],
-            'program': cached['profile_name'] or 'None',
-            'state': cached['state'],
-            # Step information
-            'step_index': cached['step_index'],
-            'step_name': cached['step_name'],
-            'total_steps': cached['total_steps'],
-            # Rate information
-            'desired_rate': cached['desired_rate'],
-            'current_rate': cached['current_rate'],
-            'actual_rate': cached['actual_rate'],
-            'min_rate': cached['min_rate'],
-            'adaptation_count': cached['adaptation_count'],
-            # Recovery mode
-            'is_recovering': cached['is_recovering'],
-            'recovery_target_temp': cached['recovery_target_temp']
-        }
-
-        # Yield before sending response
-        await asyncio.sleep(0)
-
-        # MEMORY OPTIMIZED: Do replacements with GC between them to manage memory
-        json_str = json.dumps(status_data)
-        html = html.replace('{DATA}', json_str)
-
-        # Force GC after first large replace to free json_str and intermediate string
-        del json_str
-        gc.collect()
-
-        html = html.replace('{profiles_list}', profiles_html)
-
+    if html:
+        # Send pre-rendered HTML - client will fetch data via /api/status
         send_html_response(conn, html)
-    except OSError:
-        # File not found, serve simple fallback
-        html = """<!DOCTYPE html>
-<html>
-<head>
-    <title>Pico Kiln Controller</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; }
-        h1 { color: #333; }
-        .status { background: #f0f0f0; padding: 20px; border-radius: 5px; }
-    </style>
-</head>
-<body>
-    <h1>Pico Kiln Controller</h1>
-    <div class="status">
-        <h2>Status</h2>
-        <p>System is running!</p>
-        <p><a href="/api/state">View State API</a></p>
-        <p><a href="/api/info">View Info API</a></p>
-    </div>
-</body>
-</html>"""
-        send_html_response(conn, html)
+    else:
+        # Fallback: cache miss (shouldn't happen if preload succeeded)
+        send_response(conn, 500, b'HTML cache miss', 'text/plain')
 
 # === Request Router ===
 

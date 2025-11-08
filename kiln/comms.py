@@ -322,6 +322,8 @@ class StatusMessage:
     # Pre-allocated template for status messages
     # This template is copied and updated rather than creating dict from scratch each time
     # Thread safety: Each call to build() creates a fresh copy for cross-thread passing
+    # OPTIMIZED: Removed profile_duration (only field that's truly unused)
+    # Saves ~8 bytes per message (~160 bytes with 20-item queue)
     _status_template = {
         'timestamp': 0,
         'state': 'IDLE',
@@ -333,7 +335,6 @@ class StatusMessage:
         'error': None,
         'remaining': 0,
         'progress': 0,
-        'profile_duration': 0,
         'step_index': None,
         'step_name': None,
         'total_steps': None,
@@ -395,14 +396,13 @@ class StatusMessage:
         status['elapsed'] = round(elapsed, 1)
         status['profile_name'] = controller.active_profile.name if controller.active_profile else None
         status['error'] = controller.error_message
-        # remaining, progress, profile_duration already initialized to 0 in template
 
         # Add profile-specific info (template already has default values)
         if controller.active_profile:
+            # Calculate time remaining and progress (used by LCD and data logger)
             remaining = max(0, controller.active_profile.duration - elapsed)
             status['remaining'] = round(remaining, 1)
             status['progress'] = round(controller.active_profile.get_progress(elapsed), 1)
-            status['profile_duration'] = controller.active_profile.duration
 
             # Add step info (from step-based profile format)
             profile = controller.active_profile
@@ -610,92 +610,3 @@ class StatusCache:
         """
         with self.lock:
             return {field: self._status.get(field) for field in fields}
-
-
-class ErrorLog:
-    """
-    Cross-core error logging system
-
-    Core 1 (control) logs errors via log_error() - fast, non-blocking
-    Core 2 (web/main) reads from queue and writes to disk
-
-    Only errors are logged to avoid I/O spam. Console prints still go to stdout.
-    """
-
-    def __init__(self, max_queue_size=50):
-        """
-        Initialize error log
-
-        Args:
-            max_queue_size: Maximum number of queued errors before oldest are dropped
-        """
-        self.queue = ThreadSafeQueue(maxsize=max_queue_size)
-        self.dropped_count = 0
-        self.lock = allocate_lock()
-
-    def log_error(self, source, message):
-        """
-        Log an error (called from Core 1)
-
-        Non-blocking - if queue is full, drops oldest error and increments counter.
-
-        Args:
-            source: Error source (e.g., 'TemperatureSensor', 'SSRController')
-            message: Error message
-        """
-        import time
-
-        error_entry = {
-            'timestamp': time.time(),
-            'source': source,
-            'message': message
-        }
-
-        # Try to add to queue
-        if not QueueHelper.put_nowait(self.queue, error_entry):
-            # Queue full - drop oldest and try again
-            with self.lock:
-                self.dropped_count += 1
-            QueueHelper.get_nowait(self.queue)  # Drop oldest
-            QueueHelper.put_nowait(self.queue, error_entry)
-
-    def get_errors(self):
-        """
-        Get all pending errors from queue (called from Core 2)
-
-        Returns list of error entries and current dropped count.
-        Clears dropped count after reading.
-
-        Returns:
-            Tuple of (errors_list, dropped_count)
-        """
-        errors = []
-        while not self.queue.empty():
-            error = QueueHelper.get_nowait(self.queue)
-            if error:
-                errors.append(error)
-
-        with self.lock:
-            dropped = self.dropped_count
-            self.dropped_count = 0
-
-        return errors, dropped
-
-    def get_stats(self):
-        """
-        Get error log statistics
-
-        Returns:
-            Dictionary with queue size and dropped count
-        """
-        with self.lock:
-            return {
-                'queued': self.queue.qsize(),
-                'dropped': self.dropped_count
-            }
-
-    def clear(self):
-        """Clear all queued errors (emergency use)"""
-        self.queue.clear()
-        with self.lock:
-            self.dropped_count = 0

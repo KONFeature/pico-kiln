@@ -17,7 +17,7 @@ class TemperatureSensor:
     and fault detection.
     """
 
-    def __init__(self, spi, cs_pin, thermocouple_type=None, offset=0.0, error_log=None):
+    def __init__(self, spi, cs_pin, thermocouple_type=None, offset=0.0):
         """
         Initialize temperature sensor
 
@@ -26,9 +26,7 @@ class TemperatureSensor:
             cs_pin: Chip select pin (wrapped for adafruit library)
             thermocouple_type: Type of thermocouple (default: K-type)
             offset: Temperature offset for calibration (°C)
-            error_log: Optional ErrorLog instance for cross-core error logging
         """
-        self.error_log = error_log
         try:
             import adafruit_max31856
             from adafruit_max31856 import ThermocoupleType
@@ -117,17 +115,17 @@ class TemperatureSensor:
             # SAFETY: If never initialized, don't allow heating - fail immediately
             if not self.initialized:
                 error_msg = f"Temperature sensor failed to initialize: {e}"
-                self._log_error(error_msg)
+                print(error_msg)
                 raise Exception(error_msg)
 
             # Log error
-            self._log_error(f"Temperature read error ({self.fault_count}/{MAX_CONSECUTIVE_FAULTS}): {e}")
+            print(f"Temperature read error ({self.fault_count}/{MAX_CONSECUTIVE_FAULTS}): {e}")
 
             # Check if we've hit the consecutive fault limit
             if self.fault_count >= MAX_CONSECUTIVE_FAULTS:
                 # Emergency shutdown - sensor is genuinely failing
                 error_msg = f"EMERGENCY SHUTDOWN: {MAX_CONSECUTIVE_FAULTS} consecutive sensor failures: {e}"
-                self._log_error(error_msg)
+                print(error_msg)
                 raise Exception(error_msg)
             else:
                 # Transient fault - return last good value and continue
@@ -142,11 +140,6 @@ class TemperatureSensor:
         """Reset fault counter"""
         self.fault_count = 0
 
-    def _log_error(self, message):
-        """Log error to both console and error log (if available)"""
-        print(message)
-        if self.error_log:
-            self.error_log.log_error('TemperatureSensor', message)
 
 
 class SSRController:
@@ -163,7 +156,7 @@ class SSRController:
              0% duty   = OFF for full cycle
     """
 
-    def __init__(self, pin, cycle_time=2.0, stagger_delay=0.01, error_log=None):
+    def __init__(self, pin, cycle_time=2.0, stagger_delay=0.01):
         """
         Initialize SSR controller
 
@@ -172,9 +165,7 @@ class SSRController:
             cycle_time: Time-proportional cycle period in seconds (default: 2.0)
             stagger_delay: Delay between SSR state changes in seconds (default: 0.01)
                           Only applies when pin is a list (multiple SSRs)
-            error_log: Optional ErrorLog instance for cross-core error logging
         """
-        self.error_log = error_log
 
         # Convert single pin to list for uniform handling
         if isinstance(pin, list):
@@ -298,16 +289,10 @@ class SSRController:
             'pin_states': self.pin_states.copy() if len(self.pins) > 1 else None
         }
 
-    def _log_error(self, message):
-        """Log error to both console and error log (if available)"""
-        print(message)
-        if self.error_log:
-            self.error_log.log_error('SSRController', message)
-
     def __del__(self):
         """Destructor - ensure all SSRs are turned off"""
         try:
             for pin in self.pins:
                 pin.value(0)
         except Exception as e:
-            self._log_error(f"Error in SSR destructor: {e}")
+            print(f"Error in SSR destructor: {e}")
