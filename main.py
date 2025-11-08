@@ -184,10 +184,6 @@ async def main():
     3. Recovery check happens ASAP (~2-3s)
     4. Non-critical tasks (LCD, NTP) deferred to background
     """
-    # Install stdout capture FIRST (before any prints)
-    from server.stdout_capture import install_print_capture
-    stdout_capture = install_print_capture()
-
     print("=" * 50)
     print("Pico Kiln Controller - Optimized Boot")
     print("=" * 50)
