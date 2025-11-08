@@ -61,7 +61,7 @@ async def wifi_connect_background(wifi_mgr, timeout=15):
     """
     try:
         print(f"[WiFi Background] Starting connection (timeout: {timeout}s)...")
-        ip_address = await wifi_mgr.connect(timeout=timeout, use_cache=False)
+        ip_address = await wifi_mgr.connect(timeout=timeout)
 
         if ip_address:
             print(f"[WiFi Background] Connected: {ip_address}")

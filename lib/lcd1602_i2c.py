@@ -128,7 +128,8 @@ class LCD1602:
         await asyncio.sleep(0.001)
         self._send_command(self.LCD_DISPLAYCONTROL | self.LCD_DISPLAYON | self.LCD_CURSOROFF | self.LCD_BLINKOFF)
         await asyncio.sleep(0.001)
-        await self.clear_async()
+        self.clear()
+        await asyncio.sleep(0.01)  # Wait after clear before continuing (matches debug script)
         self._send_command(self.LCD_ENTRYMODESET | self.LCD_ENTRYLEFT | self.LCD_ENTRYSHIFTDECREMENT)
         await asyncio.sleep(0.002)
     

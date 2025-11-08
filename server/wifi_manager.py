@@ -140,7 +140,8 @@ class WiFiManager:
         """
         Monitor connection and update LED/LCD
 
-        MicroPython auto-reconnects, we just watch for status changes
+        MicroPython auto-reconnects after successful connection, but if the initial
+        connection fails, we need to manually retry by disconnect/reconnect.
         """
         was_connected = self.wlan.isconnected() if self.wlan else False
 
@@ -150,7 +151,22 @@ class WiFiManager:
             if not self.wlan:
                 continue
 
+            status = self.wlan.status()
             is_connected = self.wlan.isconnected()
+
+            # Check for connection failure states that require manual retry
+            # STAT_WRONG_PASSWORD, STAT_NO_AP_FOUND, STAT_CONNECT_FAIL
+            if status in (network.STAT_WRONG_PASSWORD, network.STAT_NO_AP_FOUND, network.STAT_CONNECT_FAIL):
+                print(f"[WiFi] Connection failed (status={status}), retrying...")
+                self.status_led.off()
+                
+                # Disconnect, wait, reconnect
+                self.wlan.disconnect()
+                await asyncio.sleep(2)
+                self.wlan.connect(self.ssid, self.password)
+                
+                # Don't update was_connected here, let next iteration handle it
+                continue
 
             # Connection state changed
             if is_connected != was_connected:

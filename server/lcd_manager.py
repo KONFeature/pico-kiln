@@ -131,6 +131,11 @@ class LCDManager:
         
         while True:
             try:
+                # Check if LCD is still available (can be disabled during init retries)
+                if not self.lcd or not self.enabled:
+                    print("[LCD] LCD disabled, exiting update loop")
+                    return
+                
                 # Get current status from cache
                 state = self.status_receiver.get_status_field('state', 'IDLE')
                 current_temp = self.status_receiver.get_status_field('current_temp', 0.0)
@@ -141,6 +146,9 @@ class LCDManager:
                 # Format: "123C RUNNING" or "  25C IDLE"
                 row1 = f"{current_temp:4.0f}C {state[:10]}"
                 self.lcd.print(row1, row=0)
+                
+                # Small delay between row updates for reliability
+                await asyncio.sleep(0.01)
                 
                 # Row 2: Target temp + SSR output
                 # Format: "Tgt:800C  45%" or "SSR:   0%" (when no target)
