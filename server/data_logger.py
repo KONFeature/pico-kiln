@@ -9,7 +9,6 @@
 # status updates independently from web server.
 
 import time
-from io import StringIO
 
 class DataLogger:
     """
@@ -46,13 +45,6 @@ class DataLogger:
         # Recovery context
         self.recovery_log_file = None
         self.recovery_info = None
-
-        # Performance: Pre-allocated buffers for CSV line construction
-        # Reduces memory allocations during logging (every 30s, or 2s during tuning)
-        # Note: MicroPython's StringIO may support size parameter, but CPython's does not
-        # Using without size parameter for compatibility - buffer grows as needed
-        self._csv_buffer = StringIO()  # Buffer for normal/tuning logs
-        self._csv_buffer_recovery = StringIO()  # Buffer for recovery event logs
 
     def start_logging(self, profile_name, recovery_log_file=None):
         """
@@ -169,40 +161,23 @@ class DataLogger:
                 # Extract rate info (for adaptive control)
                 current_rate = status['current_rate']
 
-            # Format row using pre-allocated buffer to reduce memory allocations
+            # Format row - use simple string concatenation for MicroPython compatibility
             timestamp_iso = self._format_timestamp_iso(timestamp)
 
-            # Use pre-allocated buffer instead of f-string concatenation
-            buf = self._csv_buffer
-            buf.seek(0)  # Reset to start
-            # Note: MicroPython's StringIO doesn't have truncate()
-            # seek(0) + write will overwrite previous content
-
-            # Build CSV line in buffer
-            buf.write(timestamp_iso)
-            buf.write(',')
-            buf.write(f"{elapsed:.1f}")
-            buf.write(',')
-            buf.write(f"{current_temp:.2f}")
-            buf.write(',')
-            buf.write(f"{target_temp:.2f}")
-            buf.write(',')
-            buf.write(f"{ssr_output:.2f}")
-            buf.write(',')
-            buf.write(state)
-            buf.write(',')
-            buf.write(f"{progress:.1f}")
-            buf.write(',')
-            buf.write(step_name if step_name else '')
-            buf.write(',')
-            buf.write(step_index if step_index is not None and step_index != '' else '')
-            buf.write(',')
-            buf.write(total_steps if total_steps is not None and total_steps != '' else '')
-            buf.write(',')
-            buf.write(f"{current_rate:.1f}")
-            buf.write('\n')
-
-            row = buf.getvalue()
+            # Build CSV line (MicroPython-compatible approach)
+            row = (
+                f"{timestamp_iso},"
+                f"{elapsed:.1f},"
+                f"{current_temp:.2f},"
+                f"{target_temp:.2f},"
+                f"{ssr_output:.2f},"
+                f"{state},"
+                f"{progress:.1f},"
+                f"{step_name if step_name else ''},"
+                f"{step_index if step_index is not None and step_index != '' else ''},"
+                f"{total_steps if total_steps is not None and total_steps != '' else ''},"
+                f"{current_rate:.1f}\n"
+            )
 
             # Write to file
             self.file.write(row)
@@ -253,35 +228,20 @@ class DataLogger:
             current_rate = current_status['current_rate']
 
             # Format row with RECOVERY marker in state column
-            # Use pre-allocated buffer to reduce memory allocations
             timestamp_iso = self._format_timestamp_iso(timestamp)
 
-            # Use pre-allocated recovery buffer instead of f-string concatenation
-            buf = self._csv_buffer_recovery
-            buf.seek(0)  # Reset to start
-            # Note: MicroPython's StringIO doesn't have truncate()
-            # seek(0) + write will overwrite previous content
-
-            # Build CSV line in buffer
-            buf.write(timestamp_iso)
-            buf.write(',')
-            buf.write(f"{elapsed:.1f}")
-            buf.write(',')
-            buf.write(f"{current_temp:.2f}")
-            buf.write(',')
-            buf.write(f"{target_temp:.2f}")
-            buf.write(',')
-            buf.write(f"{ssr_output:.2f}")
-            buf.write(',')
-            buf.write('RECOVERY')  # Special state marker
-            buf.write(',')
-            buf.write(f"{progress:.1f}")
-            buf.write(',')
-            buf.write(',,,')  # Empty step fields for recovery events
-            buf.write(f"{current_rate:.1f}")
-            buf.write('\n')
-
-            row = buf.getvalue()
+            # Build CSV line (MicroPython-compatible approach)
+            row = (
+                f"{timestamp_iso},"
+                f"{elapsed:.1f},"
+                f"{current_temp:.2f},"
+                f"{target_temp:.2f},"
+                f"{ssr_output:.2f},"
+                f"RECOVERY,"  # Special state marker
+                f"{progress:.1f},"
+                f",,,,"  # Empty step fields for recovery events
+                f"{current_rate:.1f}\n"
+            )
 
             # Write to file
             self.file.write(row)

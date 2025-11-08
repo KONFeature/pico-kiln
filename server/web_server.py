@@ -14,10 +14,17 @@ from kiln.comms import CommandMessage, QueueHelper
 from kiln.tuner import MODE_SAFE, MODE_STANDARD, MODE_THOROUGH, MODE_HIGH_TEMP
 from server.status_receiver import get_status_receiver
 
-# HTTP response templates
-HTTP_200 = "HTTP/1.1 200 OK\r\n"
-HTTP_404 = "HTTP/1.1 404 Not Found\r\n"
-HTTP_500 = "HTTP/1.1 500 Internal Server Error\r\n"
+# MEMORY OPTIMIZED: Pre-encoded HTTP headers to avoid f-string allocations
+# Common status lines (pre-encoded as bytes)
+HTTP_200 = b"HTTP/1.1 200 OK\r\n"
+HTTP_404 = b"HTTP/1.1 404 Not Found\r\n"
+HTTP_500 = b"HTTP/1.1 500 Internal Server Error\r\n"
+
+# Common headers (pre-encoded as bytes)
+HEADER_CONTENT_TYPE_JSON = b"Content-Type: application/json\r\n"
+HEADER_CONTENT_TYPE_HTML = b"Content-Type: text/html\r\n"
+HEADER_CONTENT_TYPE_TEXT = b"Content-Type: text/plain\r\n"
+HEADER_CONNECTION_CLOSE = b"Connection: close\r\n\r\n"
 
 # Global communication channels (initialized in start_server)
 command_queue = None
@@ -59,12 +66,21 @@ def parse_request(data):
     return method, path, headers, body
 
 def send_response(conn, status, body=b'', content_type='text/plain'):
-    """Send HTTP response"""
-    status_text = {200: 'OK', 404: 'Not Found', 500: 'Error'}
-    conn.send(f'HTTP/1.1 {status} {status_text.get(status, "Unknown")}\n'.encode())
-    conn.send(f'Content-Type: {content_type}\n'.encode())
-    conn.send(b'Connection: close\n\n')
-    conn.sendall(body)
+    """Send HTTP response (MEMORY OPTIMIZED: uses pre-encoded headers)"""
+    # Map status codes to pre-encoded status lines
+    status_line = {200: HTTP_200, 404: HTTP_404, 500: HTTP_500}.get(status, HTTP_500)
+
+    # Map content types to pre-encoded headers
+    content_type_header = {
+        'application/json': HEADER_CONTENT_TYPE_JSON,
+        'text/html': HEADER_CONTENT_TYPE_HTML,
+        'text/plain': HEADER_CONTENT_TYPE_TEXT
+    }.get(content_type, HEADER_CONTENT_TYPE_TEXT)
+
+    # MEMORY OPTIMIZED: Build headers as single bytes object, then send with body
+    # This reduces from 4 separate send() calls to just 1 sendall() call
+    headers = status_line + content_type_header + HEADER_CONNECTION_CLOSE
+    conn.sendall(headers + body)
 
 def send_json_response(conn, data, status=200):
     """Send JSON response"""
@@ -74,6 +90,7 @@ def send_json_response(conn, data, status=200):
 def send_html_response(conn, html, status=200):
     """Send HTML response"""
     send_response(conn, status, html.encode() if isinstance(html, str) else html, 'text/html')
+
 
 # === API Handlers ===
 
@@ -168,6 +185,9 @@ def handle_api_profile_upload(conn, body):
                 'error': f'Profile too large (max {MAX_PROFILE_SIZE} bytes)'
             }, 400)
             return
+
+        # MEMORY OPTIMIZED: Force garbage collection before parsing large JSON
+        gc.collect()
 
         profile_data = json.loads(body.decode())
 
@@ -325,13 +345,15 @@ def handle_api_tuning_status(conn):
 
 def handle_tuning_page(conn):
     """Serve tuning.html page"""
+    # MEMORY OPTIMIZED: Force garbage collection before building large response
+    gc.collect()
+
     # PERFORMANCE: Use cached HTML instead of blocking file I/O
     from server.html_cache import get_html_cache
     html = get_html_cache().get('tuning')
 
     if html:
         send_html_response(conn, html)
-        gc.collect()  # Free memory after large HTML serving
     else:
         # Fallback: cache miss
         send_response(conn, 404, b'Tuning page not found', 'text/plain')
@@ -341,6 +363,9 @@ def handle_tuning_page(conn):
 async def handle_index(conn):
     """Serve index.html with current state"""
     try:
+        # MEMORY OPTIMIZED: Force garbage collection before building large response
+        gc.collect()
+
         # PERFORMANCE: Use cached HTML instead of blocking file I/O
         from server.html_cache import get_html_cache
         html = get_html_cache().get('index')
@@ -409,14 +434,20 @@ async def handle_index(conn):
             'recovery_target_temp': cached['recovery_target_temp']
         }
 
-        # MEMORY OPTIMIZED: Combine replacements to reduce string allocations
-        html = html.replace('{DATA}', json.dumps(status_data)).replace('{profiles_list}', profiles_html)
-
         # Yield before sending response
         await asyncio.sleep(0)
 
+        # MEMORY OPTIMIZED: Do replacements with GC between them to manage memory
+        json_str = json.dumps(status_data)
+        html = html.replace('{DATA}', json_str)
+
+        # Force GC after first large replace to free json_str and intermediate string
+        del json_str
+        gc.collect()
+
+        html = html.replace('{profiles_list}', profiles_html)
+
         send_html_response(conn, html)
-        gc.collect()  # MEMORY OPTIMIZED: Free memory after HTML generation
     except OSError:
         # File not found, serve simple fallback
         html = """<!DOCTYPE html>
