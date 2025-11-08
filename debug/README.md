@@ -196,6 +196,39 @@ See `BOOT_DEBUG_GUIDE.md` for:
 - Prevention strategies
 - Complete troubleshooting guide
 
+### 4. debug_lcd.py
+Comprehensive LCD diagnostic tool that tests initialization, display operations, and character encodings.
+
+**Use when:** Troubleshooting LCD display issues, testing I2C connections, or verifying character encoding
+
+**What it tests:**
+- I2C bus scanning for connected devices
+- LCD initialization at different addresses (0x27, 0x3F)
+- Basic display operations (clear, print, cursor positioning)
+- Character encodings (ASCII, special characters, degree symbols)
+- Backlight control
+- Rapid display updates
+
+**Usage:**
+```bash
+# Run the debug script directly from REPL
+mpremote run debug/debug_lcd.py
+```
+
+**Output:**
+All diagnostic information is printed to the console with timestamps, showing:
+- I2C configuration and scan results
+- Step-by-step LCD initialization progress
+- Test results for each operation (text display, encoding, etc.)
+- Any errors with full stack traces
+
+**Common Issues Diagnosed:**
+- Wrong I2C address (script tests 0x27 and 0x3F)
+- Faulty wiring (I2C bus scan shows connected devices)
+- Character encoding problems (tests various encoding methods)
+- LCD initialization failures (detailed step-by-step logging)
+- Display update issues (tests rapid updates)
+
 ## Tips
 
 - **Always test standalone** after deploying changes

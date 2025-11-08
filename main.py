@@ -11,6 +11,7 @@
 import asyncio
 import time
 import _thread
+import gc
 import config
 from server import web_server
 from server.wifi_manager import WiFiManager
@@ -24,6 +25,18 @@ from kiln.control_thread import start_control_thread
 # Performance: const() declarations for boot sequence timing
 LOG_FLUSH_INTERVAL = const(10)  # Seconds between log flushes
 WIFI_CONNECT_TIMEOUT = const(15)  # WiFi connection timeout in seconds
+
+
+def print_memory_info(label=""):
+    """Print current memory status for debugging"""
+    gc.collect()  # Collect garbage first for accurate reading
+    free = gc.mem_free()
+    alloc = gc.mem_alloc()
+    total = free + alloc
+    used_pct = (alloc / total * 100) if total > 0 else 0
+
+    prefix = f"[RAM {label}]" if label else "[RAM]"
+    print(f"{prefix} Free: {free:,} bytes ({free/1024:.1f} KB) | Allocated: {alloc:,} bytes ({alloc/1024:.1f} KB) | Used: {used_pct:.1f}%")
 
 
 def format_timestamp(timestamp):
@@ -50,16 +63,19 @@ def log_error_to_file(source, message):
         print(f"[Error Logger] Failed to write error to file: {e}")
 
 
-async def error_logger_loop(error_log, log_rotator):
+async def error_logger_loop(error_log):
     """
     Async loop that periodically flushes errors from queue to log file
 
     Runs on Core 2 to avoid blocking Core 1's control loop with I/O operations.
     Includes log rotation to prevent disk space exhaustion.
+    Also logs periodic memory stats for runtime debugging.
     """
     print("[Error Logger] Starting error logger loop")
     error_file = '/errors.log'
     flush_interval = LOG_FLUSH_INTERVAL
+    memory_log_counter = 0
+    memory_log_frequency = 6  # Log memory every 6 flushes (every 60s if flush_interval=10s)
 
     while True:
         try:
@@ -79,54 +95,17 @@ async def error_logger_loop(error_log, log_rotator):
                     if errors:
                         print(f"[Error Logger] Flushed {len(errors)} errors to {error_file}")
 
-                    # Check rotation after successful write
-                    if log_rotator.should_rotate():
-                        log_rotator.rotate()
-
                 except Exception as e:
                     print(f"[Error Logger] Failed to write error log: {e}")
 
+            # Periodic memory logging
+            memory_log_counter += 1
+            if memory_log_counter >= memory_log_frequency:
+                print_memory_info("Runtime")
+                memory_log_counter = 0
+
         except Exception as e:
             print(f"[Error Logger] Error in logger loop: {e}")
-
-        await asyncio.sleep(flush_interval)
-
-
-async def stdout_logger_loop(stdout_capture, log_rotator):
-    """
-    Async loop that periodically flushes stdout to log file
-
-    Captures all print() output to help debug system freezes in standalone mode.
-    Runs on Core 2 with more frequent flushes than error log.
-    Includes log rotation to prevent disk space exhaustion.
-    """
-    print("[Stdout Logger] Starting stdout logger loop")
-    stdout_file = '/stdout.log'
-    flush_interval = LOG_FLUSH_INTERVAL
-
-    while True:
-        try:
-            lines = stdout_capture.get_unflushed_lines()
-
-            if lines:
-                try:
-                    with open(stdout_file, 'a') as f:
-                        for line in lines:
-                            f.write(f"{line}\n")
-
-                    # Don't print this to avoid recursive logging spam
-                    # Just silently flush to file
-
-                    # Check rotation after successful write
-                    if log_rotator.should_rotate():
-                        log_rotator.rotate()
-
-                except Exception as e:
-                    # Use original print to avoid recursive capture
-                    stdout_capture.original_print(f"[Stdout Logger] Failed to write stdout log: {e}")
-
-        except Exception as e:
-            stdout_capture.original_print(f"[Stdout Logger] Error in logger loop: {e}")
 
         await asyncio.sleep(flush_interval)
 
@@ -202,12 +181,21 @@ async def lcd_init_background(lcd_manager):
 
     LCD initialization can be slow or fail, so we do it in background
     to avoid blocking the critical boot path.
+
+    Retry strategy:
+    - First 3 attempts: Quick retries (1s intervals)
+    - Remaining attempts: Slow retries (3 minutes intervals)
+    - Maximum 10 total attempts
     """
     try:
         if not lcd_manager or not lcd_manager.enabled:
             return False
 
-        max_attempts = 3
+        max_attempts = 10
+        quick_retry_attempts = 3
+        quick_retry_delay = 1  # seconds
+        slow_retry_delay = 30  # 30 seconds
+
         for attempt in range(max_attempts):
             try:
                 success = await lcd_manager.initialize_hardware(timeout_ms=500)
@@ -222,8 +210,18 @@ async def lcd_init_background(lcd_manager):
                 if attempt == max_attempts - 1:
                     log_error_to_file("LCD", f"LCD initialization failed after {max_attempts} attempts")
 
+            # Determine retry delay
             if attempt < max_attempts - 1:
-                await asyncio.sleep(1)  # Wait before retry
+                if attempt < quick_retry_attempts - 1:
+                    # Quick retries for first few attempts
+                    delay = quick_retry_delay
+                    print(f"[LCD Background] Retrying in {delay}s...")
+                else:
+                    # Slow retries after quick attempts exhausted
+                    delay = slow_retry_delay
+                    print(f"[LCD Background] Retrying in {delay // 60} minutes...")
+
+                await asyncio.sleep(delay)
 
         print("[LCD Background] Initialization failed after all attempts")
         return False
@@ -252,14 +250,7 @@ async def main():
     print("Pico Kiln Controller - Optimized Boot")
     print("=" * 50)
     print("[Main] Stdout capture installed - logging to /stdout.log")
-
-    # Clean up old log files (before logging starts)
-    from server.log_manager import cleanup_old_logs, LogRotator
-    cleanup_old_logs()
-
-    # Create log rotators for automatic size management
-    error_log_rotator = LogRotator('/errors.log', check_every_n_flushes=20)
-    stdout_log_rotator = LogRotator('/stdout.log', check_every_n_flushes=20)
+    print_memory_info("Boot Start")
 
     try:
         # ========================================================================
@@ -282,6 +273,7 @@ async def main():
         quiet_mode = QuietMode()
 
         print("[Main] Infrastructure ready")
+        print_memory_info("Stage 1")
 
         # ========================================================================
         # STAGE 2: Start Core 1 IMMEDIATELY (quiet mode)
@@ -337,6 +329,7 @@ async def main():
         # Exit quiet mode - Core 1 can now send status updates
         quiet_mode.set_quiet(False)
         print("[Main] Quiet mode ended - Core 1 active")
+        print_memory_info("Stage 5")
 
         # Small delay to let first status update flow
         await asyncio.sleep(0.2)
@@ -396,6 +389,7 @@ async def main():
         profile_cache = get_profile_cache()
         profile_cache.preload(config.PROFILES_DIR)
         print("[Main] Profile cache preloaded")
+        print_memory_info("Stage 8")
 
         # ========================================================================
         # STAGE 9: Start async services
@@ -411,12 +405,8 @@ async def main():
         print("[Main] WiFi monitor started")
 
         # Error logger (with rotation)
-        error_logger_task = asyncio.create_task(error_logger_loop(error_log, error_log_rotator))
+        error_logger_task = asyncio.create_task(error_logger_loop(error_log))
         print("[Main] Error logger started")
-
-        # Stdout logger (with rotation)
-        stdout_logger_task = asyncio.create_task(stdout_logger_loop(stdout_capture, stdout_log_rotator))
-        print("[Main] Stdout logger started")
 
         # LCD manager
         lcd_task = None
@@ -441,12 +431,13 @@ async def main():
         else:
             print("Web interface: Unavailable (no WiFi)")
         print("Logs: /errors.log, /stdout.log (auto-rotate at 100KB)")
+        print_memory_info("Boot Complete")
         print("=" * 50)
 
         # ========================================================================
         # Run all async tasks
         # ========================================================================
-        tasks = [receiver_task, server_task, wifi_monitor_task, error_logger_task, stdout_logger_task]
+        tasks = [receiver_task, server_task, wifi_monitor_task, error_logger_task]
         if lcd_task:
             tasks.append(lcd_task)
 
