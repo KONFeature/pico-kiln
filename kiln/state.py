@@ -39,6 +39,8 @@ class KilnController:
         self.state = KilnState.IDLE
         self.active_profile = None
         self.start_time = None
+        self.elapsed_offset = 0.0  # For recovery: offset to add to elapsed time
+        self.last_update_time = None  # Track last update for delta calculation
 
         # Current values
         self.current_temp = 0.0
@@ -99,6 +101,8 @@ class KilnController:
         self.active_profile = profile
         self.state = KilnState.RUNNING
         self.start_time = time.time()
+        self.elapsed_offset = 0.0  # Start from 0
+        self.last_update_time = None  # Will be set on first get_elapsed_time()
         self.error_message = None
 
         # Initialize step execution
@@ -146,9 +150,10 @@ class KilnController:
         self.active_profile = profile
         self.state = KilnState.RUNNING
 
-        # Adjust start time to account for elapsed progress
-        current_time = time.time()
-        self.start_time = current_time - elapsed_seconds
+        # Store elapsed seconds directly (NTP-safe)
+        self.start_time = time.time()
+        self.elapsed_offset = elapsed_seconds
+        self.last_update_time = None  # Will be set on first get_elapsed_time()
 
         self.error_message = None
 
@@ -247,6 +252,8 @@ class KilnController:
         self.active_profile = None
         self.target_temp = 0
         self.start_time = None
+        self.elapsed_offset = 0.0
+        self.last_update_time = None
         self.error_message = None
 
         # Reset step state
@@ -264,14 +271,35 @@ class KilnController:
     def get_elapsed_time(self):
         """
         Get elapsed time in profile
+        
+        Uses monotonic time deltas to avoid NTP jump issues.
+        For recovery, starts from elapsed_offset instead of 0.
 
         Returns:
-            Elapsed seconds since profile start
+            Elapsed seconds since profile start (or resumed offset)
         """
         if self.start_time is None:
             return 0
-
-        return time.time() - self.start_time
+        
+        current_time = time.time()
+        
+        # First call after start/resume
+        if self.last_update_time is None:
+            self.last_update_time = current_time
+            return self.elapsed_offset
+        
+        # Calculate delta since last update (immune to NTP jumps)
+        delta = current_time - self.last_update_time
+        
+        # Sanity check: if delta is negative or huge, NTP jumped
+        if delta < 0 or delta > 60:  # Max 60s between updates is reasonable
+            print(f"[KilnController] Time jump detected: {delta:.1f}s - ignoring")
+            delta = 1.0  # Assume 1 second passed
+        
+        self.last_update_time = current_time
+        self.elapsed_offset += delta
+        
+        return self.elapsed_offset
 
     def update(self, current_temp):
         """
