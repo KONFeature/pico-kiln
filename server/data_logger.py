@@ -113,7 +113,7 @@ class DataLogger:
         Args:
             status: Status dictionary from StatusMessage.build()
                     Expected fields: timestamp, elapsed, current_temp,
-                    target_temp, ssr_output, state, progress
+                    target_temp, ssr_output, state
                     Step fields (optional): step_name, step_index, total_steps
         """
         if not self.is_logging or not self.file:
@@ -140,7 +140,6 @@ class DataLogger:
             target_temp = status['target_temp']
             ssr_output = status['ssr_output']
             state = status['state']
-            progress = status['progress']
 
             # Check if we're in recovery mode
             # Safe: Field guaranteed by StatusMessage template
@@ -165,6 +164,7 @@ class DataLogger:
             timestamp_iso = self._format_timestamp_iso(timestamp)
 
             # Build CSV line (MicroPython-compatible approach)
+            # Note: Removed progress_percent column (no longer in StatusMessage)
             row = (
                 f"{timestamp_iso},"
                 f"{elapsed:.1f},"
@@ -172,7 +172,6 @@ class DataLogger:
                 f"{target_temp:.2f},"
                 f"{ssr_output:.2f},"
                 f"{state},"
-                f"{progress:.1f},"
                 f"{step_name if step_name else ''},"
                 f"{step_index if step_index is not None and step_index != '' else ''},"
                 f"{total_steps if total_steps is not None and total_steps != '' else ''},"
@@ -222,7 +221,6 @@ class DataLogger:
             current_temp = current_status['current_temp']
             target_temp = current_status['target_temp']
             ssr_output = current_status['ssr_output']
-            progress = current_status['progress']
 
             # Extract rate info (for adaptive control)
             current_rate = current_status['current_rate']
@@ -231,6 +229,7 @@ class DataLogger:
             timestamp_iso = self._format_timestamp_iso(timestamp)
 
             # Build CSV line (MicroPython-compatible approach)
+            # Note: Removed progress_percent column (no longer in StatusMessage)
             row = (
                 f"{timestamp_iso},"
                 f"{elapsed:.1f},"
@@ -238,8 +237,7 @@ class DataLogger:
                 f"{target_temp:.2f},"
                 f"{ssr_output:.2f},"
                 f"RECOVERY,"  # Special state marker
-                f"{progress:.1f},"
-                f",,,,"  # Empty step fields for recovery events
+                f",,,"  # Empty step fields for recovery events
                 f"{current_rate:.1f}\n"
             )
 
@@ -358,7 +356,6 @@ class DataLogger:
             "target_temp_c,"
             "ssr_output_percent,"
             "state,"
-            "progress_percent,"
             "step_name,"
             "step_index,"
             "total_steps,"

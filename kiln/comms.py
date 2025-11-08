@@ -322,8 +322,8 @@ class StatusMessage:
     # Pre-allocated template for status messages
     # This template is copied and updated rather than creating dict from scratch each time
     # Thread safety: Each call to build() creates a fresh copy for cross-thread passing
-    # OPTIMIZED: Removed profile_duration (only field that's truly unused)
-    # Saves ~8 bytes per message (~160 bytes with 20-item queue)
+    # OPTIMIZED: Removed profile_duration, min_rate, progress, remaining (UI-only fields)
+    # Saves ~32 bytes per message (~640 bytes with 20-item queue)
     _status_template = {
         'timestamp': 0,
         'state': 'IDLE',
@@ -333,13 +333,10 @@ class StatusMessage:
         'elapsed': 0,
         'profile_name': None,
         'error': None,
-        'remaining': 0,
-        'progress': 0,
         'step_index': None,
         'step_name': None,
         'total_steps': None,
         'desired_rate': 0,
-        'min_rate': 0,
         'is_recovering': False,
         'recovery_target_temp': None,
         'current_rate': 0,
@@ -355,7 +352,6 @@ class StatusMessage:
         'target_temp': 0.0,
         'elapsed': 0,
         'ssr_output': 0.0,
-        'progress': 0,
         'profile_name': None,
         'tuning': {},
         'step_name': None,
@@ -399,11 +395,6 @@ class StatusMessage:
 
         # Add profile-specific info (template already has default values)
         if controller.active_profile:
-            # Calculate time remaining and progress (used by LCD and data logger)
-            remaining = max(0, controller.active_profile.duration - elapsed)
-            status['remaining'] = round(remaining, 1)
-            status['progress'] = round(controller.active_profile.get_progress(elapsed), 1)
-
             # Add step info (from step-based profile format)
             profile = controller.active_profile
             status['total_steps'] = len(profile.steps)
@@ -419,11 +410,9 @@ class StatusMessage:
 
                 # Add rate information for this step
                 status['desired_rate'] = current_step['desired_rate']
-                # Keep .get() for min_rate - it's optional
-                status['min_rate'] = current_step.get('min_rate', 0)
             else:
                 status['step_name'] = ''
-                # desired_rate and min_rate already 0 in template
+                # desired_rate already 0 in template
         # else: No active profile - template defaults (None/0) are already set
 
         # Add recovery mode information
@@ -469,7 +458,7 @@ class StatusMessage:
         status['target_temp'] = round(controller.target_temp, 2)
         status['elapsed'] = round(elapsed, 1)
         status['ssr_output'] = round(controller.ssr_output, 2)
-        # progress and profile_name already set to 0 and None in template
+        # profile_name already set to None in template
         status['tuning'] = tuner_status
         # Expose step fields at top level for easy logging
         # Safe: tuner_status from get_status() always includes these fields

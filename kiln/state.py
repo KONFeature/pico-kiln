@@ -579,8 +579,6 @@ class KilnController:
             'ssr_output': round(self.ssr_output, 2),
             'profile': self.active_profile.name if self.active_profile else None,
             'elapsed': round(elapsed, 1),
-            'remaining': 0,
-            'progress': 0,
             'error': self.error_message,
 
             # Step information
@@ -592,7 +590,6 @@ class KilnController:
             'desired_rate': 0,
             'current_rate': round(self.current_rate, 1),
             'actual_rate': round(self.temp_history.get_rate(self.rate_measurement_window), 1),
-            'min_rate': 0,
             'adaptation_count': self.adaptation_count,
 
             # Recovery mode information
@@ -601,20 +598,12 @@ class KilnController:
         }
 
         if self.active_profile:
-            # Duration and progress
-            remaining = max(0, self.active_profile.duration - elapsed)
-            status['remaining'] = round(remaining, 1)
-            status['progress'] = round(self.active_profile.get_progress(elapsed), 1)
-            status['profile_duration'] = self.active_profile.duration
-
             # Current step details
             if self.current_step_index < len(self.active_profile.steps):
                 current_step = self.active_profile.steps[self.current_step_index]
                 status['step_type'] = current_step['type']
                 # Safe: desired_rate must exist in all profile steps
                 status['desired_rate'] = current_step['desired_rate']
-                # Keep .get() for min_rate - it's optional and may not exist in all profiles
-                status['min_rate'] = current_step.get('min_rate', 0)
 
         return status
 

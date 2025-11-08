@@ -326,22 +326,22 @@ class LCDManager:
         await asyncio.sleep(0)
     
     async def _render_profile_screen(self):
-        """Render profile/tuning method screen with time estimates"""
+        """Render profile/tuning method screen with elapsed time"""
         state = self.status_receiver.get_status_field('state', 'IDLE')
 
         if state == 'RUNNING':
             profile_name = self.status_receiver.get_status_field('profile', 'Unknown')
-            remaining = self.status_receiver.get_status_field('remaining', 0)
-            progress = self.status_receiver.get_status_field('progress', 0)
+            elapsed = self.status_receiver.get_status_field('elapsed', 0)
 
             self.lcd.print(profile_name[:16], row=0)
-            if remaining > 0:
-                remain_hours = int(remaining / 3600)
-                remain_mins = int((remaining % 3600) / 60)
-                time_str = f"{remain_hours}h{remain_mins:02d}m" if remain_hours > 0 else f"{remain_mins}m"
-                self.lcd.print(f"{progress:3.0f}% {time_str:>9}", row=1)
+            # Show elapsed time instead of progress/remaining
+            elapsed_hours = int(elapsed / 3600)
+            elapsed_mins = int((elapsed % 3600) / 60)
+            if elapsed_hours > 0:
+                time_str = f"{elapsed_hours}h{elapsed_mins:02d}m"
             else:
-                self.lcd.print(f"Progress: {progress:.0f}%", row=1)
+                time_str = f"{elapsed_mins}m"
+            self.lcd.print(f"Elapsed: {time_str:>7}", row=1)
         elif state == 'TUNING':
             tuning_mode = self.status_receiver.get_status_field('tuning_mode', 'Unknown')
             self.lcd.print("Tuning Mode:", row=0)

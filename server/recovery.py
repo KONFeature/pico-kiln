@@ -381,13 +381,9 @@ def _parse_last_log_entry(log_file):
     in memory instead of loading the entire file. This reduces memory usage from
     ~120KB (for a 10-hour log) to <1KB.
 
-    CSV format (current):
+    CSV format:
     timestamp,elapsed_seconds,current_temp_c,target_temp_c,
-    ssr_output_percent,state,progress_percent,step_name,step_index,total_steps,current_rate_c_per_hour
-
-    CSV format (legacy - without current_rate):
-    timestamp,elapsed_seconds,current_temp_c,target_temp_c,
-    ssr_output_percent,state,progress_percent,step_name,step_index,total_steps
+    ssr_output_percent,state,step_name,step_index,total_steps,current_rate_c_per_hour
 
     Args:
         log_file: Path to CSV log file
@@ -432,14 +428,13 @@ def _parse_last_log_entry(log_file):
             'current_temp': float(values[2]),
             'target_temp': float(values[3]),
             'ssr_output': float(values[4]),
-            'state': values[5],
-            'progress': float(values[6])
+            'state': values[5]
         }
 
-        # Parse current_rate if available (column 11, index 10)
-        if len(values) >= 11 and values[10]:
+        # Parse current_rate (column 10, index 9)
+        if len(values) >= 10 and values[9]:
             try:
-                result['current_rate'] = float(values[10])
+                result['current_rate'] = float(values[9])
             except (ValueError, IndexError):
                 result['current_rate'] = None
         else:

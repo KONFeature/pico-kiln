@@ -30,7 +30,6 @@ Step <span id="step-progress">-/-</span> (<span id="step-type">-</span>)
 <p>Desired: <b id="rate-desired">--</b>°C/h</p>
 <p>Current: <b id="rate-current">--</b>°C/h</p>
 <p>Actual: <b id="rate-actual">--</b>°C/h</p>
-<p>Min: <b id="rate-min">--</b>°C/h</p>
 <p id="adaptation-row" style="display:none">Adaptations: <b id="adaptation-count">0</b></p>
 </div>
 
@@ -80,7 +79,6 @@ function refresh() {
       document.getElementById('rate-desired').textContent = d.desired_rate.toFixed(0);
       document.getElementById('rate-current').textContent = d.current_rate.toFixed(1);
       document.getElementById('rate-actual').textContent = d.actual_rate.toFixed(1);
-      document.getElementById('rate-min').textContent = d.min_rate.toFixed(0);
 
       if (d.adaptation_count > 0) {
         document.getElementById('adaptation-row').style.display = 'block';

@@ -37,14 +37,13 @@ def load_run_data(csv_file):
         csv_file: Path to CSV file with run data
 
     Returns:
-        Dictionary with time, temp, target_temp, ssr_output, state, progress arrays
+        Dictionary with time, temp, target_temp, ssr_output, state arrays
     """
     time_data = []
     temp_data = []
     target_temp_data = []
     ssr_output_data = []
     state_data = []
-    progress_data = []
     timestamps = []
     step_names = []
     step_indices = []
@@ -66,10 +65,9 @@ def load_run_data(csv_file):
             target_temp_data.append(float(row['target_temp_c']))
             ssr_output_data.append(float(row['ssr_output_percent']))
             state_data.append(row['state'])
-            progress_data.append(float(row['progress_percent']))
             timestamps.append(row['timestamp'])
 
-            # Handle new optional columns (backward compatibility)
+            # Load optional columns
             if 'step_name' in fieldnames:
                 step_names.append(row.get('step_name', ''))
             if 'step_index' in fieldnames:
@@ -103,11 +101,10 @@ def load_run_data(csv_file):
         'target_temp': target_temp_data,
         'ssr_output': ssr_output_data,
         'state': state_data,
-        'progress': progress_data,
         'timestamps': timestamps
     }
 
-    # Add new columns if available
+    # Add optional columns if available
     if step_names:
         result['step_names'] = step_names
     if step_indices:
@@ -201,7 +198,7 @@ def plot_run(data, output_file=None):
     ax2.grid(True, alpha=0.3)
     ax2.legend(loc='upper right', fontsize=10)
 
-    # Subplot 3: Progress / Step Information
+    # Subplot 3: Step Information
     ax3 = fig.add_subplot(gs[2], sharex=ax1)
 
     # Show step boundaries if available
@@ -243,12 +240,19 @@ def plot_run(data, output_file=None):
         for trans in step_transitions[1:]:
             ax3.axvline(x=trans['time'], color='gray', linestyle='--', alpha=0.5, linewidth=1.5)
 
-    # Plot progress
-    ax3.plot(data['time_hours'], data['progress'], 'purple', linewidth=2, label='Progress (%)')
-    ax3.set_ylabel('Progress (%)', fontsize=12)
-    ax3.set_ylim(-5, 105)
+        # Show step index visualization
+        ax3.plot(data['time_hours'], data['step_indices'], 'purple', linewidth=2, marker='o', markersize=3, label='Step Index')
+        ax3.set_ylabel('Step Index', fontsize=12)
+        ax3.legend(loc='upper left', fontsize=10)
+    else:
+        # No step data - show placeholder
+        ax3.text(0.5, 0.5, 'No step data available',
+                horizontalalignment='center', verticalalignment='center',
+                transform=ax3.transAxes, fontsize=11, style='italic',
+                bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.5))
+        ax3.set_ylabel('Step Information', fontsize=12)
+    
     ax3.grid(True, alpha=0.3)
-    ax3.legend(loc='upper left', fontsize=10)
 
     # Only set xlabel on bottom subplot
     if not has_rate_data:
