@@ -163,7 +163,6 @@ except Exception as e:
 
 # Import the constants from original main
 from micropython import const
-ERROR_LOG_FLUSH_INTERVAL = const(10)
 WIFI_CONNECT_TIMEOUT = const(15)
 
 def format_timestamp(timestamp):
@@ -173,42 +172,6 @@ def format_timestamp(timestamp):
         return f"{t[0]}-{t[1]:02d}-{t[2]:02d} {t[3]:02d}:{t[4]:02d}:{t[5]:02d}"
     except:
         return f"{int(timestamp)}"
-
-async def error_logger_loop(error_log):
-    """
-    Async loop that periodically flushes errors from queue to log file
-
-    Runs on Core 2 to avoid blocking Core 1's control loop with I/O operations.
-    """
-    print("[Error Logger] Starting error logger loop")
-    error_file = '/errors.log'
-    flush_interval = ERROR_LOG_FLUSH_INTERVAL
-
-    while True:
-        try:
-            errors, dropped_count = error_log.get_errors()
-
-            if errors or dropped_count > 0:
-                try:
-                    with open(error_file, 'a') as f:
-                        if dropped_count > 0:
-                            timestamp_str = format_timestamp(time.time())
-                            f.write(f"[{timestamp_str}] [ErrorLog] WARNING: {dropped_count} errors dropped due to full queue\n")
-
-                        for error in errors:
-                            timestamp_str = format_timestamp(error['timestamp'])
-                            f.write(f"[{timestamp_str}] [{error['source']}] {error['message']}\n")
-
-                    if errors:
-                        print(f"[Error Logger] Flushed {len(errors)} errors to {error_file}")
-
-                except Exception as e:
-                    print(f"[Error Logger] Failed to write error log: {e}")
-
-        except Exception as e:
-            print(f"[Error Logger] Error in logger loop: {e}")
-
-        await asyncio.sleep(flush_interval)
 
 async def wifi_connect_background(wifi_mgr, timeout=15):
     """
@@ -311,16 +274,13 @@ async def main():
     # STAGE 1: Create communication infrastructure
     # ========================================================================
     print("[Main] Stage 1: Creating communication infrastructure...")
-    from kiln.comms import ThreadSafeQueue, ErrorLog, ReadyFlag, QuietMode
+    from kiln.comms import ThreadSafeQueue, ReadyFlag, QuietMode
 
     # Command queue: Core 2 -> Core 1
     command_queue = ThreadSafeQueue(maxsize=10)
 
     # Status queue: Core 1 -> Core 2
     status_queue = ThreadSafeQueue(maxsize=100)
-
-    # Error log: Core 1 -> Core 2
-    error_log = ErrorLog(max_queue_size=50)
 
     # Synchronization primitives
     ready_flag = ReadyFlag()
@@ -338,7 +298,7 @@ async def main():
 
     _thread.start_new_thread(
         start_control_thread,
-        (command_queue, status_queue, config, error_log, ready_flag, quiet_mode)
+        (command_queue, status_queue, config, ready_flag, quiet_mode)
     )
     print("[Main] Core 1 started (initializing hardware...)")
     write_log(STAGE_LOG, "STAGE 7: Core 1 started", timestamp=True)
@@ -462,10 +422,6 @@ async def main():
     wifi_monitor_task = asyncio.create_task(wifi_mgr.monitor())
     print("[Main] WiFi monitor started")
 
-    # Error logger
-    error_logger_task = asyncio.create_task(error_logger_loop(error_log))
-    print("[Main] Error logger started")
-
     # LCD manager
     lcd_task = None
     if lcd_manager and lcd_manager.enabled:
@@ -499,7 +455,7 @@ async def main():
     # ========================================================================
     # Run all async tasks
     # ========================================================================
-    tasks = [receiver_task, server_task, wifi_monitor_task, error_logger_task]
+    tasks = [receiver_task, server_task, wifi_monitor_task]
     if lcd_task:
         tasks.append(lcd_task)
 
