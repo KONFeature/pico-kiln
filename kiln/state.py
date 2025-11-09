@@ -112,8 +112,8 @@ class KilnController:
 
         # Initialize rate from first step
         first_step = profile.steps[0]
-        # Safe: desired_rate must exist in all profile steps
-        self.current_rate = first_step['desired_rate']
+        # Use desired_rate if specified, otherwise use a conservative default
+        self.current_rate = first_step.get('desired_rate', 100)
 
         # Reset adaptation tracking
         self.temp_history.clear()
@@ -124,7 +124,7 @@ class KilnController:
 
         print(f"Starting profile: {profile.name} ({len(profile.steps)} steps)")
 
-    def resume_profile(self, profile, elapsed_seconds, current_rate=None, last_logged_temp=None, current_temp=None):
+    def resume_profile(self, profile, elapsed_seconds, current_rate=None, last_logged_temp=None, current_temp=None, step_index=None):
         """
         Resume a previously interrupted firing profile
 
@@ -140,6 +140,7 @@ class KilnController:
             current_rate: Adapted rate to restore (from CSV log), or None for desired_rate
             last_logged_temp: Last logged temperature before crash (for recovery detection)
             current_temp: Current temperature (for recovery detection)
+            step_index: Step index from CSV log (0-based), or None to calculate
         """
         if self.state == KilnState.RUNNING:
             raise Exception("Cannot resume profile: kiln is already running")
@@ -157,15 +158,24 @@ class KilnController:
 
         self.error_message = None
 
-        # Determine which step we're in based on elapsed time
-        step_index, time_in_step, step_start_temp = self._find_step_for_elapsed(elapsed_seconds)
-
-        self.current_step_index = step_index
+        # Calculate timing information from elapsed time
+        # This gives us accurate time_in_step and step_start_temp
+        calc_step_index, time_in_step, step_start_temp = self._find_step_for_elapsed(elapsed_seconds)
+        
+        # Use step_index from CSV if available (more reliable), otherwise use calculated
+        if step_index is not None:
+            # CSV knows the actual step that was running
+            # Use it instead of calculated (handles adaptation timing changes)
+            print(f"[Recovery] Using step index from CSV: {step_index} (calculated: {calc_step_index})")
+            self.current_step_index = step_index
+        else:
+            # No CSV step_index - use calculated value
+            self.current_step_index = calc_step_index
         self.step_start_time = elapsed_seconds - time_in_step
         
         # For ramp steps, calculate step_start_temp by working backwards from last_logged_temp
         # This ensures target temp calculation continues smoothly from where it left off
-        current_step = profile.steps[step_index]
+        current_step = profile.steps[self.current_step_index]
         if current_step['type'] == 'ramp' and last_logged_temp is not None and time_in_step > 0:
             # Work backwards: step_start_temp = current_temp - (rate * time_in_step)
             rate = current_rate if current_rate is not None else current_step['desired_rate']
@@ -191,9 +201,8 @@ class KilnController:
             self.current_rate = current_rate
             print(f"Resuming with adapted rate: {current_rate:.1f}°C/h")
         else:
-            # Use desired rate from step
-            # Safe: desired_rate must exist in all profile steps
-            self.current_rate = current_step['desired_rate']
+            # Use desired rate from step, or default to 100°C/h for cooldown
+            self.current_rate = current_step.get('desired_rate', 100)
 
         # Reset adaptation tracking
         self.temp_history.clear()
@@ -234,7 +243,8 @@ class KilnController:
 
         cumulative_time = 0
         # Track theoretical temperature progression through profile
-        profile_temp = self.current_temp  # Start from current temp for first step
+        # Start from room temperature (typical kiln start point)
+        profile_temp = 20
 
         for i, step in enumerate(self.active_profile.steps):
             # Estimate step duration based on theoretical progression
@@ -243,8 +253,8 @@ class KilnController:
             elif step['type'] == 'ramp':
                 target = step['target_temp']
                 dtemp = abs(target - profile_temp)
-                # Safe: desired_rate must exist in all profile steps
-                rate = step['desired_rate']
+                # Use desired_rate if specified, otherwise use default 100°C/h
+                rate = step.get('desired_rate', 100)
                 step_duration = (dtemp / rate) * 3600 if rate > 0 else 0
             else:
                 step_duration = 0
@@ -473,8 +483,8 @@ class KilnController:
 
         # Reset for new step
         next_step = self.active_profile.steps[self.current_step_index]
-        # Safe: desired_rate must exist in all profile steps
-        self.current_rate = next_step['desired_rate']
+        # Use desired_rate if specified, otherwise default to 100°C/h
+        self.current_rate = next_step.get('desired_rate', 100)
         self.temp_history.clear()
         self.last_adaptation_check = elapsed
         self.last_adaptation_time = elapsed
@@ -597,6 +607,17 @@ class KilnController:
             print(f"[Adaptation {self.adaptation_count}] Rate adjusted: {old_rate:.1f} → {proposed_rate:.1f}°C/h "
                   f"(actual: {actual_rate:.1f}°C/h, min: {min_rate:.1f}°C/h, error: {temp_error:.1f}°C, SSR: {self.ssr_output:.1f}%)")
 
+            # CRITICAL FIX: Reset step start point to current position
+            # This prevents target temp from dropping when rate is reduced
+            # New target calculation will start from where we are NOW, not from old step_start_temp
+            self.step_start_temp = self.current_temp
+            self.step_start_time = elapsed
+            print(f"[Adaptation {self.adaptation_count}] Step restart: continuing from {self.current_temp:.1f}°C at {elapsed:.1f}s")
+
+            # Clear temp history to start fresh rate measurements after adaptation
+            # Old data reflects pre-adaptation conditions and will give wrong rate calculations
+            self.temp_history.clear()
+
             # Request PID reset to clear integral accumulator
             # This prevents overshoot from stale integral term after target change
             self.pid_reset_requested = True
@@ -646,13 +667,18 @@ class KilnController:
             'recovery_target_temp': round(self.recovery_target_temp, 2) if self.recovery_target_temp is not None else None
         }
 
-        if self.active_profile:
+        if self.active_profile and self.active_profile.steps:
             # Current step details
-            if self.current_step_index < len(self.active_profile.steps):
-                current_step = self.active_profile.steps[self.current_step_index]
-                status['step_type'] = current_step['type']
-                # Safe: desired_rate must exist in all profile steps
-                status['desired_rate'] = current_step['desired_rate']
+            if 0 <= self.current_step_index < len(self.active_profile.steps):
+                try:
+                    current_step = self.active_profile.steps[self.current_step_index]
+                    status['step_type'] = current_step.get('type')
+                    # Use desired_rate if specified, otherwise 0 (for cooldown/unspecified)
+                    status['desired_rate'] = current_step.get('desired_rate', 0)
+                except (IndexError, KeyError, TypeError) as e:
+                    # Gracefully handle any step access errors
+                    print(f"[KilnController] Warning: Error accessing step {self.current_step_index}: {e}")
+                    pass
 
         return status
 

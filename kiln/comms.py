@@ -247,7 +247,7 @@ class CommandMessage:
         }
 
     @staticmethod
-    def resume_profile(profile_filename, elapsed_seconds, current_rate=None, last_logged_temp=None, current_temp=None):
+    def resume_profile(profile_filename, elapsed_seconds, current_rate=None, last_logged_temp=None, current_temp=None, step_index=None):
         """Resume a previously interrupted firing profile
 
         Args:
@@ -256,6 +256,7 @@ class CommandMessage:
             current_rate: Adapted rate to restore (from CSV log), or None for desired_rate
             last_logged_temp: Last logged temperature before crash (for recovery detection)
             current_temp: Current temperature (for recovery detection)
+            step_index: Step index from CSV log (0-based), or None to calculate
         """
         return {
             'type': MessageType.RESUME_PROFILE,
@@ -263,7 +264,8 @@ class CommandMessage:
             'elapsed_seconds': elapsed_seconds,
             'current_rate': current_rate,
             'last_logged_temp': last_logged_temp,
-            'current_temp': current_temp
+            'current_temp': current_temp,
+            'step_index': step_index
         }
 
     @staticmethod
