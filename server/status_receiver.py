@@ -10,7 +10,7 @@ from kiln.comms import QueueHelper, StatusCache
 from micropython import const
 
 # Performance: const() declaration for hot path interval
-STATUS_CHECK_INTERVAL = 0.1  # Check status queue at 10 Hz
+STATUS_CHECK_INTERVAL = 0.5  # Check status queue at 2 Hz
 
 try:
     from _thread import allocate_lock

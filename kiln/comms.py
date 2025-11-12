@@ -197,6 +197,8 @@ class MessageType:
     START_TUNING = const(5)     # Start PID auto-tuning
     STOP_TUNING = const(6)      # Stop PID auto-tuning
     PING = const(7)             # For testing thread communication
+    SCHEDULE_PROFILE = const(8) # Schedule profile for delayed start
+    CANCEL_SCHEDULED = const(9) # Cancel scheduled profile
 
 def state_to_string(state_int):
     """
@@ -247,7 +249,7 @@ class CommandMessage:
         }
 
     @staticmethod
-    def resume_profile(profile_filename, elapsed_seconds, current_rate=None, last_logged_temp=None, current_temp=None):
+    def resume_profile(profile_filename, elapsed_seconds, current_rate=None, last_logged_temp=None, current_temp=None, step_index=None):
         """Resume a previously interrupted firing profile
 
         Args:
@@ -256,6 +258,7 @@ class CommandMessage:
             current_rate: Adapted rate to restore (from CSV log), or None for desired_rate
             last_logged_temp: Last logged temperature before crash (for recovery detection)
             current_temp: Current temperature (for recovery detection)
+            step_index: Step index from CSV log (0-based), or None to calculate
         """
         return {
             'type': MessageType.RESUME_PROFILE,
@@ -263,7 +266,8 @@ class CommandMessage:
             'elapsed_seconds': elapsed_seconds,
             'current_rate': current_rate,
             'last_logged_temp': last_logged_temp,
-            'current_temp': current_temp
+            'current_temp': current_temp,
+            'step_index': step_index
         }
 
     @staticmethod
@@ -309,6 +313,28 @@ class CommandMessage:
             'type': MessageType.PING
         }
 
+    @staticmethod
+    def schedule_profile(profile_filename, start_time):
+        """
+        Schedule a profile to start at specific time
+        
+        Args:
+            profile_filename: Filename of the profile to schedule (e.g., "cone6_glaze.json")
+            start_time: Unix timestamp when profile should start
+        """
+        return {
+            'type': MessageType.SCHEDULE_PROFILE,
+            'profile_filename': profile_filename,
+            'start_time': start_time
+        }
+
+    @staticmethod
+    def cancel_scheduled():
+        """Cancel scheduled profile"""
+        return {
+            'type': MessageType.CANCEL_SCHEDULED
+        }
+
 class StatusMessage:
     """
     Helper class for building status messages
@@ -322,6 +348,8 @@ class StatusMessage:
     # Pre-allocated template for status messages
     # This template is copied and updated rather than creating dict from scratch each time
     # Thread safety: Each call to build() creates a fresh copy for cross-thread passing
+    # OPTIMIZED: Removed profile_duration, min_rate, progress, remaining (UI-only fields)
+    # Saves ~32 bytes per message (~640 bytes with 20-item queue)
     _status_template = {
         'timestamp': 0,
         'state': 'IDLE',
@@ -331,19 +359,16 @@ class StatusMessage:
         'elapsed': 0,
         'profile_name': None,
         'error': None,
-        'remaining': 0,
-        'progress': 0,
-        'profile_duration': 0,
         'step_index': None,
         'step_name': None,
         'total_steps': None,
         'desired_rate': 0,
-        'min_rate': 0,
         'is_recovering': False,
         'recovery_target_temp': None,
         'current_rate': 0,
         'actual_rate': 0,
-        'adaptation_count': 0
+        'adaptation_count': 0,
+        'scheduled_profile': None
     }
 
     # Pre-allocated template for tuning status messages
@@ -354,7 +379,6 @@ class StatusMessage:
         'target_temp': 0.0,
         'elapsed': 0,
         'ssr_output': 0.0,
-        'progress': 0,
         'profile_name': None,
         'tuning': {},
         'step_name': None,
@@ -363,7 +387,7 @@ class StatusMessage:
     }
 
     @staticmethod
-    def build(controller, pid, ssr_controller):
+    def build(controller, pid, ssr_controller, scheduler=None):
         """
         Build comprehensive status message from controller state
 
@@ -374,6 +398,7 @@ class StatusMessage:
             controller: KilnController instance
             pid: PID instance
             ssr_controller: SSRController instance
+            scheduler: ScheduledProfileQueue instance (optional)
 
         Returns:
             Dictionary with complete system status
@@ -395,15 +420,9 @@ class StatusMessage:
         status['elapsed'] = round(elapsed, 1)
         status['profile_name'] = controller.active_profile.name if controller.active_profile else None
         status['error'] = controller.error_message
-        # remaining, progress, profile_duration already initialized to 0 in template
 
         # Add profile-specific info (template already has default values)
         if controller.active_profile:
-            remaining = max(0, controller.active_profile.duration - elapsed)
-            status['remaining'] = round(remaining, 1)
-            status['progress'] = round(controller.active_profile.get_progress(elapsed), 1)
-            status['profile_duration'] = controller.active_profile.duration
-
             # Add step info (from step-based profile format)
             profile = controller.active_profile
             status['total_steps'] = len(profile.steps)
@@ -419,11 +438,9 @@ class StatusMessage:
 
                 # Add rate information for this step
                 status['desired_rate'] = current_step['desired_rate']
-                # Keep .get() for min_rate - it's optional
-                status['min_rate'] = current_step.get('min_rate', 0)
             else:
                 status['step_name'] = ''
-                # desired_rate and min_rate already 0 in template
+                # desired_rate already 0 in template
         # else: No active profile - template defaults (None/0) are already set
 
         # Add recovery mode information
@@ -434,6 +451,11 @@ class StatusMessage:
         status['current_rate'] = round(controller.current_rate, 1)  # Adapted rate
         status['actual_rate'] = round(controller.temp_history.get_rate(controller.rate_measurement_window), 1)  # Measured rate
         status['adaptation_count'] = controller.adaptation_count  # Number of adaptations
+
+        # Add scheduler information
+        if scheduler:
+            status['scheduled_profile'] = scheduler.get_status()
+        # else: scheduled_profile is already None in template
 
         return status
 
@@ -469,7 +491,7 @@ class StatusMessage:
         status['target_temp'] = round(controller.target_temp, 2)
         status['elapsed'] = round(elapsed, 1)
         status['ssr_output'] = round(controller.ssr_output, 2)
-        # progress and profile_name already set to 0 and None in template
+        # profile_name already set to None in template
         status['tuning'] = tuner_status
         # Expose step fields at top level for easy logging
         # Safe: tuner_status from get_status() always includes these fields
@@ -610,92 +632,3 @@ class StatusCache:
         """
         with self.lock:
             return {field: self._status.get(field) for field in fields}
-
-
-class ErrorLog:
-    """
-    Cross-core error logging system
-
-    Core 1 (control) logs errors via log_error() - fast, non-blocking
-    Core 2 (web/main) reads from queue and writes to disk
-
-    Only errors are logged to avoid I/O spam. Console prints still go to stdout.
-    """
-
-    def __init__(self, max_queue_size=50):
-        """
-        Initialize error log
-
-        Args:
-            max_queue_size: Maximum number of queued errors before oldest are dropped
-        """
-        self.queue = ThreadSafeQueue(maxsize=max_queue_size)
-        self.dropped_count = 0
-        self.lock = allocate_lock()
-
-    def log_error(self, source, message):
-        """
-        Log an error (called from Core 1)
-
-        Non-blocking - if queue is full, drops oldest error and increments counter.
-
-        Args:
-            source: Error source (e.g., 'TemperatureSensor', 'SSRController')
-            message: Error message
-        """
-        import time
-
-        error_entry = {
-            'timestamp': time.time(),
-            'source': source,
-            'message': message
-        }
-
-        # Try to add to queue
-        if not QueueHelper.put_nowait(self.queue, error_entry):
-            # Queue full - drop oldest and try again
-            with self.lock:
-                self.dropped_count += 1
-            QueueHelper.get_nowait(self.queue)  # Drop oldest
-            QueueHelper.put_nowait(self.queue, error_entry)
-
-    def get_errors(self):
-        """
-        Get all pending errors from queue (called from Core 2)
-
-        Returns list of error entries and current dropped count.
-        Clears dropped count after reading.
-
-        Returns:
-            Tuple of (errors_list, dropped_count)
-        """
-        errors = []
-        while not self.queue.empty():
-            error = QueueHelper.get_nowait(self.queue)
-            if error:
-                errors.append(error)
-
-        with self.lock:
-            dropped = self.dropped_count
-            self.dropped_count = 0
-
-        return errors, dropped
-
-    def get_stats(self):
-        """
-        Get error log statistics
-
-        Returns:
-            Dictionary with queue size and dropped count
-        """
-        with self.lock:
-            return {
-                'queued': self.queue.qsize(),
-                'dropped': self.dropped_count
-            }
-
-    def clear(self):
-        """Clear all queued errors (emergency use)"""
-        self.queue.clear()
-        with self.lock:
-            self.dropped_count = 0

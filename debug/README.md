@@ -229,6 +229,44 @@ All diagnostic information is printed to the console with timestamps, showing:
 - LCD initialization failures (detailed step-by-step logging)
 - Display update issues (tests rapid updates)
 
+### 5. debug_thermocouple.py
+Comprehensive MAX31856 thermocouple diagnostic tool that tests SPI initialization, sensor configuration, and temperature readings.
+
+**Use when:** Troubleshooting thermocouple sensor issues, verifying SPI connections, or testing temperature accuracy
+
+**What it tests:**
+- SPI bus initialization with correct parameters
+- MAX31856 sensor initialization and configuration
+- Multiple temperature readings (default: 5 samples)
+- Fault detection and reporting (open circuit, voltage, range faults, etc.)
+- Cold junction (reference) temperature reading
+- Sensor configuration verification (averaging, noise rejection, thresholds)
+- Temperature stability analysis
+- Different averaging settings (1, 2, 4, 8, 16 samples)
+
+**Usage:**
+```bash
+# Run the debug script directly from REPL
+mpremote run debug/debug_thermocouple.py
+```
+
+**Output:**
+All diagnostic information is printed to the console with timestamps, showing:
+- SPI configuration (bus, pins, baudrate)
+- Sensor initialization progress
+- Temperature readings with fault status
+- Cold junction temperature
+- Statistical analysis (average, min, max, range)
+- Any faults or errors with details
+
+**Common Issues Diagnosed:**
+- SPI wiring problems (incorrect pin connections)
+- Thermocouple not connected (open circuit fault)
+- Wrong thermocouple type configuration
+- Temperature out of range (sensor or wiring fault)
+- Unstable readings (electrical noise, poor connections)
+- Sensor configuration errors
+
 ## Tips
 
 - **Always test standalone** after deploying changes

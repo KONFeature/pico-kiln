@@ -16,10 +16,11 @@ from kiln import TemperatureSensor, SSRController, PID, KilnController, Profile
 from kiln.state import KilnState
 from kiln.comms import MessageType, StatusMessage, QueueHelper
 from kiln.tuner import ZieglerNicholsTuner, TuningStage
+from kiln.scheduler import ScheduledProfileQueue
 from micropython import const
 
 # Performance: const() declarations for hot path time intervals
-STATUS_UPDATE_INTERVAL = const(2)  # Status updates every 2 seconds (integer for const)
+STATUS_UPDATE_INTERVAL = const(5)  # Status updates every 5 seconds (reduced from 2s to minimize Core 2 load)
 SSR_UPDATE_INTERVAL = 0.1  # 100ms between SSR state updates (10 Hz)
 
 class ControlThread:
@@ -30,7 +31,7 @@ class ControlThread:
     All hardware access happens exclusively in this thread to avoid race conditions.
     """
 
-    def __init__(self, command_queue, status_queue, config, error_log=None, ready_flag=None, quiet_mode=None):
+    def __init__(self, command_queue, status_queue, config, ready_flag=None, quiet_mode=None):
         """
         Initialize control thread
 
@@ -38,14 +39,12 @@ class ControlThread:
             command_queue: ThreadSafeQueue for receiving commands from Core 2
             status_queue: ThreadSafeQueue for sending status updates to Core 2
             config: Configuration object with hardware and control parameters
-            error_log: ErrorLog instance for cross-core error logging (optional)
             ready_flag: ReadyFlag for signaling Core 2 when hardware is ready (optional)
             quiet_mode: QuietMode for suppressing status updates during boot (optional)
         """
         self.command_queue = command_queue
         self.status_queue = status_queue
         self.config = config
-        self.error_log = error_log
         self.ready_flag = ready_flag
         self.quiet_mode = quiet_mode
         self.running = True
@@ -61,6 +60,9 @@ class ControlThread:
 
         # Tuning
         self.tuner = None
+        
+        # Scheduler for delayed start
+        self.scheduler = ScheduledProfileQueue()
 
         # Timing
         self.last_status_update = 0
@@ -110,7 +112,7 @@ class ControlThread:
 
         # Initialize temperature sensor
         self.temp_sensor = TemperatureSensor(
-            spi, cs_pin, thermocouple_type=self.config.THERMOCOUPLE_TYPE, offset=self.config.THERMOCOUPLE_OFFSET, error_log=self.error_log
+            spi, cs_pin, thermocouple_type=self.config.THERMOCOUPLE_TYPE, offset=self.config.THERMOCOUPLE_OFFSET
         )
 
         # Initialize SSR controller
@@ -118,8 +120,7 @@ class ControlThread:
         self.ssr_controller = SSRController(
             self.ssr_pin,
             cycle_time=self.config.SSR_CYCLE_TIME,
-            stagger_delay=stagger_delay,
-            error_log=self.error_log
+            stagger_delay=stagger_delay
         )
 
         # Get base PID gains and thermal parameters
@@ -261,6 +262,7 @@ class ControlThread:
                 current_rate = command.get('current_rate')  # Adapted rate from recovery
                 last_logged_temp = command.get('last_logged_temp')  # For recovery detection
                 current_temp = command.get('current_temp')  # For recovery detection
+                step_index = command.get('step_index')  # Step index from CSV
 
                 if not profile_filename:
                     print("[Control Thread] Error: No profile filename in resume_profile command")
@@ -268,7 +270,7 @@ class ControlThread:
 
                 try:
                     profile = self.load_profile_with_retry(f"profiles/{profile_filename}")
-                    self.controller.resume_profile(profile, elapsed_seconds, current_rate, last_logged_temp, current_temp)
+                    self.controller.resume_profile(profile, elapsed_seconds, current_rate, last_logged_temp, current_temp, step_index)
                     print(f"[Control Thread] Resumed profile: {profile.name} at {elapsed_seconds:.1f}s")
                 except Exception as e:
                     print(f"[Control Thread] Error loading profile '{profile_filename}': {e}")
@@ -316,6 +318,36 @@ class ControlThread:
                     self.tuner = None
                     self.ssr_controller.force_off()
 
+            elif cmd_type == MessageType.SCHEDULE_PROFILE:
+                # Schedule a profile for delayed start
+                profile_filename = command.get('profile_filename')
+                start_time = command.get('start_time')
+                
+                if not profile_filename or not start_time:
+                    print("[Control Thread] Error: Missing profile_filename or start_time")
+                    return
+                
+                # Validate start time is in future
+                if start_time <= time.time():
+                    print("[Control Thread] Error: Start time must be in the future")
+                    return
+                
+                try:
+                    self.scheduler.schedule(profile_filename, start_time)
+                    start_local = time.localtime(start_time)
+                    print(f"[Control Thread] Scheduled profile '{profile_filename}' "
+                          f"for {start_local[3]:02d}:{start_local[4]:02d}:{start_local[5]:02d}")
+                except Exception as e:
+                    print(f"[Control Thread] Error scheduling profile: {e}")
+
+            elif cmd_type == MessageType.CANCEL_SCHEDULED:
+                # Cancel scheduled profile
+                cancelled = self.scheduler.cancel()
+                if cancelled:
+                    print("[Control Thread] Cancelled scheduled profile")
+                else:
+                    print("[Control Thread] No scheduled profile to cancel")
+
             elif cmd_type == MessageType.PING:
                 # Ping message for testing
                 print("[Control Thread] Received ping")
@@ -359,7 +391,7 @@ class ControlThread:
             if self.controller.state == KilnState.TUNING and self.tuner:
                 status = StatusMessage.build_tuning_status(self.controller, self.tuner, self.ssr_controller)
             else:
-                status = StatusMessage.build(self.controller, self.pid, self.ssr_controller)
+                status = StatusMessage.build(self.controller, self.pid, self.ssr_controller, self.scheduler)
 
             # Check queue size before sending (monitor Core 2 health)
             # Only warn if queue is completely full to minimize USB contention
@@ -501,6 +533,19 @@ class ControlThread:
             if command:
                 self.handle_command(command)
 
+            # 1.5. Check for scheduled profile (ONLY when IDLE)
+            if self.controller.state == KilnState.IDLE:
+                if self.scheduler.can_consume():
+                    profile_filename = self.scheduler.consume()
+                    if profile_filename:
+                        print(f"[Control Thread] Starting scheduled profile: {profile_filename}")
+                        try:
+                            profile = self.load_profile_with_retry(f"profiles/{profile_filename}")
+                            self.controller.run_profile(profile)
+                        except Exception as e:
+                            print(f"[Control Thread] Error loading scheduled profile: {e}")
+                            self.controller.set_error(f"Scheduled profile error: {e}")
+
             # 2. Read temperature
             current_temp = self.temp_sensor.read()
 
@@ -619,7 +664,7 @@ class ControlThread:
         self.running = False
 
 
-def start_control_thread(command_queue, status_queue, config, error_log=None, ready_flag=None, quiet_mode=None):
+def start_control_thread(command_queue, status_queue, config, ready_flag=None, quiet_mode=None):
     """
     Thread entry point - starts the control loop
 
@@ -630,9 +675,8 @@ def start_control_thread(command_queue, status_queue, config, error_log=None, re
         command_queue: ThreadSafeQueue for receiving commands
         status_queue: ThreadSafeQueue for sending status updates
         config: Configuration object
-        error_log: ErrorLog instance for cross-core error logging (optional)
         ready_flag: ReadyFlag for signaling Core 2 when hardware is ready (optional)
         quiet_mode: QuietMode for suppressing status updates during boot (optional)
     """
-    control = ControlThread(command_queue, status_queue, config, error_log, ready_flag, quiet_mode)
+    control = ControlThread(command_queue, status_queue, config, ready_flag, quiet_mode)
     control.run()

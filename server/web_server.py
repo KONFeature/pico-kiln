@@ -24,6 +24,8 @@ HTTP_500 = b"HTTP/1.1 500 Internal Server Error\r\n"
 HEADER_CONTENT_TYPE_JSON = b"Content-Type: application/json\r\n"
 HEADER_CONTENT_TYPE_HTML = b"Content-Type: text/html\r\n"
 HEADER_CONTENT_TYPE_TEXT = b"Content-Type: text/plain\r\n"
+# CORS headers to allow web app from different origin
+HEADER_CORS = b"Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n"
 HEADER_CONNECTION_CLOSE = b"Connection: close\r\n\r\n"
 
 # Global communication channels (initialized in start_server)
@@ -79,7 +81,8 @@ def send_response(conn, status, body=b'', content_type='text/plain'):
 
     # MEMORY OPTIMIZED: Build headers as single bytes object, then send with body
     # This reduces from 4 separate send() calls to just 1 sendall() call
-    headers = status_line + content_type_header + HEADER_CONNECTION_CLOSE
+    # Include CORS headers to allow cross-origin requests from web app
+    headers = status_line + content_type_header + HEADER_CORS + HEADER_CONNECTION_CLOSE
     conn.sendall(headers + body)
 
 def send_json_response(conn, data, status=200):
@@ -166,6 +169,422 @@ def handle_api_stop(conn):
             'success': False,
             'error': 'Command queue full, please retry'
         }, 500)
+
+def handle_api_schedule(conn, body):
+    """POST /api/schedule - Schedule profile for delayed start"""
+    try:
+        import time
+        data = json.loads(body.decode())
+        profile_name = data.get('profile')
+        start_time = data.get('start_time')  # Unix timestamp
+        
+        if not profile_name or not start_time:
+            send_json_response(conn, {
+                'success': False, 
+                'error': 'profile and start_time required'
+            }, 400)
+            return
+        
+        # Validate start time is in future
+        if start_time <= time.time():
+            send_json_response(conn, {
+                'success': False,
+                'error': 'start_time must be in the future'
+            }, 400)
+            return
+        
+        # Check profile exists
+        from server.profile_cache import get_profile_cache
+        if not get_profile_cache().exists(profile_name):
+            send_json_response(conn, {
+                'success': False, 
+                'error': f'Profile not found: {profile_name}'
+            }, 404)
+            return
+        
+        profile_filename = f"{profile_name}.json"
+        command = CommandMessage.schedule_profile(profile_filename, start_time)
+        
+        if QueueHelper.put_nowait(command_queue, command):
+            print(f"[Web Server] Scheduled profile: {profile_name}")
+            send_json_response(conn, {
+                'success': True,
+                'message': f'Scheduled profile: {profile_name}'
+            })
+        else:
+            send_json_response(conn, {
+                'success': False,
+                'error': 'Command queue full'
+            }, 500)
+    
+    except Exception as e:
+        print(f"[Web Server] Error scheduling profile: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 400)
+
+def handle_api_scheduled_status(conn):
+    """GET /api/scheduled - Get status of scheduled profile"""
+    status = get_status_receiver().get_status()
+    scheduled = status.get('scheduled_profile')
+    
+    if scheduled:
+        send_json_response(conn, {
+            'scheduled': True,
+            'profile': scheduled['profile_filename'],
+            'start_time': scheduled['start_time'],
+            'start_time_iso': scheduled['start_time_iso'],
+            'seconds_until_start': scheduled['seconds_until_start']
+        })
+    else:
+        send_json_response(conn, {'scheduled': False})
+
+def handle_api_cancel_scheduled(conn):
+    """POST /api/scheduled/cancel - Cancel scheduled profile"""
+    command = CommandMessage.cancel_scheduled()
+    
+    if QueueHelper.put_nowait(command_queue, command):
+        print("[Web Server] Cancelled scheduled profile")
+        send_json_response(conn, {
+            'success': True,
+            'message': 'Cancelled scheduled profile'
+        })
+    else:
+        send_json_response(conn, {
+            'success': False,
+            'error': 'Command queue full'
+        }, 500)
+
+# === File Management Helpers ===
+
+def check_idle_state():
+    """
+    Check if kiln is in IDLE state before file operations
+    
+    Returns:
+        (is_idle, error_response) tuple
+        - If idle: (True, None)
+        - If not idle: (False, error_dict)
+    """
+    status = get_status_receiver().get_status()
+    state = status.get('state', 'UNKNOWN')
+    
+    if state != 'IDLE':
+        return False, {
+            'success': False,
+            'error': f'File operations not allowed while kiln is {state}. Stop the kiln first.'
+        }
+    
+    return True, None
+
+def validate_directory(directory):
+    """
+    Validate that directory is either 'profiles' or 'logs'
+    
+    Returns:
+        (is_valid, path, error_response) tuple
+    """
+    if directory not in ['profiles', 'logs']:
+        return False, None, {
+            'success': False,
+            'error': "Invalid directory. Must be 'profiles' or 'logs'"
+        }
+    
+    return True, directory, None
+
+def safe_filename(filename):
+    """
+    Validate filename to prevent directory traversal
+    
+    Returns:
+        True if safe, False otherwise
+    """
+    # Disallow path separators and parent directory references
+    if '/' in filename or '\\' in filename or '..' in filename:
+        return False
+    
+    # Must have some content
+    if not filename or filename.startswith('.'):
+        return False
+    
+    return True
+
+# === File Management Handlers ===
+
+def handle_api_files_list(conn, directory):
+    """GET /api/files/<directory> - List files in directory"""
+    try:
+        # Check if IDLE
+        is_idle, error = check_idle_state()
+        if not is_idle:
+            send_json_response(conn, error, 403)
+            return
+        
+        # Validate directory
+        is_valid, dir_path, error = validate_directory(directory)
+        if not is_valid:
+            send_json_response(conn, error, 400)
+            return
+        
+        # List files
+        import os
+        try:
+            files = []
+            for filename in os.listdir(dir_path):
+                filepath = f"{dir_path}/{filename}"
+                try:
+                    stat = os.stat(filepath)
+                    files.append({
+                        'name': filename,
+                        'size': stat[6],  # st_size
+                        'modified': stat[8]  # st_mtime
+                    })
+                except:
+                    # If stat fails, just add name
+                    files.append({'name': filename, 'size': 0, 'modified': 0})
+            
+            send_json_response(conn, {
+                'success': True,
+                'directory': directory,
+                'files': files,
+                'count': len(files)
+            })
+        except OSError as e:
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Failed to list directory: {e}'
+            }, 500)
+    
+    except Exception as e:
+        print(f"[Web Server] Error listing files: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+
+def handle_api_files_get(conn, directory, filename):
+    """GET /api/files/<directory>/<filename> - Get file content"""
+    try:
+        # Check if IDLE
+        is_idle, error = check_idle_state()
+        if not is_idle:
+            send_json_response(conn, error, 403)
+            return
+        
+        # Validate directory
+        is_valid, dir_path, error = validate_directory(directory)
+        if not is_valid:
+            send_json_response(conn, error, 400)
+            return
+        
+        # Validate filename
+        if not safe_filename(filename):
+            send_json_response(conn, {
+                'success': False,
+                'error': 'Invalid filename'
+            }, 400)
+            return
+        
+        # Read file
+        filepath = f"{dir_path}/{filename}"
+        try:
+            with open(filepath, 'r') as f:
+                content = f.read()
+            
+            send_json_response(conn, {
+                'success': True,
+                'filename': filename,
+                'content': content
+            })
+        except OSError as e:
+            send_json_response(conn, {
+                'success': False,
+                'error': f'File not found: {filename}'
+            }, 404)
+    
+    except Exception as e:
+        print(f"[Web Server] Error reading file: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+
+def handle_api_files_delete(conn, directory, filename):
+    """DELETE /api/files/<directory>/<filename> - Delete a file"""
+    try:
+        # Check if IDLE
+        is_idle, error = check_idle_state()
+        if not is_idle:
+            send_json_response(conn, error, 403)
+            return
+        
+        # Validate directory
+        is_valid, dir_path, error = validate_directory(directory)
+        if not is_valid:
+            send_json_response(conn, error, 400)
+            return
+        
+        # Validate filename
+        if not safe_filename(filename):
+            send_json_response(conn, {
+                'success': False,
+                'error': 'Invalid filename'
+            }, 400)
+            return
+        
+        # Delete file
+        filepath = f"{dir_path}/{filename}"
+        try:
+            import os
+            os.remove(filepath)
+            print(f"[Web Server] Deleted file: {filepath}")
+            send_json_response(conn, {
+                'success': True,
+                'message': f'Deleted {filename}'
+            })
+        except OSError as e:
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Failed to delete file: {e}'
+            }, 500)
+    
+    except Exception as e:
+        print(f"[Web Server] Error deleting file: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+
+def handle_api_files_upload(conn, directory, filename, body):
+    """PUT /api/files/<directory>/<filename> - Upload/create a file"""
+    try:
+        # Check if IDLE
+        is_idle, error = check_idle_state()
+        if not is_idle:
+            send_json_response(conn, error, 403)
+            return
+        
+        # Validate directory
+        is_valid, dir_path, error = validate_directory(directory)
+        if not is_valid:
+            send_json_response(conn, error, 400)
+            return
+        
+        # Validate filename
+        if not safe_filename(filename):
+            send_json_response(conn, {
+                'success': False,
+                'error': 'Invalid filename'
+            }, 400)
+            return
+        
+        # Parse JSON body to get content
+        try:
+            print(f"[Web Server] Upload body length: {len(body)} bytes")
+            body_str = body.decode('utf-8')
+            data = json.loads(body_str)
+            content = data.get('content')
+            
+            if content is None:
+                send_json_response(conn, {
+                    'success': False,
+                    'error': 'Missing content field in request body'
+                }, 400)
+                return
+        except UnicodeDecodeError as e:
+            print(f"[Web Server] UTF-8 decode error: {e}")
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Invalid UTF-8 encoding: {e}'
+            }, 400)
+            return
+        except ValueError as e:
+            print(f"[Web Server] JSON parse error: {e}")
+            print(f"[Web Server] Body preview: {body[:200]}")
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Invalid JSON body: {e}'
+            }, 400)
+            return
+        except Exception as e:
+            print(f"[Web Server] Unexpected error parsing body: {e}")
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Error parsing request: {e}'
+            }, 400)
+            return
+        
+        # Write file
+        filepath = f"{dir_path}/{filename}"
+        try:
+            with open(filepath, 'w') as f:
+                f.write(content)
+            
+            print(f"[Web Server] Uploaded file: {filepath} ({len(content)} bytes)")
+            
+            # Update profile cache if it's a profile
+            if directory == 'profiles':
+                from server.profile_cache import get_profile_cache
+                get_profile_cache().refresh()
+            
+            send_json_response(conn, {
+                'success': True,
+                'message': f'Uploaded {filename}',
+                'filename': filename,
+                'size': len(content)
+            })
+        except OSError as e:
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Failed to write file: {e}'
+            }, 500)
+    
+    except Exception as e:
+        print(f"[Web Server] Error uploading file: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+
+def handle_api_files_delete_all(conn, directory):
+    """DELETE /api/files/<directory>/all - Delete all files in directory"""
+    try:
+        # Check if IDLE
+        is_idle, error = check_idle_state()
+        if not is_idle:
+            send_json_response(conn, error, 403)
+            return
+        
+        # Only allow for logs directory
+        if directory != 'logs':
+            send_json_response(conn, {
+                'success': False,
+                'error': 'Bulk delete only allowed for logs directory'
+            }, 403)
+            return
+        
+        # Delete all files
+        import os
+        try:
+            deleted = []
+            errors = []
+            
+            for filename in os.listdir(directory):
+                filepath = f"{directory}/{filename}"
+                try:
+                    os.remove(filepath)
+                    deleted.append(filename)
+                except Exception as e:
+                    errors.append(f"{filename}: {e}")
+            
+            print(f"[Web Server] Deleted {len(deleted)} files from {directory}")
+            
+            response = {
+                'success': True,
+                'deleted_count': len(deleted),
+                'deleted_files': deleted
+            }
+            
+            if errors:
+                response['errors'] = errors
+            
+            send_json_response(conn, response)
+        
+        except OSError as e:
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Failed to delete files: {e}'
+            }, 500)
+    
+    except Exception as e:
+        print(f"[Web Server] Error deleting all files: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
 
 # === Status Handlers ===
 
@@ -258,116 +677,17 @@ def handle_tuning_page(conn):
 # === Static File Handlers ===
 
 async def handle_index(conn):
-    """Serve index.html with current state"""
-    try:
-        # MEMORY OPTIMIZED: Force garbage collection before building large response
-        gc.collect()
+    """Serve pre-rendered index.html (profiles list already included)"""
+    # PERFORMANCE: Use pre-rendered HTML from cache (no JSON building, no replacements)
+    from server.html_cache import get_html_cache
+    html = get_html_cache().get('index')
 
-        # PERFORMANCE: Use cached HTML instead of blocking file I/O
-        from server.html_cache import get_html_cache
-        html = get_html_cache().get('index')
-
-        if not html:
-            # Fallback: cache miss (shouldn't happen if preload succeeded)
-            send_response(conn, 500, b'HTML cache miss', 'text/plain')
-            return
-
-        # Yield to event loop immediately after getting cache
-        await asyncio.sleep(0)
-
-        # MEMORY OPTIMIZED: Use get_fields() to fetch only needed fields
-        receiver = get_status_receiver()
-        cached = receiver.status_cache.get_fields(
-            'ssr_output', 'current_temp', 'target_temp', 'profile_name', 'state',
-            'step_index', 'step_name', 'total_steps',
-            'desired_rate', 'current_rate', 'actual_rate', 'min_rate', 'adaptation_count',
-            'is_recovering', 'recovery_target_temp'
-        )
-
-        # Yield before building profiles list
-        await asyncio.sleep(0)
-
-        # Build profiles list HTML (using list + join for memory efficiency)
-        # PERFORMANCE: Use cached profile list instead of blocking os.listdir()
-        from server.profile_cache import get_profile_cache
-        profiles_parts = ['<ul>']
-
-        profile_names = get_profile_cache().list_profiles()
-
-        if profile_names:
-            for profile_name in profile_names:
-                profiles_parts.append(f'<li>{profile_name} <button onclick="startProfile(\'{profile_name}\')">Start</button></li>')
-        else:
-            profiles_parts.append('<li>No profiles found</li>')
-
-        profiles_parts.append('</ul>')
-        profiles_html = ''.join(profiles_parts)
-
-        # Yield before JSON serialization
-        await asyncio.sleep(0)
-
-        # MEMORY OPTIMIZED: Build single JSON object for client-side rendering
-        # This reduces 8 string.replace() calls to just 2, saving ~10KB in temporary allocations
-        # Safe: StatusMessage template guarantees all these fields exist
-        ssr_output = cached['ssr_output']
-        status_data = {
-            'status': f'{ssr_output:.0f}%' if ssr_output > 0 else 'OFF',
-            'current_temp': cached['current_temp'],
-            'target_temp': cached['target_temp'],
-            'program': cached['profile_name'] or 'None',
-            'state': cached['state'],
-            # Step information
-            'step_index': cached['step_index'],
-            'step_name': cached['step_name'],
-            'total_steps': cached['total_steps'],
-            # Rate information
-            'desired_rate': cached['desired_rate'],
-            'current_rate': cached['current_rate'],
-            'actual_rate': cached['actual_rate'],
-            'min_rate': cached['min_rate'],
-            'adaptation_count': cached['adaptation_count'],
-            # Recovery mode
-            'is_recovering': cached['is_recovering'],
-            'recovery_target_temp': cached['recovery_target_temp']
-        }
-
-        # Yield before sending response
-        await asyncio.sleep(0)
-
-        # MEMORY OPTIMIZED: Do replacements with GC between them to manage memory
-        json_str = json.dumps(status_data)
-        html = html.replace('{DATA}', json_str)
-
-        # Force GC after first large replace to free json_str and intermediate string
-        del json_str
-        gc.collect()
-
-        html = html.replace('{profiles_list}', profiles_html)
-
+    if html:
+        # Send pre-rendered HTML - client will fetch data via /api/status
         send_html_response(conn, html)
-    except OSError:
-        # File not found, serve simple fallback
-        html = """<!DOCTYPE html>
-<html>
-<head>
-    <title>Pico Kiln Controller</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; }
-        h1 { color: #333; }
-        .status { background: #f0f0f0; padding: 20px; border-radius: 5px; }
-    </style>
-</head>
-<body>
-    <h1>Pico Kiln Controller</h1>
-    <div class="status">
-        <h2>Status</h2>
-        <p>System is running!</p>
-        <p><a href="/api/state">View State API</a></p>
-        <p><a href="/api/info">View Info API</a></p>
-    </div>
-</body>
-</html>"""
-        send_html_response(conn, html)
+    else:
+        # Fallback: cache miss (shouldn't happen if preload succeeded)
+        send_response(conn, 500, b'HTML cache miss', 'text/plain')
 
 # === Request Router ===
 
@@ -395,9 +715,33 @@ async def handle_client(conn, addr):
 
         print(f"Request from {addr}")
 
-        # Parse request
+        # Parse request (initial)
         method, path, headers, body = parse_request(req)
         print(f"{method} {path}")
+        
+        # For PUT requests with Content-Length, read full body if needed
+        if method == 'PUT' and 'content-length' in headers:
+            content_length = int(headers['content-length'])
+            # Check if we need to read more data
+            header_end = req.find(b'\r\n\r\n')
+            if header_end != -1:
+                received_body_length = len(req) - (header_end + 4)
+                if received_body_length < content_length:
+                    # Need to read more data
+                    remaining = content_length - received_body_length
+                    try:
+                        additional_data = conn.recv(remaining)
+                        body += additional_data
+                    except OSError as e:
+                        print(f"[Web Server] Error reading full body: {e}")
+                        send_response(conn, 400, b'Failed to read request body', 'text/plain')
+                        return
+
+        # Handle CORS preflight requests
+        if method == 'OPTIONS':
+            # Respond to preflight with 200 OK and CORS headers (already included in send_response)
+            send_response(conn, 200, b'', 'text/plain')
+            return
 
         # Route request
         if path == '/' or path == '/index.html':
@@ -443,6 +787,61 @@ async def handle_client(conn, addr):
                 handle_api_tuning_status(conn)
             else:
                 send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        # Scheduling endpoints
+        elif path == '/api/schedule':
+            if method == 'POST':
+                handle_api_schedule(conn, body)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        elif path == '/api/scheduled':
+            if method == 'GET':
+                handle_api_scheduled_status(conn)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        elif path == '/api/scheduled/cancel':
+            if method == 'POST':
+                handle_api_cancel_scheduled(conn)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        # File management endpoints
+        elif path.startswith('/api/files/'):
+            # Parse path: /api/files/<directory> or /api/files/<directory>/<filename>
+            parts = path.split('/')
+            if len(parts) == 4:
+                # /api/files/<directory>
+                directory = parts[3]
+                if method == 'GET':
+                    handle_api_files_list(conn, directory)
+                else:
+                    send_response(conn, 405, b'Method not allowed', 'text/plain')
+            
+            elif len(parts) == 5:
+                # /api/files/<directory>/<filename>
+                directory = parts[3]
+                filename = parts[4]
+                
+                if filename == 'all':
+                    # DELETE /api/files/<directory>/all
+                    if method == 'DELETE':
+                        handle_api_files_delete_all(conn, directory)
+                    else:
+                        send_response(conn, 405, b'Method not allowed', 'text/plain')
+                else:
+                    # GET, PUT, or DELETE /api/files/<directory>/<filename>
+                    if method == 'GET':
+                        handle_api_files_get(conn, directory, filename)
+                    elif method == 'PUT':
+                        handle_api_files_upload(conn, directory, filename, body)
+                    elif method == 'DELETE':
+                        handle_api_files_delete(conn, directory, filename)
+                    else:
+                        send_response(conn, 405, b'Method not allowed', 'text/plain')
+            else:
+                send_response(conn, 404, b'Not found', 'text/plain')
 
         else:
             send_response(conn, 404, b'Not found', 'text/plain')

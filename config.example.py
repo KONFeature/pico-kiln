@@ -147,8 +147,11 @@ LOGGING_INTERVAL = 30   # Log data every N seconds
 
 # Automatic program recovery after unexpected reboot/crash
 # Resumes interrupted kiln program if conditions are safe
+#
+# Recovery uses temperature deviation as the primary safety check.
+# If current temperature matches the last logged temperature, the crash
+# was recent enough to safely resume. No time-based checking needed.
 
-MAX_RECOVERY_DURATION = 300   # Max time since last log to attempt recovery (seconds)
 MAX_RECOVERY_TEMP_DELTA = 30  # Max temp deviation from last log for safe recovery (°C)
 
 # ============================================================================
@@ -162,12 +165,13 @@ MAX_RECOVERY_TEMP_DELTA = 30  # Max temp deviation from last log for safe recove
 #   1. Control loop completes → watchdog is fed
 #   2. Control loop hangs → watchdog NOT fed
 #   3. After WATCHDOG_TIMEOUT → Pico resets
-#   4. Recovery system resumes program (if within MAX_RECOVERY_DURATION)
+#   4. Recovery system resumes program (if temperature matches last log)
 #
 # Safety notes:
 #   - Timeout (8000ms) > control loop interval (1000ms) → 8x safety margin
 #   - Core 2 failures (web, WiFi) do NOT trigger watchdog
 #   - Only critical control loop hangs trigger reset
+#   - Recovery uses temperature deviation as primary safety check
 #
 # When to enable:
 #   ✓ After thorough testing
@@ -189,6 +193,9 @@ WATCHDOG_TIMEOUT = 8000  # milliseconds (8 seconds)
 # 1602 LCD display with I2C backpack (PCF8574)
 # If these settings are not defined, LCD display will be disabled
 #
+# Display-only mode: Shows temperature, state, target temp, and SSR output
+# Updates every 2 seconds. No buttons needed.
+#
 # To enable the LCD display, uncomment and configure the following:
 
 # I2C Configuration for LCD
@@ -198,15 +205,6 @@ WATCHDOG_TIMEOUT = 8000  # milliseconds (8 seconds)
 # LCD_I2C_FREQ = 100000    # I2C frequency (100kHz standard)
 # LCD_I2C_ADDR = 0x27      # I2C address (0x27 or 0x3F common for PCF8574)
 
-# Button Configuration (OPTIONAL)
-# Buttons connect to ground (active low with internal pull-up)
-# If not defined, display will work but no button navigation
-# LCD_BTN_NEXT_PIN = 14    # Button to cycle through screens
-# LCD_BTN_SELECT_PIN = 15  # Button to select/confirm actions
-
-# Available screens (auto-cycle with NEXT button):
-#   1. WiFi Status - Shows connection status and IP address
-#   2. State - Shows current state (RUNNING, IDLE, TUNING, etc.)
-#   3. Temperature - Shows current and target temperature
-#   4. Profile - Shows active profile or tuning method
-#   5. Stop - Allows stopping active program (requires SELECT confirmation)
+# Display format (16x2):
+#   Row 1: "123C RUNNING"     (Current temp + State)
+#   Row 2: "Tgt:850C  67%"    (Target temp + SSR output)
