@@ -24,7 +24,13 @@ import {
   Loader2,
 } from 'lucide-react';
 import { usePico } from '@/lib/pico/context';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { 
+  useListFiles, 
+  useDeleteFile, 
+  useDeleteAllLogs, 
+  useUploadFile,
+  useIsFileOperationsAvailable,
+} from '@/lib/pico/hooks';
 import type { FileDirectory } from '@/lib/pico/types';
 
 interface FileItem {
@@ -40,64 +46,24 @@ export function FileManager() {
   const [uploadDirectory, setUploadDirectory] = useState<FileDirectory>('profiles');
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const { client, isConfigured } = usePico();
-  const queryClient = useQueryClient();
+  const isFileOpsAvailable = useIsFileOperationsAvailable();
 
-  // Query to list files
+  // Query to list files (with persistence)
   const {
     data: filesData,
     isLoading: isLoadingFiles,
     error: filesError,
     refetch: refetchFiles,
-  } = useQuery({
-    queryKey: ['files', selectedDirectory],
-    queryFn: () => client!.listFiles(selectedDirectory),
-    enabled: isConfigured && client !== null,
-    retry: 1,
-  });
+  } = useListFiles(selectedDirectory);
 
   // Mutation for deleting a file
-  const deleteMutation = useMutation({
-    mutationFn: ({ directory, filename }: { directory: FileDirectory; filename: string }) => {
-      if (!client) throw new Error('Pico client not configured');
-      return client.deleteFile(directory, filename);
-    },
-    onSuccess: (data, variables) => {
-      if (data.success) {
-        // Invalidate the file list to refresh
-        queryClient.invalidateQueries({ queryKey: ['files', variables.directory] });
-        setFileToDelete(null);
-      }
-    },
-  });
+  const deleteMutation = useDeleteFile();
 
   // Mutation for deleting all logs
-  const deleteAllLogsMutation = useMutation({
-    mutationFn: () => {
-      if (!client) throw new Error('Pico client not configured');
-      return client.deleteAllLogs();
-    },
-    onSuccess: (data) => {
-      if (data.success) {
-        queryClient.invalidateQueries({ queryKey: ['files', 'logs'] });
-        setShowDeleteAllDialog(false);
-      }
-    },
-  });
+  const deleteAllLogsMutation = useDeleteAllLogs();
 
   // Mutation for uploading a file
-  const uploadMutation = useMutation({
-    mutationFn: async ({ directory, filename, content }: { directory: FileDirectory; filename: string; content: string }) => {
-      if (!client) throw new Error('Pico client not configured');
-      return client.uploadFile(directory, filename, content);
-    },
-    onSuccess: (data, variables) => {
-      if (data.success) {
-        queryClient.invalidateQueries({ queryKey: ['files', variables.directory] });
-        setShowUploadDialog(false);
-        setUploadFile(null);
-      }
-    },
-  });
+  const uploadMutation = useUploadFile();
 
   const handleDownloadFile = async (directory: FileDirectory, filename: string) => {
     if (!client) return;
@@ -139,11 +105,19 @@ export function FileManager() {
         }
       }
       
-      uploadMutation.mutate({
-        directory: uploadDirectory,
-        filename: uploadFile.name,
-        content,
-      });
+      uploadMutation.mutate(
+        {
+          directory: uploadDirectory,
+          filename: uploadFile.name,
+          content,
+        },
+        {
+          onSuccess: () => {
+            setShowUploadDialog(false);
+            setUploadFile(null);
+          },
+        }
+      );
     };
     reader.readAsText(uploadFile);
   };
@@ -177,6 +151,16 @@ export function FileManager() {
 
         {isConfigured && (
           <>
+            {/* Offline/Running Mode Notice */}
+            {!isFileOpsAvailable && (
+              <Alert>
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  Kiln is currently running. Showing cached file data. File operations (upload/delete) are disabled until kiln returns to IDLE state.
+                </AlertDescription>
+              </Alert>
+            )}
+
             {/* Directory Selection */}
             <div>
               <Label className="text-base">Select Directory</Label>
@@ -221,6 +205,7 @@ export function FileManager() {
                     setUploadDirectory(selectedDirectory);
                     setShowUploadDialog(true);
                   }}
+                  disabled={!isFileOpsAvailable}
                 >
                   <Upload className="w-4 h-4 mr-2" />
                   Upload
@@ -232,6 +217,7 @@ export function FileManager() {
                   variant="destructive"
                   size="sm"
                   onClick={() => setShowDeleteAllDialog(true)}
+                  disabled={!isFileOpsAvailable}
                 >
                   <Trash2 className="w-4 h-4 mr-2" />
                   Delete All Logs
@@ -295,6 +281,7 @@ export function FileManager() {
                             variant="ghost"
                             size="sm"
                             onClick={() => setFileToDelete({ directory: selectedDirectory, filename: file.name })}
+                            disabled={!isFileOpsAvailable}
                           >
                             <Trash2 className="w-4 h-4 text-destructive" />
                           </Button>
@@ -334,7 +321,11 @@ export function FileManager() {
               variant="destructive"
               onClick={() => {
                 if (fileToDelete) {
-                  deleteMutation.mutate(fileToDelete);
+                  deleteMutation.mutate(fileToDelete, {
+                    onSuccess: () => {
+                      setFileToDelete(null);
+                    },
+                  });
                 }
               }}
               disabled={deleteMutation.isPending}
@@ -381,7 +372,11 @@ export function FileManager() {
             </Button>
             <Button
               variant="destructive"
-              onClick={() => deleteAllLogsMutation.mutate()}
+              onClick={() => deleteAllLogsMutation.mutate(undefined, {
+                onSuccess: () => {
+                  setShowDeleteAllDialog(false);
+                },
+              })}
               disabled={deleteAllLogsMutation.isPending}
             >
               {deleteAllLogsMutation.isPending ? (

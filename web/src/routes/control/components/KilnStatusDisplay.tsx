@@ -1,7 +1,8 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Loader2, Thermometer, Flame, AlertTriangle, Clock, Gauge, TrendingUp, AlertCircle } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Loader2, Thermometer, Flame, AlertTriangle, Clock, Gauge, TrendingUp, AlertCircle, RefreshCw } from 'lucide-react'
 import type { KilnStatus } from '@/lib/pico/types'
 import type { PicoAPIError } from '@/lib/pico/client'
 
@@ -9,14 +10,27 @@ interface KilnStatusDisplayProps {
   status?: KilnStatus
   isLoading: boolean
   error: PicoAPIError | null
+  onRefresh?: () => void
 }
 
-export function KilnStatusDisplay({ status, isLoading, error }: KilnStatusDisplayProps) {
+export function KilnStatusDisplay({ status, isLoading, error, onRefresh }: KilnStatusDisplayProps) {
   if (error) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Kiln Status</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>Kiln Status</CardTitle>
+            {onRefresh && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onRefresh}
+                disabled={isLoading}
+              >
+                <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           <Alert variant="destructive">
@@ -34,7 +48,19 @@ export function KilnStatusDisplay({ status, isLoading, error }: KilnStatusDispla
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Kiln Status</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>Kiln Status</CardTitle>
+            {onRefresh && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onRefresh}
+                disabled={isLoading}
+              >
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           <div className="flex items-center justify-center py-8">
@@ -49,7 +75,19 @@ export function KilnStatusDisplay({ status, isLoading, error }: KilnStatusDispla
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Kiln Status</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>Kiln Status</CardTitle>
+            {onRefresh && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onRefresh}
+                disabled={isLoading}
+              >
+                <RefreshCw className="w-4 h-4" />
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           <p className="text-muted-foreground">No status data available</p>
@@ -97,8 +135,21 @@ export function KilnStatusDisplay({ status, isLoading, error }: KilnStatusDispla
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
-            <CardTitle>Kiln Status</CardTitle>
-            {getStateBadge(status.state)}
+            <div className="flex items-center gap-3">
+              <CardTitle>Kiln Status</CardTitle>
+              {getStateBadge(status.state)}
+            </div>
+            {onRefresh && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onRefresh}
+                disabled={isLoading}
+                title="Refresh status"
+              >
+                <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+              </Button>
+            )}
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -166,6 +217,11 @@ export function KilnStatusDisplay({ status, isLoading, error }: KilnStatusDispla
                     Target: {status.current_rate.toFixed(1)}°C/h
                   </div>
                 )}
+                {status.adaptation_count !== undefined && status.state === 'RUNNING' && (
+                  <div className="text-xs text-muted-foreground">
+                    Adaptations: {status.adaptation_count}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -192,6 +248,7 @@ export function KilnStatusDisplay({ status, isLoading, error }: KilnStatusDispla
         </CardContent>
       </Card>
 
+      {/* Profile Progress (for RUNNING state) */}
       {status.state === 'RUNNING' && status.profile_name && (
         <Card>
           <CardHeader>
@@ -237,6 +294,74 @@ export function KilnStatusDisplay({ status, isLoading, error }: KilnStatusDispla
                     {formatDuration(status.elapsed)}
                   </div>
                 </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Tuning Progress (for TUNING state) */}
+      {status.state === 'TUNING' && status.tuning && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle>Tuning Progress</CardTitle>
+              {status.step_index !== undefined && status.total_steps !== undefined && (
+                <Badge className="bg-purple-600 hover:bg-purple-700">
+                  Step {status.step_index + 1} / {status.total_steps}
+                </Badge>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Tuning Mode */}
+            <div className="space-y-1">
+              <div className="text-sm text-muted-foreground">Tuning Mode</div>
+              <div className="text-xl font-bold capitalize">{status.tuning.mode?.replace('_', ' ')}</div>
+            </div>
+
+            {/* Current Phase/Step */}
+            {status.step_name && (
+              <div className="p-3 rounded-lg bg-purple-50 dark:bg-purple-950/20 border border-purple-200 dark:border-purple-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">
+                    Current Phase: {status.step_name}
+                  </span>
+                </div>
+                {status.tuning.phase && (
+                  <div className="text-sm text-muted-foreground">
+                    {status.tuning.phase}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Tuning Information */}
+            <div className="grid grid-cols-2 gap-4 text-sm pt-2 border-t">
+              {status.elapsed !== undefined && (
+                <div>
+                  <div className="text-muted-foreground">Elapsed Time</div>
+                  <div className="font-medium flex items-center gap-1 mt-1">
+                    <Clock className="w-4 h-4" />
+                    {formatDuration(status.elapsed)}
+                  </div>
+                </div>
+              )}
+              {status.tuning.max_temp !== undefined && (
+                <div>
+                  <div className="text-muted-foreground">Max Temperature</div>
+                  <div className="font-medium mt-1">
+                    {formatTemp(status.tuning.max_temp)}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Oscillation Count (if available) */}
+            {status.tuning.oscillation_count !== undefined && (
+              <div className="text-sm">
+                <span className="text-muted-foreground">Oscillations Detected:</span>{' '}
+                <span className="font-medium">{status.tuning.oscillation_count}</span>
               </div>
             )}
           </CardContent>

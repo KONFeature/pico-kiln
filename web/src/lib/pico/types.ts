@@ -80,9 +80,10 @@ export interface KilnStatus {
   error?: string;         // Alternative error field name
   
   // Rate control information
-  current_rate?: number;  // Adapted rate in °C/h
-  actual_rate?: number;   // Measured rate in °C/h
-  desired_rate?: number;  // Target rate for current step in °C/h
+  current_rate?: number;     // Adapted rate in °C/h
+  actual_rate?: number;      // Measured rate in °C/h
+  desired_rate?: number;     // Target rate for current step in °C/h
+  adaptation_count?: number; // Number of rate adaptations made
   
   // Recovery mode information
   is_recovering?: boolean;           // True if in recovery mode

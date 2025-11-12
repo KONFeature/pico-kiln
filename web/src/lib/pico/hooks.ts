@@ -13,6 +13,12 @@ import type {
   ScheduleProfileResponse,
   ScheduledStatusResponse,
   CancelScheduledResponse,
+  FileDirectory,
+  ListFilesResponse,
+  GetFileResponse,
+  DeleteFileResponse,
+  DeleteAllFilesResponse,
+  UploadFileResponse,
 } from './types';
 import { PicoAPIError } from './client';
 
@@ -22,6 +28,9 @@ export const picoKeys = {
   status: () => [...picoKeys.all, 'status'] as const,
   tuningStatus: () => [...picoKeys.all, 'tuning-status'] as const,
   scheduledStatus: () => [...picoKeys.all, 'scheduled-status'] as const,
+  // File-related query keys (persisted)
+  files: (directory: string) => ['files', directory] as const,
+  fileContent: (directory: string, filename: string) => ['file-content', directory, filename] as const,
 };
 
 // === Status Hooks ===
@@ -355,6 +364,183 @@ export function useTestConnection() {
       if (isConnected) {
         // If connection successful, invalidate status to fetch fresh data
         queryClient.invalidateQueries({ queryKey: picoKeys.status() });
+      }
+    },
+  });
+}
+
+// === File Management Hooks ===
+
+/**
+ * Hook to check if file operations are available
+ * File operations only work when kiln is IDLE
+ */
+export function useIsFileOperationsAvailable() {
+  const { data: status } = useKilnStatus();
+  return status?.state === 'IDLE';
+}
+
+/**
+ * Hook to list files in a directory
+ * Persisted across sessions and available even when kiln is running
+ */
+export function useListFiles(
+  directory: FileDirectory,
+  options?: Partial<UseQueryOptions<ListFilesResponse, PicoAPIError>>
+) {
+  const { client, isConfigured } = usePico();
+  const isFileOpsAvailable = useIsFileOperationsAvailable();
+
+  return useQuery<ListFilesResponse, PicoAPIError>({
+    queryKey: picoKeys.files(directory),
+    queryFn: async () => {
+      if (!client) {
+        throw new PicoAPIError('Pico client not initialized');
+      }
+      return await client.listFiles(directory);
+    },
+    enabled: isConfigured && Boolean(client),
+    // If file operations not available (kiln running), use stale data and don't refetch
+    refetchInterval: isFileOpsAvailable ? 30000 : false, // Only refetch every 30s when IDLE
+    refetchOnWindowFocus: isFileOpsAvailable, // Only refetch on focus when IDLE
+    // Keep data for long time since files don't change often
+    staleTime: isFileOpsAvailable ? 1000 * 60 * 5 : Number.POSITIVE_INFINITY, // 5 min when IDLE, never stale when running
+    gcTime: 1000 * 60 * 60 * 24, // Keep in cache for 24 hours
+    // Show cached data immediately while fetching
+    placeholderData: (previousData) => previousData,
+    retry: (failureCount, error) => {
+      // If kiln is running, don't retry - just use cached data
+      if (!isFileOpsAvailable) return false;
+      // Otherwise retry up to 2 times
+      return failureCount < 2;
+    },
+    ...options,
+  });
+}
+
+/**
+ * Hook to get file content
+ * Persisted across sessions for offline access
+ */
+export function useGetFile(
+  directory: FileDirectory,
+  filename: string,
+  enabled = true,
+  options?: Partial<UseQueryOptions<GetFileResponse, PicoAPIError>>
+) {
+  const { client, isConfigured } = usePico();
+  const isFileOpsAvailable = useIsFileOperationsAvailable();
+
+  return useQuery<GetFileResponse, PicoAPIError>({
+    queryKey: picoKeys.fileContent(directory, filename),
+    queryFn: async () => {
+      if (!client) {
+        throw new PicoAPIError('Pico client not initialized');
+      }
+      return await client.getFile(directory, filename);
+    },
+    enabled: enabled && isConfigured && Boolean(client),
+    // If file operations not available, use cached data
+    refetchInterval: false, // Don't auto-refetch file content
+    refetchOnWindowFocus: isFileOpsAvailable, // Only refetch on focus when IDLE
+    staleTime: isFileOpsAvailable ? 1000 * 60 * 10 : Number.POSITIVE_INFINITY, // 10 min when IDLE, never stale when running
+    gcTime: 1000 * 60 * 60 * 24 * 7, // Keep in cache for 7 days
+    placeholderData: (previousData) => previousData,
+    retry: (failureCount, error) => {
+      if (!isFileOpsAvailable) return false;
+      return failureCount < 2;
+    },
+    ...options,
+  });
+}
+
+/**
+ * Mutation to delete a file
+ * Only works when kiln is IDLE
+ */
+export function useDeleteFile() {
+  const { client } = usePico();
+  const queryClient = useQueryClient();
+  const isFileOpsAvailable = useIsFileOperationsAvailable();
+
+  return useMutation<DeleteFileResponse, PicoAPIError, { directory: FileDirectory; filename: string }>({
+    mutationFn: async ({ directory, filename }) => {
+      if (!client) {
+        throw new PicoAPIError('Pico client not initialized');
+      }
+      if (!isFileOpsAvailable) {
+        throw new PicoAPIError('File operations only available when kiln is IDLE');
+      }
+      return await client.deleteFile(directory, filename);
+    },
+    onSuccess: (data, variables) => {
+      if (data.success) {
+        // Invalidate file list
+        queryClient.invalidateQueries({ queryKey: picoKeys.files(variables.directory) });
+        // Remove cached file content
+        queryClient.removeQueries({ queryKey: picoKeys.fileContent(variables.directory, variables.filename) });
+      }
+    },
+  });
+}
+
+/**
+ * Mutation to delete all log files
+ * Only works when kiln is IDLE
+ */
+export function useDeleteAllLogs() {
+  const { client } = usePico();
+  const queryClient = useQueryClient();
+  const isFileOpsAvailable = useIsFileOperationsAvailable();
+
+  return useMutation<DeleteAllFilesResponse, PicoAPIError, void>({
+    mutationFn: async () => {
+      if (!client) {
+        throw new PicoAPIError('Pico client not initialized');
+      }
+      if (!isFileOpsAvailable) {
+        throw new PicoAPIError('File operations only available when kiln is IDLE');
+      }
+      return await client.deleteAllLogs();
+    },
+    onSuccess: (data) => {
+      if (data.success) {
+        // Invalidate logs file list
+        queryClient.invalidateQueries({ queryKey: picoKeys.files('logs') });
+        // Remove all cached log file content
+        queryClient.removeQueries({ queryKey: ['file-content', 'logs'] });
+      }
+    },
+  });
+}
+
+/**
+ * Mutation to upload a file
+ * Only works when kiln is IDLE
+ */
+export function useUploadFile() {
+  const { client } = usePico();
+  const queryClient = useQueryClient();
+  const isFileOpsAvailable = useIsFileOperationsAvailable();
+
+  return useMutation<UploadFileResponse, PicoAPIError, { directory: FileDirectory; filename: string; content: string }>({
+    mutationFn: async ({ directory, filename, content }) => {
+      if (!client) {
+        throw new PicoAPIError('Pico client not initialized');
+      }
+      if (!isFileOpsAvailable) {
+        throw new PicoAPIError('File operations only available when kiln is IDLE');
+      }
+      return await client.uploadFile(directory, filename, content);
+    },
+    onSuccess: (data, variables) => {
+      if (data.success) {
+        // Invalidate file list to show new file
+        queryClient.invalidateQueries({ queryKey: picoKeys.files(variables.directory) });
+        // Invalidate cached content for this file in case it was updated
+        queryClient.invalidateQueries({ 
+          queryKey: picoKeys.fileContent(variables.directory, variables.filename) 
+        });
       }
     },
   });
