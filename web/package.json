@@ -13,7 +13,9 @@
     "tauri": "tauri",
     "tauri:android": "tauri android dev",
     "tauri:android:build": "tauri android build",
-    "tauri:android:build:debug": "tauri android build --debug"
+    "tauri:android:build:debug": "tauri android build --debug",
+    "tauri:build": "tauri build --no-sign",
+    "tauri:build:universal": "tauri build --no-sign --target universal-apple-darwin"
   },
   "dependencies": {
     "@radix-ui/react-collapsible": "^1.1.12",

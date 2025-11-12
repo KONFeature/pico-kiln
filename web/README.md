@@ -21,7 +21,7 @@ bun run build
 
 ## Android APK
 
-This app can be bundled as an Android APK using Tauri. See [ANDROID_BUILD.md](./ANDROID_BUILD.md) for complete instructions.
+This app can be bundled as an Android APK using Tauri. See [DESKTOP_MOBILE_BUILD.md](./DESKTOP_MOBILE_BUILD.md) for complete instructions.
 
 **Quick Start:**
 

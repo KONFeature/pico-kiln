@@ -1,6 +1,77 @@
-# Android APK Build Guide
+# Desktop & Mobile Build Guide
 
-This document explains how to build and deploy the Kiln web app as an Android APK using Tauri.
+This document explains how to build and deploy the Kiln web app as native applications for macOS and Android using Tauri.
+
+## Table of Contents
+
+- [macOS Application](#macos-application)
+- [Android APK](#android-apk)
+
+---
+
+# macOS Application
+
+## Prerequisites
+
+- macOS (Intel or Apple Silicon)
+- Rust toolchain
+- Bun package manager
+
+## Build Commands
+
+### Standard Build (current architecture)
+
+```bash
+cd web
+bun run tauri:build
+```
+
+**Output:**
+- App Bundle: `src-tauri/target/release/bundle/macos/kiln.app` (~8.8 MB)
+- DMG Installer: `src-tauri/target/release/bundle/dmg/kiln_0.1.0_aarch64.dmg` (~3.7 MB)
+
+### Universal Binary (Intel + Apple Silicon)
+
+```bash
+cd web
+# First install both targets
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+# Build universal binary
+bun run tauri:build:universal
+```
+
+**Output:**
+- Universal App: `src-tauri/target/release/bundle/macos/kiln.app`
+- Universal DMG: `src-tauri/target/release/bundle/dmg/kiln_0.1.0_universal.dmg`
+
+## Installation
+
+### Direct App Installation
+
+1. Copy `kiln.app` to `/Applications/`
+2. First launch: Right-click → Open (to bypass Gatekeeper for unsigned apps)
+
+### DMG Installation
+
+1. Open the DMG file
+2. Drag `kiln.app` to Applications folder
+3. First launch: Right-click → Open
+
+## Distribution
+
+The builds are **unsigned**. For distribution:
+
+1. **For personal use**: Users must right-click → Open on first launch
+2. **For public distribution**: Sign with Apple Developer certificate:
+   ```bash
+   codesign --sign "Developer ID Application: Your Name" --deep kiln.app
+   ```
+3. **For App Store**: Build without `--no-sign` and configure signing in `tauri.conf.json`
+
+---
+
+# Android APK
 
 ## Prerequisites
 
@@ -59,23 +130,30 @@ keytool -genkey -v -keystore ~/kiln-release.keystore \
 
 ### 2. Sign the APK
 
-```bash
-# Using jarsigner
-jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
-  -keystore ~/kiln-release.keystore \
-  src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk \
-  kiln
+**IMPORTANT:** You MUST use `apksigner` (not `jarsigner`) for APKs with native libraries. `jarsigner` only supports APK v1 signatures and will cause `INSTALL_FAILED_INVALID_APK` errors.
 
-# Or using apksigner (recommended)
-apksigner sign --ks ~/kiln-release.keystore \
+```bash
+# Find apksigner in Android SDK
+APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+
+# Sign with apksigner (REQUIRED for native libraries)
+$APKSIGNER sign --ks ~/kiln-release.keystore \
   --out app-universal-release-signed.apk \
   src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
+
+# Or use the automated script (recommended)
+./sign-and-install.sh
 ```
 
 ### 3. Verify the Signature
 
 ```bash
-apksigner verify app-universal-release-signed.apk
+# Using apksigner from Android SDK
+$ANDROID_HOME/build-tools/36.0.0/apksigner verify -v app-universal-release-signed.apk
+
+# Should show:
+# Verified using v2 scheme (APK Signature Scheme v2): true
+# Verified using v3 scheme (APK Signature Scheme v3): true
 ```
 
 ## Installing on Android Device
@@ -105,11 +183,10 @@ To publish on Google Play Store:
 3. Google Play will optimize and sign APKs for different device configurations
 
 ```bash
-# Sign the AAB
-jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
-  -keystore ~/kiln-release.keystore \
-  src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab \
-  kiln
+# Sign the AAB with apksigner
+$ANDROID_HOME/build-tools/36.0.0/apksigner sign --ks ~/kiln-release.keystore \
+  --out app-universal-release-signed.aab \
+  src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab
 ```
 
 ## Development Workflow
@@ -138,6 +215,7 @@ The Android app configuration is managed in:
 
 - `src-tauri/tauri.conf.json` - Main Tauri configuration
 - `src-tauri/gen/android/app/build.gradle.kts` - Android-specific build settings
+- `src-tauri/gen/android/app/src/main/res/xml/network_security_config.xml` - Network security
 
 ### Key Settings
 
@@ -145,6 +223,16 @@ The Android app configuration is managed in:
 - **Min SDK:** 24 (Android 7.0)
 - **Target SDK:** 36
 - **Supported ABIs:** arm64-v8a, armeabi-v7a, x86, x86_64
+- **Cleartext Traffic:** Enabled (allows HTTP connections to Pico device)
+
+### Network Security
+
+The app allows HTTP (cleartext) traffic to connect to the Pico device on your local network. This is configured in:
+
+- `build.gradle.kts`: `manifestPlaceholders["usesCleartextTraffic"] = "true"`
+- `network_security_config.xml`: `<base-config cleartextTrafficPermitted="true">`
+
+Without this configuration, Android would block HTTP connections and only allow HTTPS.
 
 ## Troubleshooting
 
