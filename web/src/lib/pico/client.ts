@@ -13,6 +13,12 @@ import type {
   ScheduleProfileResponse,
   ScheduledStatusResponse,
   CancelScheduledResponse,
+  FileDirectory,
+  ListFilesResponse,
+  GetFileResponse,
+  DeleteFileResponse,
+  DeleteAllFilesResponse,
+  UploadFileResponse,
 } from './types';
 
 export class PicoAPIError extends Error {
@@ -32,7 +38,8 @@ export class PicoAPIClient {
 
   constructor(baseURL: string, timeoutMs = 10000) {
     // Ensure baseURL doesn't end with a slash
-    this.baseURL = baseURL.replace(/\/$/, '');
+    // Empty string means use relative URLs (for proxy mode)
+    this.baseURL = baseURL ? baseURL.replace(/\/$/, '') : '';
     this.timeoutMs = timeoutMs;
   }
 
@@ -211,5 +218,55 @@ export class PicoAPIClient {
    */
   getBaseURL(): string {
     return this.baseURL;
+  }
+
+  // === File Management Endpoints ===
+
+  /**
+   * List all files in a directory (profiles or logs)
+   * Only works when kiln is IDLE
+   */
+  async listFiles(directory: FileDirectory): Promise<ListFilesResponse> {
+    return this.request<ListFilesResponse>(`/api/files/${directory}`);
+  }
+
+  /**
+   * Get file content from a directory
+   * Only works when kiln is IDLE
+   */
+  async getFile(directory: FileDirectory, filename: string): Promise<GetFileResponse> {
+    return this.request<GetFileResponse>(`/api/files/${directory}/${filename}`);
+  }
+
+  /**
+   * Delete a single file
+   * Only works when kiln is IDLE
+   */
+  async deleteFile(directory: FileDirectory, filename: string): Promise<DeleteFileResponse> {
+    return this.request<DeleteFileResponse>(`/api/files/${directory}/${filename}`, {
+      method: 'DELETE',
+    });
+  }
+
+  /**
+   * Delete all files in logs directory
+   * Only allowed for logs directory, only works when kiln is IDLE
+   */
+  async deleteAllLogs(): Promise<DeleteAllFilesResponse> {
+    return this.request<DeleteAllFilesResponse>('/api/files/logs/all', {
+      method: 'DELETE',
+    });
+  }
+
+  /**
+   * Upload a file to the Pico
+   * Only works when kiln is IDLE
+   */
+  async uploadFile(directory: FileDirectory, filename: string, content: string): Promise<UploadFileResponse> {
+    return this.request<UploadFileResponse>(`/api/files/${directory}/${filename}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
   }
 }

@@ -159,3 +159,47 @@ export interface ConnectionHealth {
   consecutiveFailures: number;
   lastError?: string;
 }
+
+// File Management API types
+export type FileDirectory = 'profiles' | 'logs';
+
+export interface FileMetadata {
+  name: string;
+  size: number;
+  modified: number; // Unix timestamp
+}
+
+export interface ListFilesResponse {
+  success: boolean;
+  directory: FileDirectory;
+  count: number;
+  files: FileMetadata[];
+  error?: string;
+}
+
+export interface GetFileResponse {
+  success: boolean;
+  filename: string;
+  content: string;
+  error?: string;
+}
+
+export interface DeleteFileResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
+
+export interface DeleteAllFilesResponse {
+  success: boolean;
+  deleted_count: number;
+  deleted_files: string[];
+  error?: string;
+}
+
+export interface UploadFileResponse {
+  success: boolean;
+  message?: string;
+  filename?: string;
+  error?: string;
+}

@@ -1,10 +1,12 @@
 import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
-import { Menu, X, Flame, Wrench } from 'lucide-react'
+import { Menu, X, Flame, Wrench, Settings } from 'lucide-react'
 import { ConnectionStatus } from './ConnectionStatus'
+import { PicoConnectionDialog } from './PicoConnectionDialog'
 
 export default function Header() {
   const [isOpen, setIsOpen] = useState(false)
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
 
   return (
     <>
@@ -24,8 +26,22 @@ export default function Header() {
             </Link>
           </h1>
         </div>
-        <ConnectionStatus />
+        <div className="flex items-center gap-2">
+          <ConnectionStatus />
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+            aria-label="Settings"
+          >
+            <Settings size={20} />
+          </button>
+        </div>
       </header>
+
+      <PicoConnectionDialog 
+        open={isSettingsOpen} 
+        onOpenChange={setIsSettingsOpen} 
+      />
 
       <aside
         className={`fixed top-0 left-0 h-full w-80 bg-gray-900 text-white shadow-2xl z-50 transform transition-transform duration-300 ease-in-out flex flex-col ${

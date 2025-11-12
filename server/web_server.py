@@ -24,6 +24,8 @@ HTTP_500 = b"HTTP/1.1 500 Internal Server Error\r\n"
 HEADER_CONTENT_TYPE_JSON = b"Content-Type: application/json\r\n"
 HEADER_CONTENT_TYPE_HTML = b"Content-Type: text/html\r\n"
 HEADER_CONTENT_TYPE_TEXT = b"Content-Type: text/plain\r\n"
+# CORS headers to allow web app from different origin
+HEADER_CORS = b"Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n"
 HEADER_CONNECTION_CLOSE = b"Connection: close\r\n\r\n"
 
 # Global communication channels (initialized in start_server)
@@ -79,7 +81,8 @@ def send_response(conn, status, body=b'', content_type='text/plain'):
 
     # MEMORY OPTIMIZED: Build headers as single bytes object, then send with body
     # This reduces from 4 separate send() calls to just 1 sendall() call
-    headers = status_line + content_type_header + HEADER_CONNECTION_CLOSE
+    # Include CORS headers to allow cross-origin requests from web app
+    headers = status_line + content_type_header + HEADER_CORS + HEADER_CONNECTION_CLOSE
     conn.sendall(headers + body)
 
 def send_json_response(conn, data, status=200):
@@ -627,6 +630,12 @@ async def handle_client(conn, addr):
         # Parse request
         method, path, headers, body = parse_request(req)
         print(f"{method} {path}")
+
+        # Handle CORS preflight requests
+        if method == 'OPTIONS':
+            # Respond to preflight with 200 OK and CORS headers (already included in send_response)
+            send_response(conn, 200, b'', 'text/plain')
+            return
 
         # Route request
         if path == '/' or path == '/index.html':
