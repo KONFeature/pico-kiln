@@ -9,6 +9,10 @@ import type {
   StartTuningRequest,
   StartTuningResponse,
   StopTuningResponse,
+  ScheduleProfileRequest,
+  ScheduleProfileResponse,
+  ScheduledStatusResponse,
+  CancelScheduledResponse,
 } from './types';
 
 export class PicoAPIError extends Error {
@@ -149,6 +153,33 @@ export class PicoAPIClient {
 
   async stopTuning(): Promise<StopTuningResponse> {
     return this.request<StopTuningResponse>('/api/tuning/stop', {
+      method: 'POST',
+    });
+  }
+
+  // === Scheduling Endpoints ===
+
+  async scheduleProfile(
+    profileName: string,
+    startTime: number
+  ): Promise<ScheduleProfileResponse> {
+    const body: ScheduleProfileRequest = { 
+      profile: profileName, 
+      start_time: startTime 
+    };
+    return this.request<ScheduleProfileResponse>('/api/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async getScheduledStatus(): Promise<ScheduledStatusResponse> {
+    return this.request<ScheduledStatusResponse>('/api/scheduled');
+  }
+
+  async cancelScheduled(): Promise<CancelScheduledResponse> {
+    return this.request<CancelScheduledResponse>('/api/scheduled/cancel', {
       method: 'POST',
     });
   }

@@ -53,6 +53,14 @@ export interface ProfileProgress {
   estimated_time_remaining?: number; // Seconds
 }
 
+// Scheduled Profile Information
+export interface ScheduledProfile {
+  profile_filename: string;
+  start_time: number; // Unix timestamp
+  start_time_iso: string; // ISO 8601 string
+  seconds_until_start: number;
+}
+
 // Main status response from GET /api/status
 export interface KilnStatus {
   state: KilnState;
@@ -69,6 +77,9 @@ export interface KilnStatus {
   
   // Tuning information (when TUNING)
   tuning?: TuningInfo;
+  
+  // Scheduled profile information
+  scheduled_profile?: ScheduledProfile;
   
   // Error information (when ERROR)
   error_message?: string;
@@ -110,6 +121,32 @@ export interface StartTuningResponse {
 }
 
 export interface StopTuningResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
+
+// Scheduling API types
+export interface ScheduleProfileRequest {
+  profile: string; // Profile name (without .json extension)
+  start_time: number; // Unix timestamp
+}
+
+export interface ScheduleProfileResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
+
+export interface ScheduledStatusResponse {
+  scheduled: boolean;
+  profile?: string;
+  start_time?: number;
+  start_time_iso?: string;
+  seconds_until_start?: number;
+}
+
+export interface CancelScheduledResponse {
   success: boolean;
   message?: string;
   error?: string;

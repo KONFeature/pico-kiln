@@ -10,6 +10,9 @@ import type {
   StartTuningResponse,
   StopTuningResponse,
   TuningMode,
+  ScheduleProfileResponse,
+  ScheduledStatusResponse,
+  CancelScheduledResponse,
 } from './types';
 import { PicoAPIError } from './client';
 
@@ -18,6 +21,7 @@ export const picoKeys = {
   all: ['pico'] as const,
   status: () => [...picoKeys.all, 'status'] as const,
   tuningStatus: () => [...picoKeys.all, 'tuning-status'] as const,
+  scheduledStatus: () => [...picoKeys.all, 'scheduled-status'] as const,
 };
 
 // === Status Hooks ===
@@ -232,6 +236,104 @@ export function useStopTuning() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: picoKeys.status() });
+    },
+  });
+}
+
+// === Scheduling Mutations ===
+
+interface ScheduleProfileParams {
+  profileName: string;
+  startTime: number; // Unix timestamp
+}
+
+/**
+ * Mutation to schedule a profile for delayed start
+ */
+export function useScheduleProfile() {
+  const { client, updateConnectionHealth } = usePico();
+  const queryClient = useQueryClient();
+
+  return useMutation<ScheduleProfileResponse, PicoAPIError, ScheduleProfileParams>({
+    mutationFn: async ({ profileName, startTime }) => {
+      if (!client) {
+        throw new PicoAPIError('Pico client not initialized');
+      }
+      
+      try {
+        const response = await client.scheduleProfile(profileName, startTime);
+        updateConnectionHealth(true);
+        return response;
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        updateConnectionHealth(false, errorMessage);
+        throw error;
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: picoKeys.status() });
+      queryClient.invalidateQueries({ queryKey: picoKeys.scheduledStatus() });
+    },
+  });
+}
+
+/**
+ * Hook to get scheduled profile status
+ */
+export function useScheduledStatus(options?: Partial<UseQueryOptions<ScheduledStatusResponse, PicoAPIError>>) {
+  const { client, isConfigured, updateConnectionHealth } = usePico();
+
+  return useQuery<ScheduledStatusResponse, PicoAPIError>({
+    queryKey: picoKeys.scheduledStatus(),
+    queryFn: async () => {
+      if (!client) {
+        throw new PicoAPIError('Pico client not initialized');
+      }
+      
+      try {
+        const status = await client.getScheduledStatus();
+        updateConnectionHealth(true);
+        return status;
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        updateConnectionHealth(false, errorMessage);
+        throw error;
+      }
+    },
+    enabled: isConfigured && Boolean(client),
+    // Poll every 10 seconds to update countdown
+    refetchInterval: 10000,
+    refetchOnWindowFocus: false,
+    ...options,
+  });
+}
+
+/**
+ * Mutation to cancel scheduled profile
+ */
+export function useCancelScheduled() {
+  const { client, updateConnectionHealth } = usePico();
+  const queryClient = useQueryClient();
+
+  return useMutation<CancelScheduledResponse, PicoAPIError, void>({
+    mutationFn: async () => {
+      if (!client) {
+        throw new PicoAPIError('Pico client not initialized');
+      }
+      
+      try {
+        const response = await client.cancelScheduled();
+        updateConnectionHealth(true);
+        return response;
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        updateConnectionHealth(false, errorMessage);
+        throw error;
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: picoKeys.status() });
+      queryClient.invalidateQueries({ queryKey: picoKeys.scheduledStatus() });
     },
   });
 }

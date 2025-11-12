@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { useRunProfile, useStopProfile, useShutdown } from '@/lib/pico/hooks'
-import { Loader2, Play, Square, AlertTriangle, Power } from 'lucide-react'
+import { useRunProfile, useStopProfile, useShutdown, useScheduleProfile, useCancelScheduled } from '@/lib/pico/hooks'
+import { Loader2, Play, Square, AlertTriangle, Power, Clock, Calendar, X } from 'lucide-react'
 import type { KilnStatus } from '@/lib/pico/types'
 import {
   Dialog,
@@ -28,13 +30,20 @@ const AVAILABLE_PROFILES = [
 export function ProfileControls({ status }: ProfileControlsProps) {
   const [selectedProfile, setSelectedProfile] = useState<string>('')
   const [showShutdownDialog, setShowShutdownDialog] = useState(false)
+  const [showScheduleDialog, setShowScheduleDialog] = useState(false)
+  const [scheduleDate, setScheduleDate] = useState('')
+  const [scheduleTime, setScheduleTime] = useState('')
   
   const runProfile = useRunProfile()
   const stopProfile = useStopProfile()
   const shutdown = useShutdown()
+  const scheduleProfile = useScheduleProfile()
+  const cancelScheduled = useCancelScheduled()
 
   const isRunning = status?.state === 'RUNNING'
-  const canStart = !isRunning && selectedProfile && status?.state !== 'TUNING'
+  const hasScheduled = Boolean(status?.scheduled_profile)
+  const canStart = !isRunning && !hasScheduled && selectedProfile && status?.state !== 'TUNING'
+  const canSchedule = !isRunning && !hasScheduled && selectedProfile && status?.state !== 'TUNING'
   const canStop = isRunning
 
   const handleRun = async () => {
@@ -72,8 +81,105 @@ export function ProfileControls({ status }: ProfileControlsProps) {
     }
   }
 
+  const handleSchedule = async () => {
+    if (!selectedProfile || !scheduleDate || !scheduleTime) return
+    
+    try {
+      // Combine date and time into Unix timestamp
+      const dateTimeStr = `${scheduleDate}T${scheduleTime}`
+      const startTime = Math.floor(new Date(dateTimeStr).getTime() / 1000)
+      
+      const result = await scheduleProfile.mutateAsync({
+        profileName: selectedProfile,
+        startTime,
+      })
+      
+      if (result.success) {
+        setShowScheduleDialog(false)
+        setScheduleDate('')
+        setScheduleTime('')
+      }
+    } catch (error) {
+      console.error('Error scheduling profile:', error)
+    }
+  }
+
+  const handleCancelScheduled = async () => {
+    try {
+      await cancelScheduled.mutateAsync()
+    } catch (error) {
+      console.error('Error cancelling scheduled profile:', error)
+    }
+  }
+
+  const formatCountdown = (seconds: number) => {
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    const secs = Math.floor(seconds % 60)
+    
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`
+    }
+    if (minutes > 0) {
+      return `${minutes}m ${secs}s`
+    }
+    return `${secs}s`
+  }
+
   return (
     <div className="space-y-6">
+      {hasScheduled && status?.scheduled_profile && (
+        <Card className="border-amber-600">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-amber-600">
+              <Clock className="w-5 h-5" />
+              Scheduled Profile
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <div className="text-sm">
+                <strong>Profile:</strong> {status.scheduled_profile.profile_filename.replace('.json', '').replace(/_/g, ' ')}
+              </div>
+              <div className="text-sm">
+                <strong>Start Time:</strong> {new Date(status.scheduled_profile.start_time * 1000).toLocaleString()}
+              </div>
+              <div className="text-sm">
+                <strong>Countdown:</strong> {formatCountdown(status.scheduled_profile.seconds_until_start)}
+              </div>
+            </div>
+
+            <Button
+              onClick={handleCancelScheduled}
+              disabled={cancelScheduled.isPending}
+              variant="outline"
+              className="w-full"
+            >
+              {cancelScheduled.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Cancelling...
+                </>
+              ) : (
+                <>
+                  <X className="w-4 h-4 mr-2" />
+                  Cancel Scheduled Profile
+                </>
+              )}
+            </Button>
+
+            {cancelScheduled.isError && (
+              <Alert variant="destructive">
+                <AlertTriangle className="w-4 h-4" />
+                <AlertDescription>
+                  {cancelScheduled.error?.message || 'Failed to cancel scheduled profile'}
+                </AlertDescription>
+              </Alert>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>Profile Control</CardTitle>
@@ -82,7 +188,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {!isRunning ? (
+          {!isRunning && !hasScheduled ? (
             <>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Select Profile</label>
@@ -101,24 +207,35 @@ export function ProfileControls({ status }: ProfileControlsProps) {
                 </select>
               </div>
 
-              <Button
-                onClick={handleRun}
-                disabled={!canStart || runProfile.isPending}
-                className="w-full"
-                size="lg"
-              >
-                {runProfile.isPending ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Starting...
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4 mr-2" />
-                    Start Profile
-                  </>
-                )}
-              </Button>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  onClick={handleRun}
+                  disabled={!canStart || runProfile.isPending}
+                  size="lg"
+                >
+                  {runProfile.isPending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Starting...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4 mr-2" />
+                      Start Now
+                    </>
+                  )}
+                </Button>
+
+                <Button
+                  onClick={() => setShowScheduleDialog(true)}
+                  disabled={!canSchedule}
+                  variant="outline"
+                  size="lg"
+                >
+                  <Calendar className="w-4 h-4 mr-2" />
+                  Schedule
+                </Button>
+              </div>
 
               {runProfile.isError && (
                 <Alert variant="destructive">
@@ -219,6 +336,68 @@ export function ProfileControls({ status }: ProfileControlsProps) {
                 </>
               ) : (
                 'Confirm Shutdown'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showScheduleDialog} onOpenChange={setShowScheduleDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Schedule Profile</DialogTitle>
+            <DialogDescription>
+              Set the date and time to start the profile: {selectedProfile.replace(/_/g, ' ')}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="schedule-date">Date</Label>
+              <Input
+                id="schedule-date"
+                type="date"
+                value={scheduleDate}
+                onChange={(e) => setScheduleDate(e.target.value)}
+                min={new Date().toISOString().split('T')[0]}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="schedule-time">Time</Label>
+              <Input
+                id="schedule-time"
+                type="time"
+                value={scheduleTime}
+                onChange={(e) => setScheduleTime(e.target.value)}
+              />
+            </div>
+          </div>
+          {scheduleProfile.isError && (
+            <Alert variant="destructive">
+              <AlertTriangle className="w-4 h-4" />
+              <AlertDescription>
+                {scheduleProfile.error?.message || 'Failed to schedule profile'}
+              </AlertDescription>
+            </Alert>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowScheduleDialog(false)}
+              disabled={scheduleProfile.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSchedule}
+              disabled={!scheduleDate || !scheduleTime || scheduleProfile.isPending}
+            >
+              {scheduleProfile.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Scheduling...
+                </>
+              ) : (
+                'Schedule Profile'
               )}
             </Button>
           </DialogFooter>
