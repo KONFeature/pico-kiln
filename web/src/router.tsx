@@ -1,5 +1,4 @@
 import { createRouter } from "@tanstack/react-router";
-import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query";
 import * as TanstackQuery from "./integrations/tanstack-query/root-provider";
 import { PicoProvider } from "./lib/pico/context";
 
@@ -21,11 +20,6 @@ export const getRouter = () => {
 				</TanstackQuery.Provider>
 			);
 		},
-	});
-
-	setupRouterSsrQueryIntegration({
-		router,
-		queryClient: rqContext.queryClient,
 	});
 
 	return router;
