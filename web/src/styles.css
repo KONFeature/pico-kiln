@@ -136,3 +136,16 @@ code {
     @apply bg-background text-foreground;
   }
 }
+
+/* Safe area handling for mobile devices (iOS/Android notches and status bars) */
+.safe-top {
+  padding-top: calc(1rem + env(safe-area-inset-top));
+}
+
+/* Ensure minimum touch target size for buttons on mobile (44x44px per iOS/Android guidelines) */
+@layer components {
+  button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

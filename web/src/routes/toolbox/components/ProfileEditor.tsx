@@ -292,7 +292,7 @@ export function ProfileEditor() {
 				</CardDescription>
 			</CardHeader>
 			<CardContent className="space-y-6">
-				<div className="grid grid-cols-2 gap-4">
+				<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
 					<div>
 						<Label htmlFor="profile-name">Profile Name</Label>
 						<Input
@@ -600,7 +600,7 @@ export function ProfileEditor() {
 										</Select>
 									</div>
 
-									<div className="grid grid-cols-3 gap-4">
+									<div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
 										<div>
 											<Label>
 												Target Temp (°{profile.temp_units.toUpperCase()})
