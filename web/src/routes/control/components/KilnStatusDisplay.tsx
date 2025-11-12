@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Loader2, Thermometer, Flame, AlertTriangle, Clock, Gauge, TrendingUp } from 'lucide-react'
+import { Loader2, Thermometer, Flame, AlertTriangle, Clock, Gauge, TrendingUp, AlertCircle } from 'lucide-react'
 import type { KilnStatus } from '@/lib/pico/types'
 import type { PicoAPIError } from '@/lib/pico/client'
 
@@ -169,6 +169,19 @@ export function KilnStatusDisplay({ status, isLoading, error }: KilnStatusDispla
               </div>
             )}
           </div>
+
+          {/* Recovery Mode Warning */}
+          {status.is_recovering && (
+            <Alert className="border-orange-500 bg-orange-50 dark:bg-orange-950/20">
+              <AlertCircle className="h-4 w-4 text-orange-600" />
+              <AlertDescription className="text-orange-800 dark:text-orange-400">
+                <strong>Recovery Mode:</strong> Kiln is recovering from temperature drop.
+                {status.recovery_target_temp !== undefined && (
+                  <> Target: {formatTemp(status.recovery_target_temp)}</>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
 
           {status.error_message && (
             <Alert variant="destructive">
