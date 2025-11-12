@@ -167,6 +167,89 @@ def handle_api_stop(conn):
             'error': 'Command queue full, please retry'
         }, 500)
 
+def handle_api_schedule(conn, body):
+    """POST /api/schedule - Schedule profile for delayed start"""
+    try:
+        import time
+        data = json.loads(body.decode())
+        profile_name = data.get('profile')
+        start_time = data.get('start_time')  # Unix timestamp
+        
+        if not profile_name or not start_time:
+            send_json_response(conn, {
+                'success': False, 
+                'error': 'profile and start_time required'
+            }, 400)
+            return
+        
+        # Validate start time is in future
+        if start_time <= time.time():
+            send_json_response(conn, {
+                'success': False,
+                'error': 'start_time must be in the future'
+            }, 400)
+            return
+        
+        # Check profile exists
+        from server.profile_cache import get_profile_cache
+        if not get_profile_cache().exists(profile_name):
+            send_json_response(conn, {
+                'success': False, 
+                'error': f'Profile not found: {profile_name}'
+            }, 404)
+            return
+        
+        profile_filename = f"{profile_name}.json"
+        command = CommandMessage.schedule_profile(profile_filename, start_time)
+        
+        if QueueHelper.put_nowait(command_queue, command):
+            print(f"[Web Server] Scheduled profile: {profile_name}")
+            send_json_response(conn, {
+                'success': True,
+                'message': f'Scheduled profile: {profile_name}'
+            })
+        else:
+            send_json_response(conn, {
+                'success': False,
+                'error': 'Command queue full'
+            }, 500)
+    
+    except Exception as e:
+        print(f"[Web Server] Error scheduling profile: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 400)
+
+def handle_api_scheduled_status(conn):
+    """GET /api/scheduled - Get status of scheduled profile"""
+    status = get_status_receiver().get_status()
+    scheduled = status.get('scheduled_profile')
+    
+    if scheduled:
+        send_json_response(conn, {
+            'scheduled': True,
+            'profile': scheduled['profile_filename'],
+            'start_time': scheduled['start_time'],
+            'start_time_iso': scheduled['start_time_iso'],
+            'seconds_until_start': scheduled['seconds_until_start']
+        })
+    else:
+        send_json_response(conn, {'scheduled': False})
+
+def handle_api_cancel_scheduled(conn):
+    """POST /api/scheduled/cancel - Cancel scheduled profile"""
+    command = CommandMessage.cancel_scheduled()
+    
+    if QueueHelper.put_nowait(command_queue, command):
+        print("[Web Server] Cancelled scheduled profile")
+        send_json_response(conn, {
+            'success': True,
+            'message': 'Cancelled scheduled profile'
+        })
+    else:
+        send_json_response(conn, {
+            'success': False,
+            'error': 'Command queue full'
+        }, 500)
+
 # === Status Handlers ===
 
 def handle_api_status(conn):
@@ -342,6 +425,25 @@ async def handle_client(conn, addr):
         elif path == '/api/tuning/status':
             if method == 'GET':
                 handle_api_tuning_status(conn)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        # Scheduling endpoints
+        elif path == '/api/schedule':
+            if method == 'POST':
+                handle_api_schedule(conn, body)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        elif path == '/api/scheduled':
+            if method == 'GET':
+                handle_api_scheduled_status(conn)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        elif path == '/api/scheduled/cancel':
+            if method == 'POST':
+                handle_api_cancel_scheduled(conn)
             else:
                 send_response(conn, 405, b'Method not allowed', 'text/plain')
 

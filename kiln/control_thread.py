@@ -16,6 +16,7 @@ from kiln import TemperatureSensor, SSRController, PID, KilnController, Profile
 from kiln.state import KilnState
 from kiln.comms import MessageType, StatusMessage, QueueHelper
 from kiln.tuner import ZieglerNicholsTuner, TuningStage
+from kiln.scheduler import ScheduledProfileQueue
 from micropython import const
 
 # Performance: const() declarations for hot path time intervals
@@ -59,6 +60,9 @@ class ControlThread:
 
         # Tuning
         self.tuner = None
+        
+        # Scheduler for delayed start
+        self.scheduler = ScheduledProfileQueue()
 
         # Timing
         self.last_status_update = 0
@@ -314,6 +318,36 @@ class ControlThread:
                     self.tuner = None
                     self.ssr_controller.force_off()
 
+            elif cmd_type == MessageType.SCHEDULE_PROFILE:
+                # Schedule a profile for delayed start
+                profile_filename = command.get('profile_filename')
+                start_time = command.get('start_time')
+                
+                if not profile_filename or not start_time:
+                    print("[Control Thread] Error: Missing profile_filename or start_time")
+                    return
+                
+                # Validate start time is in future
+                if start_time <= time.time():
+                    print("[Control Thread] Error: Start time must be in the future")
+                    return
+                
+                try:
+                    self.scheduler.schedule(profile_filename, start_time)
+                    start_local = time.localtime(start_time)
+                    print(f"[Control Thread] Scheduled profile '{profile_filename}' "
+                          f"for {start_local[3]:02d}:{start_local[4]:02d}:{start_local[5]:02d}")
+                except Exception as e:
+                    print(f"[Control Thread] Error scheduling profile: {e}")
+
+            elif cmd_type == MessageType.CANCEL_SCHEDULED:
+                # Cancel scheduled profile
+                cancelled = self.scheduler.cancel()
+                if cancelled:
+                    print("[Control Thread] Cancelled scheduled profile")
+                else:
+                    print("[Control Thread] No scheduled profile to cancel")
+
             elif cmd_type == MessageType.PING:
                 # Ping message for testing
                 print("[Control Thread] Received ping")
@@ -357,7 +391,7 @@ class ControlThread:
             if self.controller.state == KilnState.TUNING and self.tuner:
                 status = StatusMessage.build_tuning_status(self.controller, self.tuner, self.ssr_controller)
             else:
-                status = StatusMessage.build(self.controller, self.pid, self.ssr_controller)
+                status = StatusMessage.build(self.controller, self.pid, self.ssr_controller, self.scheduler)
 
             # Check queue size before sending (monitor Core 2 health)
             # Only warn if queue is completely full to minimize USB contention
@@ -498,6 +532,19 @@ class ControlThread:
             command = QueueHelper.get_nowait(self.command_queue)
             if command:
                 self.handle_command(command)
+
+            # 1.5. Check for scheduled profile (ONLY when IDLE)
+            if self.controller.state == KilnState.IDLE:
+                if self.scheduler.can_consume():
+                    profile_filename = self.scheduler.consume()
+                    if profile_filename:
+                        print(f"[Control Thread] Starting scheduled profile: {profile_filename}")
+                        try:
+                            profile = self.load_profile_with_retry(f"profiles/{profile_filename}")
+                            self.controller.run_profile(profile)
+                        except Exception as e:
+                            print(f"[Control Thread] Error loading scheduled profile: {e}")
+                            self.controller.set_error(f"Scheduled profile error: {e}")
 
             # 2. Read temperature
             current_temp = self.temp_sensor.read()

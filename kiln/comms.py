@@ -197,6 +197,8 @@ class MessageType:
     START_TUNING = const(5)     # Start PID auto-tuning
     STOP_TUNING = const(6)      # Stop PID auto-tuning
     PING = const(7)             # For testing thread communication
+    SCHEDULE_PROFILE = const(8) # Schedule profile for delayed start
+    CANCEL_SCHEDULED = const(9) # Cancel scheduled profile
 
 def state_to_string(state_int):
     """
@@ -311,6 +313,28 @@ class CommandMessage:
             'type': MessageType.PING
         }
 
+    @staticmethod
+    def schedule_profile(profile_filename, start_time):
+        """
+        Schedule a profile to start at specific time
+        
+        Args:
+            profile_filename: Filename of the profile to schedule (e.g., "cone6_glaze.json")
+            start_time: Unix timestamp when profile should start
+        """
+        return {
+            'type': MessageType.SCHEDULE_PROFILE,
+            'profile_filename': profile_filename,
+            'start_time': start_time
+        }
+
+    @staticmethod
+    def cancel_scheduled():
+        """Cancel scheduled profile"""
+        return {
+            'type': MessageType.CANCEL_SCHEDULED
+        }
+
 class StatusMessage:
     """
     Helper class for building status messages
@@ -343,7 +367,8 @@ class StatusMessage:
         'recovery_target_temp': None,
         'current_rate': 0,
         'actual_rate': 0,
-        'adaptation_count': 0
+        'adaptation_count': 0,
+        'scheduled_profile': None
     }
 
     # Pre-allocated template for tuning status messages
@@ -362,7 +387,7 @@ class StatusMessage:
     }
 
     @staticmethod
-    def build(controller, pid, ssr_controller):
+    def build(controller, pid, ssr_controller, scheduler=None):
         """
         Build comprehensive status message from controller state
 
@@ -373,6 +398,7 @@ class StatusMessage:
             controller: KilnController instance
             pid: PID instance
             ssr_controller: SSRController instance
+            scheduler: ScheduledProfileQueue instance (optional)
 
         Returns:
             Dictionary with complete system status
@@ -425,6 +451,11 @@ class StatusMessage:
         status['current_rate'] = round(controller.current_rate, 1)  # Adapted rate
         status['actual_rate'] = round(controller.temp_history.get_rate(controller.rate_measurement_window), 1)  # Measured rate
         status['adaptation_count'] = controller.adaptation_count  # Number of adaptations
+
+        # Add scheduler information
+        if scheduler:
+            status['scheduled_profile'] = scheduler.get_status()
+        # else: scheduled_profile is already None in template
 
         return status
 
