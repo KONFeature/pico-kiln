@@ -4,6 +4,8 @@ import { KilnStatusDisplay } from '@/routes/control/components/KilnStatusDisplay
 import { ProfileControls } from '@/routes/control/components/ProfileControls'
 import { TuningControls } from '@/routes/control/components/TuningControls'
 import { useKilnStatus } from '@/lib/pico/hooks'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { Flame, Zap } from 'lucide-react'
 
 export const Route = createFileRoute('/')({
   component: HomePage,
@@ -11,6 +13,9 @@ export const Route = createFileRoute('/')({
 
 function HomePage() {
   const { data: status, isLoading, error } = useKilnStatus()
+
+  // Auto-select tab based on current state
+  const defaultTab = status?.state === 'TUNING' ? 'tuning' : 'profile'
 
   return (
     <RequireConnection>
@@ -29,11 +34,26 @@ function HomePage() {
           </div>
 
           <div className="space-y-6">
-            {status?.state === 'TUNING' ? (
-              <TuningControls status={status} />
-            ) : (
-              <ProfileControls status={status} />
-            )}
+            <Tabs defaultValue={defaultTab} key={defaultTab}>
+              <TabsList className="w-full grid grid-cols-2">
+                <TabsTrigger value="profile" disabled={status?.state === 'TUNING'}>
+                  <Flame className="w-4 h-4 mr-2" />
+                  Run Profile
+                </TabsTrigger>
+                <TabsTrigger value="tuning" disabled={status?.state === 'RUNNING'}>
+                  <Zap className="w-4 h-4 mr-2" />
+                  PID Tuning
+                </TabsTrigger>
+              </TabsList>
+              
+              <TabsContent value="profile">
+                <ProfileControls status={status} />
+              </TabsContent>
+              
+              <TabsContent value="tuning">
+                <TuningControls status={status} />
+              </TabsContent>
+            </Tabs>
           </div>
         </div>
       </div>

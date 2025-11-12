@@ -100,47 +100,42 @@ export function RunVisualizer() {
   }, [logData]);
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Run Visualizer</CardTitle>
-          <CardDescription>
-            Visualize kiln firing or tuning runs - see temperature, SSR output, and rate data
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FileSourceSelector
-            directory="logs"
-            accept=".csv"
-            onFileSelected={handleFileSelected}
-            label="Select Log File"
-            description="Choose a log file to visualize"
-          />
-        </CardContent>
-      </Card>
+    <Card>
+      <CardHeader>
+        <CardTitle>Run Visualizer</CardTitle>
+        <CardDescription>
+          Visualize kiln firing or tuning runs - see temperature, SSR output, and rate data
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <FileSourceSelector
+          directory="logs"
+          accept=".csv"
+          onFileSelected={handleFileSelected}
+          label="Select Log File"
+          description="Choose a log file to visualize"
+        />
 
-      {error && (
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
+        {error && (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
 
-      {logData && chartData.length > 0 && (
-        <>
-          <Card>
-            <CardHeader>
-              <CardTitle>
-                Kiln {runType} - Temperature Profile
-              </CardTitle>
+        {logData && chartData.length > 0 && (
+          <div className="space-y-6 pt-6 border-t">
+            <div>
+              <h3 className="text-lg font-semibold">Kiln {runType} - Temperature Profile</h3>
               {stats && (
-                <CardDescription>
+                <p className="text-sm text-muted-foreground mt-1">
                   Started: {stats.startTime} | Duration: {stats.duration.toFixed(2)}h | 
                   Temp Range: {stats.minTemp.toFixed(1)}°C - {stats.maxTemp.toFixed(1)}°C
-                </CardDescription>
+                </p>
               )}
-            </CardHeader>
-            <CardContent>
+            </div>
+
+            <div className="space-y-6">
               <ResponsiveContainer width="100%" height={400}>
                 <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
@@ -188,66 +183,14 @@ export function RunVisualizer() {
                   />
                 </LineChart>
               </ResponsiveContainer>
-            </CardContent>
-          </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>SSR Output (%)</CardTitle>
-              <CardDescription>
-                Solid State Relay duty cycle over time
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={200}>
-                <AreaChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-                  {stepTransitions.map((time, idx) => (
-                    <ReferenceLine
-                      key={idx}
-                      x={time}
-                      stroke="#999"
-                      strokeDasharray="3 3"
-                      opacity={0.4}
-                    />
-                  ))}
-                  <XAxis
-                    dataKey="time_hours"
-                    label={{ value: 'Time (hours)', position: 'insideBottom', offset: -5 }}
-                  />
-                  <YAxis
-                    domain={[0, 100]}
-                    label={{ value: 'SSR Output (%)', angle: -90, position: 'insideLeft' }}
-                  />
-                  <Tooltip
-                    formatter={(value: number) => [`${value.toFixed(1)}%`, 'SSR Output']}
-                    labelFormatter={(label: number) => `Time: ${label.toFixed(2)}h`}
-                  />
-                  <Legend />
-                  <Area
-                    type="monotone"
-                    dataKey="ssr_output"
-                    stroke="#f97316"
-                    fill="#f97316"
-                    fillOpacity={0.3}
-                    name="SSR Output (%)"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-
-          {hasRateData && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Heating Rate</CardTitle>
-                <CardDescription>
-                  Current temperature change rate (°C/hour)
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
+              <div className="pt-6 border-t">
+                <h4 className="text-base font-semibold mb-1">SSR Output (%)</h4>
+                <p className="text-sm text-muted-foreground mb-4">
+                  Solid State Relay duty cycle over time
+                </p>
                 <ResponsiveContainer width="100%" height={200}>
-                  <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                  <AreaChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
                     {stepTransitions.map((time, idx) => (
                       <ReferenceLine
@@ -258,60 +201,100 @@ export function RunVisualizer() {
                         opacity={0.4}
                       />
                     ))}
-                    <ReferenceLine y={0} stroke="#000" strokeOpacity={0.3} />
                     <XAxis
                       dataKey="time_hours"
                       label={{ value: 'Time (hours)', position: 'insideBottom', offset: -5 }}
                     />
                     <YAxis
-                      label={{ value: 'Rate (°C/h)', angle: -90, position: 'insideLeft' }}
+                      domain={[0, 100]}
+                      label={{ value: 'SSR Output (%)', angle: -90, position: 'insideLeft' }}
                     />
                     <Tooltip
-                      formatter={(value: number) => [`${value.toFixed(1)}°C/h`, 'Rate']}
+                      formatter={(value: number) => [`${value.toFixed(1)}%`, 'SSR Output']}
                       labelFormatter={(label: number) => `Time: ${label.toFixed(2)}h`}
                     />
                     <Legend />
-                    <Line
+                    <Area
                       type="monotone"
-                      dataKey="current_rate"
-                      stroke="#22c55e"
-                      strokeWidth={2}
-                      dot={false}
-                      name="Current Rate (°C/h)"
+                      dataKey="ssr_output"
+                      stroke="#f97316"
+                      fill="#f97316"
+                      fillOpacity={0.3}
+                      name="SSR Output (%)"
                     />
-                  </LineChart>
+                  </AreaChart>
                 </ResponsiveContainer>
-              </CardContent>
-            </Card>
-          )}
+              </div>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Run Statistics</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                <div>
-                  <div className="text-muted-foreground">Run Type</div>
-                  <div className="font-semibold text-lg">{runType}</div>
+              {hasRateData && (
+                <div className="pt-6 border-t">
+                  <h4 className="text-base font-semibold mb-1">Heating Rate</h4>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Current temperature change rate (°C/hour)
+                  </p>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+                      {stepTransitions.map((time, idx) => (
+                        <ReferenceLine
+                          key={idx}
+                          x={time}
+                          stroke="#999"
+                          strokeDasharray="3 3"
+                          opacity={0.4}
+                        />
+                      ))}
+                      <ReferenceLine y={0} stroke="#000" strokeOpacity={0.3} />
+                      <XAxis
+                        dataKey="time_hours"
+                        label={{ value: 'Time (hours)', position: 'insideBottom', offset: -5 }}
+                      />
+                      <YAxis
+                        label={{ value: 'Rate (°C/h)', angle: -90, position: 'insideLeft' }}
+                      />
+                      <Tooltip
+                        formatter={(value: number) => [`${value.toFixed(1)}°C/h`, 'Rate']}
+                        labelFormatter={(label: number) => `Time: ${label.toFixed(2)}h`}
+                      />
+                      <Legend />
+                      <Line
+                        type="monotone"
+                        dataKey="current_rate"
+                        stroke="#22c55e"
+                        strokeWidth={2}
+                        dot={false}
+                        name="Current Rate (°C/h)"
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
                 </div>
-                <div>
-                  <div className="text-muted-foreground">Duration</div>
-                  <div className="font-semibold text-lg">{stats?.duration.toFixed(2)}h</div>
-                </div>
-                <div>
-                  <div className="text-muted-foreground">Max Temperature</div>
-                  <div className="font-semibold text-lg">{stats?.maxTemp.toFixed(1)}°C</div>
-                </div>
-                <div>
-                  <div className="text-muted-foreground">Data Points</div>
-                  <div className="font-semibold text-lg">{chartData.length.toLocaleString()}</div>
+              )}
+
+              <div className="pt-6 border-t">
+                <h4 className="text-base font-semibold mb-4">Run Statistics</h4>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <div className="text-muted-foreground">Run Type</div>
+                    <div className="font-semibold text-lg">{runType}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Duration</div>
+                    <div className="font-semibold text-lg">{stats?.duration.toFixed(2)}h</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Max Temperature</div>
+                    <div className="font-semibold text-lg">{stats?.maxTemp.toFixed(1)}°C</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Data Points</div>
+                    <div className="font-semibold text-lg">{chartData.length.toLocaleString()}</div>
+                  </div>
                 </div>
               </div>
-            </CardContent>
-          </Card>
-        </>
-      )}
-    </div>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

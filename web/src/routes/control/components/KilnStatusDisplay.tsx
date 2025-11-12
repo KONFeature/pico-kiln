@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Loader2, Thermometer, Flame, AlertTriangle, Clock } from 'lucide-react'
+import { Loader2, Thermometer, Flame, AlertTriangle, Clock, Gauge, TrendingUp } from 'lucide-react'
 import type { KilnStatus } from '@/lib/pico/types'
 import type { PicoAPIError } from '@/lib/pico/client'
 
@@ -102,6 +102,7 @@ export function KilnStatusDisplay({ status, isLoading, error }: KilnStatusDispla
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Temperature Display */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1">
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -125,11 +126,48 @@ export function KilnStatusDisplay({ status, isLoading, error }: KilnStatusDispla
             )}
           </div>
 
-          <div className="flex items-center gap-2">
-            <Flame className={`w-5 h-5 ${status.ssr_on ? 'text-orange-500' : 'text-gray-400'}`} />
-            <span className="text-sm">
-              Heating Element: <strong>{status.ssr_on ? 'ON' : 'OFF'}</strong>
-            </span>
+          {/* SSR and Heating Rates */}
+          <div className="grid grid-cols-2 gap-4 pt-2 border-t">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Flame className={`w-5 h-5 ${(status.ssr_output ?? 0) > 0 ? 'text-orange-500' : 'text-gray-400'}`} />
+                <span className="text-sm font-medium">
+                  SSR Output
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Gauge className="w-4 h-4 text-muted-foreground" />
+                <span className="text-sm font-bold">
+                  {status.ssr_output !== undefined 
+                    ? status.ssr_output > 0 
+                      ? `${status.ssr_output.toFixed(1)}%`
+                      : 'OFF'
+                    : 'N/A'
+                  }
+                </span>
+              </div>
+            </div>
+
+            {(status.actual_rate !== undefined || status.current_rate !== undefined) && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <TrendingUp className="w-5 h-5 text-muted-foreground" />
+                  <span className="text-sm font-medium">
+                    Heating Rate
+                  </span>
+                </div>
+                {status.actual_rate !== undefined && (
+                  <div className="text-sm">
+                    Actual: <strong>{status.actual_rate.toFixed(1)}°C/h</strong>
+                  </div>
+                )}
+                {status.current_rate !== undefined && status.state === 'RUNNING' && (
+                  <div className="text-sm text-muted-foreground">
+                    Target: {status.current_rate.toFixed(1)}°C/h
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {status.error_message && (
@@ -141,54 +179,53 @@ export function KilnStatusDisplay({ status, isLoading, error }: KilnStatusDispla
         </CardContent>
       </Card>
 
-      {status.profile && (
+      {status.state === 'RUNNING' && status.profile_name && (
         <Card>
           <CardHeader>
-            <CardTitle>Profile Progress</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle>Profile Progress</CardTitle>
+              {status.step_index !== undefined && status.total_steps !== undefined && (
+                <Badge variant="outline" className="text-sm">
+                  Step {status.step_index + 1} / {status.total_steps}
+                </Badge>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <div className="text-lg font-semibold">{status.profile.profile_name}</div>
-              <div className="text-sm text-muted-foreground">
-                Step {status.profile.current_step} of {status.profile.total_steps} ({status.profile.step_type})
-              </div>
+            {/* Profile Name */}
+            <div className="space-y-1">
+              <div className="text-sm text-muted-foreground">Active Profile</div>
+              <div className="text-xl font-bold">{status.profile_name}</div>
             </div>
 
-            {status.profile.step_progress !== undefined && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span>Step Progress</span>
-                  <span className="font-medium">{status.profile.step_progress.toFixed(1)}%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div 
-                    className="bg-blue-600 h-2 rounded-full transition-all duration-500"
-                    style={{ width: `${status.profile.step_progress}%` }}
-                  />
+            {/* Current Step Info */}
+            {status.step_name && (
+              <div className="p-3 rounded-lg bg-muted/50 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">
+                    Current Step: {status.step_name}
+                  </span>
+                  {status.desired_rate !== undefined && status.step_name === 'ramp' && (
+                    <span className="text-sm text-muted-foreground">
+                      {status.desired_rate.toFixed(0)}°C/h
+                    </span>
+                  )}
                 </div>
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              {status.profile.elapsed_time !== undefined && (
+            {/* Time Information */}
+            {status.elapsed !== undefined && (
+              <div className="grid grid-cols-1 gap-4 text-sm pt-2 border-t">
                 <div>
                   <div className="text-muted-foreground">Elapsed Time</div>
-                  <div className="font-medium flex items-center gap-1">
+                  <div className="font-medium flex items-center gap-1 mt-1">
                     <Clock className="w-4 h-4" />
-                    {formatDuration(status.profile.elapsed_time)}
+                    {formatDuration(status.elapsed)}
                   </div>
                 </div>
-              )}
-              {status.profile.estimated_time_remaining !== undefined && (
-                <div>
-                  <div className="text-muted-foreground">Time Remaining</div>
-                  <div className="font-medium flex items-center gap-1">
-                    <Clock className="w-4 h-4" />
-                    {formatDuration(status.profile.estimated_time_remaining)}
-                  </div>
-                </div>
-              )}
-            </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

@@ -127,74 +127,72 @@ export function ProfileVisualizer() {
   }, [segments]);
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Profile Visualizer</CardTitle>
-          <CardDescription>
-            Visualize kiln firing profiles - see temperature trajectory over time
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FileSourceSelector
-            directory="profiles"
-            accept=".json"
-            onFileSelected={handleFileSelected}
-            label="Select Profile"
-            description="Choose a profile file to visualize"
-          />
-        </CardContent>
-      </Card>
+    <Card>
+      <CardHeader>
+        <CardTitle>Profile Visualizer</CardTitle>
+        <CardDescription>
+          Visualize kiln firing profiles - see temperature trajectory over time
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <FileSourceSelector
+          directory="profiles"
+          accept=".json"
+          onFileSelected={handleFileSelected}
+          label="Select Profile"
+          description="Choose a profile file to visualize"
+        />
 
-      {error && (
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
+        {error && (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
 
-      {profile && segments.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>{profile.name}</CardTitle>
-            {profile.description && (
-              <CardDescription>{profile.description}</CardDescription>
-            )}
-          </CardHeader>
-          <CardContent>
-            {stats && (
-              <div className="flex gap-6 mb-4 text-sm">
-                <div>
-                  <span className="text-muted-foreground">Duration:</span>{' '}
-                  <span className="font-semibold">{stats.duration.toFixed(2)}h</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Max Temp:</span>{' '}
-                  <span className="font-semibold">{stats.maxTemp.toFixed(0)}°C</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Min Temp:</span>{' '}
-                  <span className="font-semibold">{stats.minTemp.toFixed(0)}°C</span>
-                </div>
-              </div>
-            )}
-
-            <div className="mb-4 flex gap-4 text-sm">
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded bg-red-500" />
-                <span>Ramp (heating)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded bg-yellow-500" />
-                <span>Hold</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded bg-blue-500" />
-                <span>Cooling</span>
-              </div>
+        {profile && segments.length > 0 && (
+          <div className="space-y-6 pt-6 border-t">
+            <div>
+              <h3 className="text-lg font-semibold">{profile.name}</h3>
+              {profile.description && (
+                <p className="text-sm text-muted-foreground mt-1">{profile.description}</p>
+              )}
             </div>
 
-            <ResponsiveContainer width="100%" height={400}>
+            <div className="space-y-4">
+              {stats && (
+                <div className="flex gap-6 text-sm">
+                  <div>
+                    <span className="text-muted-foreground">Duration:</span>{' '}
+                    <span className="font-semibold">{stats.duration.toFixed(2)}h</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Max Temp:</span>{' '}
+                    <span className="font-semibold">{stats.maxTemp.toFixed(0)}°C</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Min Temp:</span>{' '}
+                    <span className="font-semibold">{stats.minTemp.toFixed(0)}°C</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-4 text-sm">
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 rounded bg-red-500" />
+                  <span>Ramp (heating)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 rounded bg-yellow-500" />
+                  <span>Hold</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 rounded bg-blue-500" />
+                  <span>Cooling</span>
+                </div>
+              </div>
+
+              <ResponsiveContainer width="100%" height={400}>
               <LineChart margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
                 
@@ -260,35 +258,36 @@ export function ProfileVisualizer() {
                   />
                 ))}
               </LineChart>
-            </ResponsiveContainer>
+              </ResponsiveContainer>
 
-            <div className="mt-4 space-y-2">
-              <h4 className="font-semibold text-sm">Profile Steps:</h4>
-              <div className="grid gap-2">
-                {profile.steps.map((step, idx) => (
-                  <div
-                    key={idx}
-                    className="text-sm p-2 rounded bg-muted/50 flex items-center justify-between"
-                  >
-                    <span className="font-medium">Step {idx + 1}:</span>
-                    {step.type === 'ramp' && (
-                      <span>
-                        Ramp to {step.target_temp}°C at {step.desired_rate ?? 100}°C/h
-                        {step.min_rate && ` (min: ${step.min_rate}°C/h)`}
-                      </span>
-                    )}
-                    {step.type === 'hold' && (
-                      <span>
-                        Hold at {step.target_temp}°C for {((step.duration ?? 0) / 60).toFixed(0)} minutes
-                      </span>
-                    )}
-                  </div>
-                ))}
+              <div className="space-y-2 pt-4 border-t">
+                <h4 className="font-semibold text-sm">Profile Steps:</h4>
+                <div className="grid gap-2">
+                  {profile.steps.map((step, idx) => (
+                    <div
+                      key={idx}
+                      className="text-sm p-2 rounded bg-muted/50 flex items-center justify-between"
+                    >
+                      <span className="font-medium">Step {idx + 1}:</span>
+                      {step.type === 'ramp' && (
+                        <span>
+                          Ramp to {step.target_temp}°C at {step.desired_rate ?? 100}°C/h
+                          {step.min_rate && ` (min: ${step.min_rate}°C/h)`}
+                        </span>
+                      )}
+                      {step.type === 'hold' && (
+                        <span>
+                          Hold at {step.target_temp}°C for {((step.duration ?? 0) / 60).toFixed(0)} minutes
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
-          </CardContent>
-        </Card>
-      )}
-    </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

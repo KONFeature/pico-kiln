@@ -127,7 +127,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {hasScheduled && status?.scheduled_profile && (
         <Card className="border-amber-600">
           <CardHeader>
@@ -250,7 +250,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
             <>
               <Alert className="border-blue-600 bg-blue-50">
                 <AlertDescription className="text-blue-800">
-                  Profile is currently running: <strong>{status?.profile?.profile_name}</strong>
+                  Profile is currently running: <strong>{status?.profile_name}</strong>
                 </AlertDescription>
               </Alert>
 

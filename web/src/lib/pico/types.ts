@@ -42,17 +42,6 @@ export interface TuningInfo {
   oscillation_count?: number;
 }
 
-// Profile Progress (when in RUNNING state)
-export interface ProfileProgress {
-  profile_name: string;
-  current_step: number;
-  total_steps: number;
-  step_type: ProfileStepType;
-  step_progress?: number;  // Percentage 0-100
-  elapsed_time?: number;   // Seconds
-  estimated_time_remaining?: number; // Seconds
-}
-
 // Scheduled Profile Information
 export interface ScheduledProfile {
   profile_filename: string;
@@ -67,13 +56,18 @@ export interface KilnStatus {
   current_temp: number;
   target_temp?: number;
   ssr_on: boolean;
+  ssr_output?: number;    // SSR duty cycle percentage (0-100)
   timestamp?: number;
+  elapsed?: number;       // Elapsed time in seconds
   
   // PID information
   pid?: PIDStats;
   
-  // Profile information (when RUNNING)
-  profile?: ProfileProgress;
+  // Profile information (when RUNNING) - at root level
+  profile_name?: string;  // Name of active profile
+  step_index?: number;    // Current step index (0-based)
+  total_steps?: number;   // Total number of steps in profile
+  step_name?: string;     // Current step type ('ramp' or 'hold')
   
   // Tuning information (when TUNING)
   tuning?: TuningInfo;
@@ -83,6 +77,16 @@ export interface KilnStatus {
   
   // Error information (when ERROR)
   error_message?: string;
+  error?: string;         // Alternative error field name
+  
+  // Rate control information
+  current_rate?: number;  // Adapted rate in °C/h
+  actual_rate?: number;   // Measured rate in °C/h
+  desired_rate?: number;  // Target rate for current step in °C/h
+  
+  // Recovery mode information
+  is_recovering?: boolean;           // True if in recovery mode
+  recovery_target_temp?: number;     // Target temp for recovery (°C)
 }
 
 // API Request/Response types

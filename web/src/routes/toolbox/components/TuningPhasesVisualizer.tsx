@@ -179,46 +179,43 @@ export function TuningPhasesVisualizer() {
   }, [chartData, logData]);
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Tuning Phases Visualizer</CardTitle>
-          <CardDescription>
-            Visualize PID tuning runs with physics-based phase detection
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FileSourceSelector
-            directory="logs"
-            accept=".csv"
-            onFileSelected={handleFileSelected}
-            label="Select Tuning Log File"
-            description="Choose a tuning log file to analyze"
-          />
-        </CardContent>
-      </Card>
+    <Card>
+      <CardHeader>
+        <CardTitle>Tuning Phases Visualizer</CardTitle>
+        <CardDescription>
+          Visualize PID tuning runs with physics-based phase detection
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <FileSourceSelector
+          directory="logs"
+          accept=".csv"
+          onFileSelected={handleFileSelected}
+          label="Select Tuning Log File"
+          description="Choose a tuning log file to analyze"
+        />
 
-      {error && (
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
+        {error && (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
 
-      {logData && chartData.length > 0 && (
-        <>
-          <Card>
-            <CardHeader>
-              <CardTitle>Tuning Phases - Physics-Based Detection</CardTitle>
+        {logData && chartData.length > 0 && (
+          <div className="space-y-6 pt-6 border-t">
+            <div>
+              <h3 className="text-lg font-semibold">Tuning Phases - Physics-Based Detection</h3>
               {stats && (
-                <CardDescription>
+                <p className="text-sm text-muted-foreground mt-1">
                   Started: {stats.startTime} | Duration: {stats.duration.toFixed(1)}min | 
                   Temp Range: {stats.minTemp.toFixed(1)}°C - {stats.maxTemp.toFixed(1)}°C
-                </CardDescription>
+                </p>
               )}
-            </CardHeader>
-            <CardContent>
-              <div className="mb-4 flex gap-4 text-sm">
+            </div>
+
+            <div className="space-y-6">
+              <div className="flex gap-4 text-sm">
                 <div className="flex items-center gap-2">
                   <div className="w-4 h-4 rounded" style={{ backgroundColor: PHASE_COLORS.heating, opacity: 0.3 }} />
                   <span>Heating (SSR on, temp rising)</span>
@@ -274,117 +271,111 @@ export function TuningPhasesVisualizer() {
                   />
                 </LineChart>
               </ResponsiveContainer>
-            </CardContent>
-          </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>SSR Output with Phase Detection</CardTitle>
-              <CardDescription>Solid State Relay duty cycle colored by detected phase</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={250}>
-                <AreaChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-                  
-                  {/* Draw phase backgrounds */}
+              <div className="pt-6 border-t">
+                <h4 className="text-base font-semibold mb-1">SSR Output with Phase Detection</h4>
+                <p className="text-sm text-muted-foreground mb-4">
+                  Solid State Relay duty cycle colored by detected phase
+                </p>
+                <ResponsiveContainer width="100%" height={250}>
+                  <AreaChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+                    
+                    {/* Draw phase backgrounds */}
+                    {phases.map((phase, idx) => {
+                      const startTime = secondsToMinutes(logData[phase.startIdx].elapsed_seconds);
+                      const endTime = secondsToMinutes(logData[phase.endIdx].elapsed_seconds);
+                      return (
+                        <ReferenceArea
+                          key={idx}
+                          x1={startTime}
+                          x2={endTime}
+                          fill={PHASE_COLORS[phase.type]}
+                          fillOpacity={0.3}
+                        />
+                      );
+                    })}
+
+                    <XAxis
+                      dataKey="time_minutes"
+                      label={{ value: 'Time (minutes)', position: 'insideBottom', offset: -5 }}
+                    />
+                    <YAxis
+                      domain={[0, 100]}
+                      label={{ value: 'SSR Output (%)', angle: -90, position: 'insideLeft' }}
+                    />
+                    <Tooltip
+                      formatter={(value: number) => [`${value.toFixed(1)}%`, 'SSR Output']}
+                      labelFormatter={(label: number) => `Time: ${label.toFixed(1)}min`}
+                    />
+                    <Legend />
+                    <Area
+                      type="monotone"
+                      dataKey="ssr_output"
+                      stroke="#f97316"
+                      fill="#f97316"
+                      fillOpacity={0.5}
+                      name="SSR Output (%)"
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="pt-6 border-t">
+                <h4 className="text-base font-semibold mb-1">Detected Phases Summary</h4>
+                <p className="text-sm text-muted-foreground mb-4">
+                  {phases.length} phases detected using physics-based algorithm
+                </p>
+                <div className="space-y-2">
                   {phases.map((phase, idx) => {
                     const startTime = secondsToMinutes(logData[phase.startIdx].elapsed_seconds);
                     const endTime = secondsToMinutes(logData[phase.endIdx].elapsed_seconds);
+                    const duration = endTime - startTime;
+                    const tempChange = phase.tempEnd - phase.tempStart;
+                    const rate = duration > 0 ? (tempChange / duration) * 60 : 0; // °C/h
+
                     return (
-                      <ReferenceArea
+                      <div
                         key={idx}
-                        x1={startTime}
-                        x2={endTime}
-                        fill={PHASE_COLORS[phase.type]}
-                        fillOpacity={0.3}
-                      />
+                        className="p-3 rounded border"
+                        style={{ 
+                          backgroundColor: PHASE_COLORS[phase.type], 
+                          borderColor: PHASE_COLORS[phase.type],
+                          opacity: 0.9 
+                        }}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="font-semibold">
+                            Phase {idx + 1}: {PHASE_LABELS[phase.type].toUpperCase()}
+                            {phase.stepName && <span className="ml-2 text-sm font-normal">({phase.stepName})</span>}
+                          </div>
+                          <div className="text-sm">
+                            {startTime.toFixed(1)} - {endTime.toFixed(1)} min ({duration.toFixed(1)} min)
+                          </div>
+                        </div>
+                        <div className="mt-1 flex gap-4 text-sm">
+                          <span>SSR: {phase.avgSsr.toFixed(1)}%</span>
+                          <span>Temp: {phase.tempStart.toFixed(1)}°C → {phase.tempEnd.toFixed(1)}°C ({tempChange > 0 ? '+' : ''}{tempChange.toFixed(1)}°C)</span>
+                          <span>Rate: {rate > 0 ? '+' : ''}{rate.toFixed(1)}°C/h</span>
+                        </div>
+                      </div>
                     );
                   })}
+                </div>
 
-                  <XAxis
-                    dataKey="time_minutes"
-                    label={{ value: 'Time (minutes)', position: 'insideBottom', offset: -5 }}
-                  />
-                  <YAxis
-                    domain={[0, 100]}
-                    label={{ value: 'SSR Output (%)', angle: -90, position: 'insideLeft' }}
-                  />
-                  <Tooltip
-                    formatter={(value: number) => [`${value.toFixed(1)}%`, 'SSR Output']}
-                    labelFormatter={(label: number) => `Time: ${label.toFixed(1)}min`}
-                  />
-                  <Legend />
-                  <Area
-                    type="monotone"
-                    dataKey="ssr_output"
-                    stroke="#f97316"
-                    fill="#f97316"
-                    fillOpacity={0.5}
-                    name="SSR Output (%)"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Detected Phases Summary</CardTitle>
-              <CardDescription>
-                {phases.length} phases detected using physics-based algorithm
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-2">
-                {phases.map((phase, idx) => {
-                  const startTime = secondsToMinutes(logData[phase.startIdx].elapsed_seconds);
-                  const endTime = secondsToMinutes(logData[phase.endIdx].elapsed_seconds);
-                  const duration = endTime - startTime;
-                  const tempChange = phase.tempEnd - phase.tempStart;
-                  const rate = duration > 0 ? (tempChange / duration) * 60 : 0; // °C/h
-
-                  return (
-                    <div
-                      key={idx}
-                      className="p-3 rounded border"
-                      style={{ 
-                        backgroundColor: PHASE_COLORS[phase.type], 
-                        borderColor: PHASE_COLORS[phase.type],
-                        opacity: 0.9 
-                      }}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="font-semibold">
-                          Phase {idx + 1}: {PHASE_LABELS[phase.type].toUpperCase()}
-                          {phase.stepName && <span className="ml-2 text-sm font-normal">({phase.stepName})</span>}
-                        </div>
-                        <div className="text-sm">
-                          {startTime.toFixed(1)} - {endTime.toFixed(1)} min ({duration.toFixed(1)} min)
-                        </div>
-                      </div>
-                      <div className="mt-1 flex gap-4 text-sm">
-                        <span>SSR: {phase.avgSsr.toFixed(1)}%</span>
-                        <span>Temp: {phase.tempStart.toFixed(1)}°C → {phase.tempEnd.toFixed(1)}°C ({tempChange > 0 ? '+' : ''}{tempChange.toFixed(1)}°C)</span>
-                        <span>Rate: {rate > 0 ? '+' : ''}{rate.toFixed(1)}°C/h</span>
-                      </div>
-                    </div>
-                  );
-                })}
+                <div className="mt-4 p-3 bg-muted/50 rounded text-sm">
+                  <div className="font-semibold mb-1">Phase Classification Logic:</div>
+                  <ul className="space-y-1 text-muted-foreground">
+                    <li>• <strong>COOLING:</strong> SSR &lt; 5% (natural cooling, no heat input)</li>
+                    <li>• <strong>HEATING:</strong> SSR ≥ 5% AND temp rising &gt; 0.5°C/min</li>
+                    <li>• <strong>PLATEAU:</strong> SSR ≥ 5% AND temp stable ±0.5°C/min</li>
+                  </ul>
+                </div>
               </div>
-
-              <div className="mt-4 p-3 bg-muted/50 rounded text-sm">
-                <div className="font-semibold mb-1">Phase Classification Logic:</div>
-                <ul className="space-y-1 text-muted-foreground">
-                  <li>• <strong>COOLING:</strong> SSR &lt; 5% (natural cooling, no heat input)</li>
-                  <li>• <strong>HEATING:</strong> SSR ≥ 5% AND temp rising &gt; 0.5°C/min</li>
-                  <li>• <strong>PLATEAU:</strong> SSR ≥ 5% AND temp stable ±0.5°C/min</li>
-                </ul>
-              </div>
-            </CardContent>
-          </Card>
-        </>
-      )}
-    </div>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

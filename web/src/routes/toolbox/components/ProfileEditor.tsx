@@ -218,7 +218,8 @@ export function ProfileEditor() {
 
   const uploadToPico = () => {
     const filename = uploadFilename || `${profile.name.replace(/\s+/g, '_').toLowerCase()}.json`;
-    const json = JSON.stringify(profile, null, 2);
+    // Minify JSON for upload to save space on Pico
+    const json = JSON.stringify(profile);
     uploadMutation.mutate({ filename, content: json });
   };
 
@@ -251,15 +252,14 @@ export function ProfileEditor() {
   };
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Profile Editor</CardTitle>
-          <CardDescription>
-            Create and edit kiln firing profiles with live visualization
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+    <Card>
+      <CardHeader>
+        <CardTitle>Profile Editor</CardTitle>
+        <CardDescription>
+          Create and edit kiln firing profiles with live visualization
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
           <div className="grid grid-cols-2 gap-4">
             <div>
               <Label htmlFor="profile-name">Profile Name</Label>
@@ -476,22 +476,24 @@ export function ProfileEditor() {
             )}
           </div>
         </CardContent>
-      </Card>
 
-      <Card>
-        <CardHeader>
+        <div className="px-6 pb-6 space-y-6 border-t pt-6">
           <div className="flex items-center justify-between">
-            <CardTitle>Profile Steps</CardTitle>
+            <div>
+              <h3 className="text-lg font-semibold">Profile Steps</h3>
+            </div>
             <Button onClick={addStep} size="sm">
               <Plus className="w-4 h-4 mr-2" />
               Add Step
             </Button>
           </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {profile.steps.map((step, index) => (
-            <Card key={index}>
-              <CardContent className="pt-4">
+
+          <div className="space-y-3">
+            {profile.steps.map((step, index) => (
+              <div
+                key={index}
+                className="p-4 rounded-lg border bg-muted/30 hover:bg-muted/50 transition-colors"
+              >
                 <div className="flex items-start gap-4">
                   <div className="flex flex-col gap-1">
                     <Button
@@ -499,6 +501,7 @@ export function ProfileEditor() {
                       size="sm"
                       onClick={() => moveStepUp(index)}
                       disabled={index === 0}
+                      className="h-8 w-8 p-0"
                     >
                       ↑
                     </Button>
@@ -507,6 +510,7 @@ export function ProfileEditor() {
                       size="sm"
                       onClick={() => moveStepDown(index)}
                       disabled={index === profile.steps.length - 1}
+                      className="h-8 w-8 p-0"
                     >
                       ↓
                     </Button>
@@ -579,112 +583,113 @@ export function ProfileEditor() {
                     size="sm"
                     onClick={() => removeStep(index)}
                     disabled={profile.steps.length <= 1}
+                    className="h-8 w-8 p-0"
                   >
                     <Trash2 className="w-4 h-4 text-destructive" />
                   </Button>
                 </div>
-              </CardContent>
-            </Card>
-          ))}
-        </CardContent>
-      </Card>
+              </div>
+            ))}
+          </div>
+        </div>
 
-      {segments.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Live Preview</CardTitle>
-            {stats && (
-              <CardDescription>
-                Duration: {stats.duration.toFixed(2)}h | Max Temp: {stats.maxTemp.toFixed(0)}°C
-              </CardDescription>
-            )}
-          </CardHeader>
-          <CardContent>
-            <div className="mb-4 flex gap-4 text-sm">
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded bg-red-500" />
-                <span>Ramp (heating)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded bg-yellow-500" />
-                <span>Hold</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded bg-blue-500" />
-                <span>Cooling</span>
-              </div>
+        {segments.length > 0 && (
+          <div className="px-6 pb-6 space-y-6 border-t pt-6">
+            <div>
+              <h3 className="text-lg font-semibold">Live Preview</h3>
+              {stats && (
+                <p className="text-sm text-muted-foreground mt-1">
+                  Duration: {stats.duration.toFixed(2)}h | Max Temp: {stats.maxTemp.toFixed(0)}°C
+                </p>
+              )}
             </div>
 
-            <ResponsiveContainer width="100%" height={400}>
-              <LineChart margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-                
-                <XAxis
-                  dataKey="time_hours"
-                  type="number"
-                  domain={[0, 'dataMax']}
-                  label={{ value: 'Time (hours)', position: 'insideBottom', offset: -5 }}
-                />
-                <YAxis
-                  label={{ value: `Temperature (°${profile.temp_units.toUpperCase()})`, angle: -90, position: 'insideLeft' }}
-                />
-                <Tooltip
-                  content={({ active, payload }) => {
-                    if (!active || !payload || payload.length === 0) return null;
-                    
-                    const point = payload[0].payload as TrajectoryPoint;
-                    const segment = segments.find(s => 
-                      s.data.some(d => d.time_hours === point.time_hours && d.temp === point.temp)
-                    );
-                    
-                    return (
-                      <div className="bg-background border rounded-lg p-3 shadow-lg">
-                        <p className="font-semibold">Time: {point.time_hours.toFixed(2)}h</p>
-                        <p>Temperature: {point.temp.toFixed(1)}°C</p>
-                        {segment && (
-                          <>
-                            <p className="mt-2 font-semibold capitalize">{segment.type}</p>
-                            {segment.type === 'hold' && (
-                              <p className="text-sm">Duration: {segment.duration?.toFixed(0)} min</p>
-                            )}
-                            {(segment.type === 'ramp' || segment.type === 'cooling') && (
-                              <>
-                                {segment.desiredRate && (
-                                  <p className="text-sm">Desired rate: {segment.desiredRate}°C/h</p>
-                                )}
-                                {segment.minRate && (
-                                  <p className="text-sm">Min rate: {segment.minRate}°C/h</p>
-                                )}
-                              </>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    );
-                  }}
-                />
-                <Legend />
-                
-                {/* Draw a separate line for each segment with its own color */}
-                {segments.map((segment, idx) => (
-                  <Line
-                    key={idx}
-                    data={segment.data}
-                    type="linear"
-                    dataKey="temp"
-                    stroke={segment.color}
-                    strokeWidth={3}
-                    dot={{ r: 5, fill: segment.color }}
-                    name={idx === 0 ? 'Temperature' : undefined}
-                    legendType={idx === 0 ? 'line' : 'none'}
-                    isAnimationActive={false}
+            <div className="space-y-4">
+              <div className="flex gap-4 text-sm">
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 rounded bg-red-500" />
+                  <span>Ramp (heating)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 rounded bg-yellow-500" />
+                  <span>Hold</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 rounded bg-blue-500" />
+                  <span>Cooling</span>
+                </div>
+              </div>
+
+              <ResponsiveContainer width="100%" height={400}>
+                <LineChart margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+                  
+                  <XAxis
+                    dataKey="time_hours"
+                    type="number"
+                    domain={[0, 'dataMax']}
+                    label={{ value: 'Time (hours)', position: 'insideBottom', offset: -5 }}
                   />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      )}
-    </div>
-  );
-}
+                  <YAxis
+                    label={{ value: `Temperature (°${profile.temp_units.toUpperCase()})`, angle: -90, position: 'insideLeft' }}
+                  />
+                  <Tooltip
+                    content={({ active, payload }) => {
+                      if (!active || !payload || payload.length === 0) return null;
+                      
+                      const point = payload[0].payload as TrajectoryPoint;
+                      const segment = segments.find(s => 
+                        s.data.some(d => d.time_hours === point.time_hours && d.temp === point.temp)
+                      );
+                      
+                      return (
+                        <div className="bg-background border rounded-lg p-3 shadow-lg">
+                          <p className="font-semibold">Time: {point.time_hours.toFixed(2)}h</p>
+                          <p>Temperature: {point.temp.toFixed(1)}°C</p>
+                          {segment && (
+                            <>
+                              <p className="mt-2 font-semibold capitalize">{segment.type}</p>
+                              {segment.type === 'hold' && (
+                                <p className="text-sm">Duration: {segment.duration?.toFixed(0)} min</p>
+                              )}
+                              {(segment.type === 'ramp' || segment.type === 'cooling') && (
+                                <>
+                                  {segment.desiredRate && (
+                                    <p className="text-sm">Desired rate: {segment.desiredRate}°C/h</p>
+                                  )}
+                                  {segment.minRate && (
+                                    <p className="text-sm">Min rate: {segment.minRate}°C/h</p>
+                                  )}
+                                </>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      );
+                    }}
+                  />
+                  <Legend />
+                  
+                  {/* Draw a separate line for each segment with its own color */}
+                  {segments.map((segment, idx) => (
+                    <Line
+                      key={idx}
+                      data={segment.data}
+                      type="linear"
+                      dataKey="temp"
+                      stroke={segment.color}
+                      strokeWidth={3}
+                      dot={{ r: 5, fill: segment.color }}
+                      name={idx === 0 ? 'Temperature' : undefined}
+                      legendType={idx === 0 ? 'line' : 'none'}
+                      isAnimationActive={false}
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+      </Card>
+    );
+  }

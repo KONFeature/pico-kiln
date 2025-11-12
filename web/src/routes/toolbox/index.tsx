@@ -1,10 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Wrench, LineChart, Activity, Zap, Edit } from 'lucide-react'
-import { ProfileVisualizer } from './components/ProfileVisualizer'
-import { RunVisualizer } from './components/RunVisualizer'
-import { TuningPhasesVisualizer } from './components/TuningPhasesVisualizer'
+import { Wrench, LineChart, Edit, FolderOpen } from 'lucide-react'
+import { Visualizer } from './components/Visualizer'
 import { ProfileEditor } from './components/ProfileEditor'
+import { FileManager } from './components/FileManager'
 
 export const Route = createFileRoute('/toolbox/')({
   component: ToolboxPage,
@@ -23,40 +22,32 @@ function ToolboxPage() {
           Upload files or load them directly from your Pico when it's IDLE.
         </p>
 
-        <Tabs defaultValue="profile-viz" className="w-full">
-          <TabsList className="grid w-full grid-cols-4">
-            <TabsTrigger value="profile-viz" className="flex items-center gap-2">
+        <Tabs defaultValue="visualizer" className="w-full">
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="visualizer" className="flex items-center gap-2">
               <LineChart className="w-4 h-4" />
-              Profile Viz
-            </TabsTrigger>
-            <TabsTrigger value="run-viz" className="flex items-center gap-2">
-              <Activity className="w-4 h-4" />
-              Run Viz
-            </TabsTrigger>
-            <TabsTrigger value="tuning-viz" className="flex items-center gap-2">
-              <Zap className="w-4 h-4" />
-              Tuning Phases
+              Visualizer
             </TabsTrigger>
             <TabsTrigger value="editor" className="flex items-center gap-2">
               <Edit className="w-4 h-4" />
               Profile Editor
             </TabsTrigger>
+            <TabsTrigger value="files" className="flex items-center gap-2">
+              <FolderOpen className="w-4 h-4" />
+              Files
+            </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="profile-viz" className="mt-6">
-            <ProfileVisualizer />
-          </TabsContent>
-
-          <TabsContent value="run-viz" className="mt-6">
-            <RunVisualizer />
-          </TabsContent>
-
-          <TabsContent value="tuning-viz" className="mt-6">
-            <TuningPhasesVisualizer />
+          <TabsContent value="visualizer" className="mt-6">
+            <Visualizer />
           </TabsContent>
 
           <TabsContent value="editor" className="mt-6">
             <ProfileEditor />
+          </TabsContent>
+
+          <TabsContent value="files" className="mt-6">
+            <FileManager />
           </TabsContent>
         </Tabs>
       </div>

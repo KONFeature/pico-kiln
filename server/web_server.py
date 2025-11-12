@@ -25,7 +25,7 @@ HEADER_CONTENT_TYPE_JSON = b"Content-Type: application/json\r\n"
 HEADER_CONTENT_TYPE_HTML = b"Content-Type: text/html\r\n"
 HEADER_CONTENT_TYPE_TEXT = b"Content-Type: text/plain\r\n"
 # CORS headers to allow web app from different origin
-HEADER_CORS = b"Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n"
+HEADER_CORS = b"Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n"
 HEADER_CONNECTION_CLOSE = b"Connection: close\r\n\r\n"
 
 # Global communication channels (initialized in start_server)
@@ -444,6 +444,94 @@ def handle_api_files_delete(conn, directory, filename):
         print(f"[Web Server] Error deleting file: {e}")
         send_json_response(conn, {'success': False, 'error': str(e)}, 500)
 
+def handle_api_files_upload(conn, directory, filename, body):
+    """PUT /api/files/<directory>/<filename> - Upload/create a file"""
+    try:
+        # Check if IDLE
+        is_idle, error = check_idle_state()
+        if not is_idle:
+            send_json_response(conn, error, 403)
+            return
+        
+        # Validate directory
+        is_valid, dir_path, error = validate_directory(directory)
+        if not is_valid:
+            send_json_response(conn, error, 400)
+            return
+        
+        # Validate filename
+        if not safe_filename(filename):
+            send_json_response(conn, {
+                'success': False,
+                'error': 'Invalid filename'
+            }, 400)
+            return
+        
+        # Parse JSON body to get content
+        try:
+            print(f"[Web Server] Upload body length: {len(body)} bytes")
+            body_str = body.decode('utf-8')
+            data = json.loads(body_str)
+            content = data.get('content')
+            
+            if content is None:
+                send_json_response(conn, {
+                    'success': False,
+                    'error': 'Missing content field in request body'
+                }, 400)
+                return
+        except UnicodeDecodeError as e:
+            print(f"[Web Server] UTF-8 decode error: {e}")
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Invalid UTF-8 encoding: {e}'
+            }, 400)
+            return
+        except ValueError as e:
+            print(f"[Web Server] JSON parse error: {e}")
+            print(f"[Web Server] Body preview: {body[:200]}")
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Invalid JSON body: {e}'
+            }, 400)
+            return
+        except Exception as e:
+            print(f"[Web Server] Unexpected error parsing body: {e}")
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Error parsing request: {e}'
+            }, 400)
+            return
+        
+        # Write file
+        filepath = f"{dir_path}/{filename}"
+        try:
+            with open(filepath, 'w') as f:
+                f.write(content)
+            
+            print(f"[Web Server] Uploaded file: {filepath} ({len(content)} bytes)")
+            
+            # Update profile cache if it's a profile
+            if directory == 'profiles':
+                from server.profile_cache import get_profile_cache
+                get_profile_cache().refresh()
+            
+            send_json_response(conn, {
+                'success': True,
+                'message': f'Uploaded {filename}',
+                'filename': filename,
+                'size': len(content)
+            })
+        except OSError as e:
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Failed to write file: {e}'
+            }, 500)
+    
+    except Exception as e:
+        print(f"[Web Server] Error uploading file: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+
 def handle_api_files_delete_all(conn, directory):
     """DELETE /api/files/<directory>/all - Delete all files in directory"""
     try:
@@ -627,9 +715,27 @@ async def handle_client(conn, addr):
 
         print(f"Request from {addr}")
 
-        # Parse request
+        # Parse request (initial)
         method, path, headers, body = parse_request(req)
         print(f"{method} {path}")
+        
+        # For PUT requests with Content-Length, read full body if needed
+        if method == 'PUT' and 'content-length' in headers:
+            content_length = int(headers['content-length'])
+            # Check if we need to read more data
+            header_end = req.find(b'\r\n\r\n')
+            if header_end != -1:
+                received_body_length = len(req) - (header_end + 4)
+                if received_body_length < content_length:
+                    # Need to read more data
+                    remaining = content_length - received_body_length
+                    try:
+                        additional_data = conn.recv(remaining)
+                        body += additional_data
+                    except OSError as e:
+                        print(f"[Web Server] Error reading full body: {e}")
+                        send_response(conn, 400, b'Failed to read request body', 'text/plain')
+                        return
 
         # Handle CORS preflight requests
         if method == 'OPTIONS':
@@ -725,9 +831,11 @@ async def handle_client(conn, addr):
                     else:
                         send_response(conn, 405, b'Method not allowed', 'text/plain')
                 else:
-                    # GET or DELETE /api/files/<directory>/<filename>
+                    # GET, PUT, or DELETE /api/files/<directory>/<filename>
                     if method == 'GET':
                         handle_api_files_get(conn, directory, filename)
+                    elif method == 'PUT':
+                        handle_api_files_upload(conn, directory, filename, body)
                     elif method == 'DELETE':
                         handle_api_files_delete(conn, directory, filename)
                     else:
