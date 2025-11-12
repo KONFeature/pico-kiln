@@ -250,6 +250,251 @@ def handle_api_cancel_scheduled(conn):
             'error': 'Command queue full'
         }, 500)
 
+# === File Management Helpers ===
+
+def check_idle_state():
+    """
+    Check if kiln is in IDLE state before file operations
+    
+    Returns:
+        (is_idle, error_response) tuple
+        - If idle: (True, None)
+        - If not idle: (False, error_dict)
+    """
+    status = get_status_receiver().get_status()
+    state = status.get('state', 'UNKNOWN')
+    
+    if state != 'IDLE':
+        return False, {
+            'success': False,
+            'error': f'File operations not allowed while kiln is {state}. Stop the kiln first.'
+        }
+    
+    return True, None
+
+def validate_directory(directory):
+    """
+    Validate that directory is either 'profiles' or 'logs'
+    
+    Returns:
+        (is_valid, path, error_response) tuple
+    """
+    if directory not in ['profiles', 'logs']:
+        return False, None, {
+            'success': False,
+            'error': "Invalid directory. Must be 'profiles' or 'logs'"
+        }
+    
+    return True, directory, None
+
+def safe_filename(filename):
+    """
+    Validate filename to prevent directory traversal
+    
+    Returns:
+        True if safe, False otherwise
+    """
+    # Disallow path separators and parent directory references
+    if '/' in filename or '\\' in filename or '..' in filename:
+        return False
+    
+    # Must have some content
+    if not filename or filename.startswith('.'):
+        return False
+    
+    return True
+
+# === File Management Handlers ===
+
+def handle_api_files_list(conn, directory):
+    """GET /api/files/<directory> - List files in directory"""
+    try:
+        # Check if IDLE
+        is_idle, error = check_idle_state()
+        if not is_idle:
+            send_json_response(conn, error, 403)
+            return
+        
+        # Validate directory
+        is_valid, dir_path, error = validate_directory(directory)
+        if not is_valid:
+            send_json_response(conn, error, 400)
+            return
+        
+        # List files
+        import os
+        try:
+            files = []
+            for filename in os.listdir(dir_path):
+                filepath = f"{dir_path}/{filename}"
+                try:
+                    stat = os.stat(filepath)
+                    files.append({
+                        'name': filename,
+                        'size': stat[6],  # st_size
+                        'modified': stat[8]  # st_mtime
+                    })
+                except:
+                    # If stat fails, just add name
+                    files.append({'name': filename, 'size': 0, 'modified': 0})
+            
+            send_json_response(conn, {
+                'success': True,
+                'directory': directory,
+                'files': files,
+                'count': len(files)
+            })
+        except OSError as e:
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Failed to list directory: {e}'
+            }, 500)
+    
+    except Exception as e:
+        print(f"[Web Server] Error listing files: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+
+def handle_api_files_get(conn, directory, filename):
+    """GET /api/files/<directory>/<filename> - Get file content"""
+    try:
+        # Check if IDLE
+        is_idle, error = check_idle_state()
+        if not is_idle:
+            send_json_response(conn, error, 403)
+            return
+        
+        # Validate directory
+        is_valid, dir_path, error = validate_directory(directory)
+        if not is_valid:
+            send_json_response(conn, error, 400)
+            return
+        
+        # Validate filename
+        if not safe_filename(filename):
+            send_json_response(conn, {
+                'success': False,
+                'error': 'Invalid filename'
+            }, 400)
+            return
+        
+        # Read file
+        filepath = f"{dir_path}/{filename}"
+        try:
+            with open(filepath, 'r') as f:
+                content = f.read()
+            
+            send_json_response(conn, {
+                'success': True,
+                'filename': filename,
+                'content': content
+            })
+        except OSError as e:
+            send_json_response(conn, {
+                'success': False,
+                'error': f'File not found: {filename}'
+            }, 404)
+    
+    except Exception as e:
+        print(f"[Web Server] Error reading file: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+
+def handle_api_files_delete(conn, directory, filename):
+    """DELETE /api/files/<directory>/<filename> - Delete a file"""
+    try:
+        # Check if IDLE
+        is_idle, error = check_idle_state()
+        if not is_idle:
+            send_json_response(conn, error, 403)
+            return
+        
+        # Validate directory
+        is_valid, dir_path, error = validate_directory(directory)
+        if not is_valid:
+            send_json_response(conn, error, 400)
+            return
+        
+        # Validate filename
+        if not safe_filename(filename):
+            send_json_response(conn, {
+                'success': False,
+                'error': 'Invalid filename'
+            }, 400)
+            return
+        
+        # Delete file
+        filepath = f"{dir_path}/{filename}"
+        try:
+            import os
+            os.remove(filepath)
+            print(f"[Web Server] Deleted file: {filepath}")
+            send_json_response(conn, {
+                'success': True,
+                'message': f'Deleted {filename}'
+            })
+        except OSError as e:
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Failed to delete file: {e}'
+            }, 500)
+    
+    except Exception as e:
+        print(f"[Web Server] Error deleting file: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+
+def handle_api_files_delete_all(conn, directory):
+    """DELETE /api/files/<directory>/all - Delete all files in directory"""
+    try:
+        # Check if IDLE
+        is_idle, error = check_idle_state()
+        if not is_idle:
+            send_json_response(conn, error, 403)
+            return
+        
+        # Only allow for logs directory
+        if directory != 'logs':
+            send_json_response(conn, {
+                'success': False,
+                'error': 'Bulk delete only allowed for logs directory'
+            }, 403)
+            return
+        
+        # Delete all files
+        import os
+        try:
+            deleted = []
+            errors = []
+            
+            for filename in os.listdir(directory):
+                filepath = f"{directory}/{filename}"
+                try:
+                    os.remove(filepath)
+                    deleted.append(filename)
+                except Exception as e:
+                    errors.append(f"{filename}: {e}")
+            
+            print(f"[Web Server] Deleted {len(deleted)} files from {directory}")
+            
+            response = {
+                'success': True,
+                'deleted_count': len(deleted),
+                'deleted_files': deleted
+            }
+            
+            if errors:
+                response['errors'] = errors
+            
+            send_json_response(conn, response)
+        
+        except OSError as e:
+            send_json_response(conn, {
+                'success': False,
+                'error': f'Failed to delete files: {e}'
+            }, 500)
+    
+    except Exception as e:
+        print(f"[Web Server] Error deleting all files: {e}")
+        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+
 # === Status Handlers ===
 
 def handle_api_status(conn):
@@ -446,6 +691,40 @@ async def handle_client(conn, addr):
                 handle_api_cancel_scheduled(conn)
             else:
                 send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        # File management endpoints
+        elif path.startswith('/api/files/'):
+            # Parse path: /api/files/<directory> or /api/files/<directory>/<filename>
+            parts = path.split('/')
+            if len(parts) == 4:
+                # /api/files/<directory>
+                directory = parts[3]
+                if method == 'GET':
+                    handle_api_files_list(conn, directory)
+                else:
+                    send_response(conn, 405, b'Method not allowed', 'text/plain')
+            
+            elif len(parts) == 5:
+                # /api/files/<directory>/<filename>
+                directory = parts[3]
+                filename = parts[4]
+                
+                if filename == 'all':
+                    # DELETE /api/files/<directory>/all
+                    if method == 'DELETE':
+                        handle_api_files_delete_all(conn, directory)
+                    else:
+                        send_response(conn, 405, b'Method not allowed', 'text/plain')
+                else:
+                    # GET or DELETE /api/files/<directory>/<filename>
+                    if method == 'GET':
+                        handle_api_files_get(conn, directory, filename)
+                    elif method == 'DELETE':
+                        handle_api_files_delete(conn, directory, filename)
+                    else:
+                        send_response(conn, 405, b'Method not allowed', 'text/plain')
+            else:
+                send_response(conn, 404, b'Not found', 'text/plain')
 
         else:
             send_response(conn, 404, b'Not found', 'text/plain')
