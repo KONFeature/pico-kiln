@@ -2,7 +2,7 @@
 
 export type KilnState = "IDLE" | "RUNNING" | "TUNING" | "ERROR";
 export type TempUnits = "c" | "f";
-export type TuningMode = "safe" | "standard" | "thorough" | "high_temp";
+export type TuningMode = "SAFE" | "STANDARD" | "THOROUGH" | "HIGH_TEMP";
 export type ProfileStepType = "ramp" | "hold";
 
 // Profile structure

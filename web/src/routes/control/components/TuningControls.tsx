@@ -24,29 +24,29 @@ const TUNING_MODES: {
 	description: string;
 }[] = [
 	{
-		value: "safe",
+		value: "SAFE",
 		label: "Safe Mode",
 		description: "Conservative tuning with lower temperatures (max 200°C)",
 	},
 	{
-		value: "standard",
+		value: "STANDARD",
 		label: "Standard Mode",
 		description: "Balanced tuning for typical firing temperatures (max 350°C)",
 	},
 	{
-		value: "thorough",
+		value: "THOROUGH",
 		label: "Thorough Mode",
 		description: "Extended tuning for better accuracy (max 350°C)",
 	},
 	{
-		value: "high_temp",
+		value: "HIGH_TEMP",
 		label: "High Temperature Mode",
 		description: "Tuning for high-fire ceramics (max 500°C)",
 	},
 ];
 
 export function TuningControls({ status }: TuningControlsProps) {
-	const [selectedMode, setSelectedMode] = useState<TuningMode>("standard");
+	const [selectedMode, setSelectedMode] = useState<TuningMode>("STANDARD");
 	const [maxTemp, setMaxTemp] = useState<string>("");
 
 	const startTuning = useStartTuning();
