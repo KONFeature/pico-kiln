@@ -8,6 +8,7 @@
 # - Rock-solid for 15+ hour firings
 
 import asyncio
+import time
 from machine import I2C, Pin
 
 
@@ -19,7 +20,7 @@ class LCDManager:
     - Row 1: Current temp + state
     - Row 2: Target temp + SSR output
     
-    Updates every 2 seconds. That's it.
+    Updates every 5 seconds. That's it.
     """
 
     def __init__(self, config, status_receiver):
@@ -43,6 +44,10 @@ class LCDManager:
         
         # Hardware component (initialized separately via initialize_hardware)
         self.lcd = None
+        
+        # Periodic reset tracking (to handle wire interference issues)
+        self.last_reset_time = 0
+        self.reset_interval_sec = 300  # 5 minutes = 300 seconds
 
     async def initialize_hardware(self, timeout_ms=500):
         """
@@ -87,6 +92,9 @@ class LCDManager:
                 timeout_ms / 1000.0  # Convert to seconds
             )
             
+            # Update reset timestamp
+            self.last_reset_time = time.time()
+            
             print(f"[LCD] Display initialized successfully")
             return True
             
@@ -104,6 +112,24 @@ class LCDManager:
             self.enabled = False
             return False
 
+    async def _reset_lcd_hardware(self):
+        """
+        Reset LCD hardware (handles wire interference issues)
+        
+        Reinitializes the LCD hardware to recover from I2C communication issues
+        that can occur due to wire interference or unstable connections.
+        """
+        print("[LCD] Performing periodic hardware reset (10min interval)")
+        try:
+            # Re-initialize the LCD hardware
+            success = await self.initialize_hardware(timeout_ms=500)
+            if success:
+                print("[LCD] Hardware reset successful")
+            else:
+                print("[LCD] Hardware reset failed - LCD may be disabled")
+        except Exception as e:
+            print(f"[LCD] Error during hardware reset: {e}")
+
     async def run(self):
         """
         Main LCD update loop - display only
@@ -112,8 +138,10 @@ class LCDManager:
         - Row 1: Current temperature + state (e.g., "  25C IDLE")
         - Row 2: Target temperature + SSR output (e.g., "Tgt:800C  45%")
         
-        Updates every 2 seconds for a good balance between responsiveness
-        and reducing I2C bus traffic.
+        Updates every 5 seconds to reduce I2C bus traffic and minimize
+        wire interference issues.
+        
+        Includes periodic hardware reset every 10 minutes to handle wire interference.
         """
         if not self.enabled:
             print("[LCD] LCD manager not enabled, exiting")
@@ -125,6 +153,7 @@ class LCDManager:
         
         print("[LCD] Starting LCD update loop (display-only mode)")
         print("[LCD] Showing: Temp, State, Target, SSR")
+        print("[LCD] Periodic reset: every 10 minutes")
         
         consecutive_errors = 0
         max_consecutive_errors = 3
@@ -135,6 +164,13 @@ class LCDManager:
                 if not self.lcd or not self.enabled:
                     print("[LCD] LCD disabled, exiting update loop")
                     return
+                
+                # Check if periodic reset is needed (every 10 minutes)
+                current_time = time.time()
+                if current_time - self.last_reset_time >= self.reset_interval_sec:
+                    await self._reset_lcd_hardware()
+                    # Continue to next iteration after reset
+                    continue
                 
                 # Get current status from cache
                 state = self.status_receiver.get_status_field('state', 'IDLE')
@@ -161,14 +197,19 @@ class LCDManager:
                 # Reset error counter on successful update
                 consecutive_errors = 0
                 
-                # Update every 2 seconds
-                await asyncio.sleep(2.0)
+                # Update every 5 seconds
+                await asyncio.sleep(5.0)
                 
             except Exception as e:
                 consecutive_errors += 1
                 print(f"[LCD] Error in update loop ({consecutive_errors}/{max_consecutive_errors}): {e}")
                 
-                # If too many consecutive errors, disable LCD to prevent crash loop
+                # If too many consecutive errors, try a reset first
+                if consecutive_errors == 2:
+                    print("[LCD] Multiple errors detected, attempting emergency reset...")
+                    await self._reset_lcd_hardware()
+                
+                # If too many consecutive errors after reset attempt, disable LCD
                 if consecutive_errors >= max_consecutive_errors:
                     print(f"[LCD] CRITICAL: Disabling LCD after {max_consecutive_errors} errors")
                     print(f"[LCD] Last error: {e}")
