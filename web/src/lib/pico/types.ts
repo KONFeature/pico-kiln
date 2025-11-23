@@ -3,12 +3,12 @@
 export type KilnState = "IDLE" | "RUNNING" | "TUNING" | "ERROR";
 export type TempUnits = "c" | "f";
 export type TuningMode = "SAFE" | "STANDARD" | "THOROUGH" | "HIGH_TEMP";
-export type ProfileStepType = "ramp" | "hold";
+export type ProfileStepType = "ramp" | "hold" | "cooling";
 
 // Profile structure
 export interface ProfileStep {
 	type: ProfileStepType;
-	target_temp: number;
+	target_temp?: number; // Optional for cooling steps without target
 	desired_rate?: number; // For ramp steps
 	min_rate?: number; // For ramp steps
 	duration?: number; // For hold steps (in seconds)

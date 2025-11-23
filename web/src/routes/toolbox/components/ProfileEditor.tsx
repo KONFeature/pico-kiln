@@ -108,12 +108,37 @@ function calculateTrajectory(profile: Profile): Segment[] {
 				type: isHeating ? "ramp" : "cooling",
 				color: isHeating ? "#ef4444" : "#3b82f6",
 				step,
-				desiredRate: step.desired_rate,
+				desiredRate: step.desired_rate ?? 100,
 				minRate: step.min_rate,
 			});
 
 			currentTime += durationSeconds;
 			currentTemp = targetTemp;
+		} else if (step.type === "cooling") {
+			// Natural cooling: estimate at 100°C/h if target specified
+			const coolingTarget = step.target_temp ?? 20; // Default to room temp
+			const tempChange = Math.abs(currentTemp - coolingTarget);
+			const naturalCoolingRate = 100; // Estimated natural cooling rate
+			const durationHours = tempChange / naturalCoolingRate;
+			const durationSeconds = durationHours * 3600;
+
+			const data: TrajectoryPoint[] = [
+				{ time_hours: currentTime / 3600, temp: currentTemp },
+				{
+					time_hours: (currentTime + durationSeconds) / 3600,
+					temp: coolingTarget,
+				},
+			];
+
+			segments.push({
+				data,
+				type: "cooling",
+				color: "#06b6d4", // cyan-500 for natural cooling
+				step,
+			});
+
+			currentTime += durationSeconds;
+			currentTemp = coolingTarget;
 		}
 	}
 
@@ -125,7 +150,7 @@ const DEFAULT_PROFILE: Profile = {
 	temp_units: "c",
 	description: "",
 	steps: [
-		{ type: "ramp", target_temp: 600, desired_rate: 100 },
+		{ type: "ramp", target_temp: 600 },
 		{ type: "hold", target_temp: 600, duration: 600 },
 	],
 };
@@ -191,6 +216,30 @@ export function ProfileEditor() {
 		return { maxTemp, duration };
 	}, [segments]);
 
+	// Validation logic
+	const validateStep = (step: ProfileStep): string | null => {
+		if (step.type === "ramp") {
+			if (step.target_temp === undefined || step.target_temp === null) {
+				return "Target temperature is required for ramp steps";
+			}
+			if (step.desired_rate === undefined || step.desired_rate === null) {
+				return "Desired rate is required for ramp steps";
+			}
+		}
+		if (step.type === "hold") {
+			if (step.target_temp === undefined || step.target_temp === null) {
+				return "Target temperature is required for hold steps";
+			}
+		}
+		return null;
+	};
+
+	const stepErrors = useMemo(() => {
+		return profile.steps.map((step) => validateStep(step));
+	}, [profile.steps]);
+
+	const hasValidationErrors = stepErrors.some((error) => error !== null);
+
 	const updateProfile = (updates: Partial<Profile>) => {
 		setProfile((prev) => ({ ...prev, ...updates }));
 	};
@@ -207,7 +256,7 @@ export function ProfileEditor() {
 	const addStep = () => {
 		setProfile((prev) => ({
 			...prev,
-			steps: [...prev.steps, { type: "ramp", target_temp: 100 }],
+			steps: [...prev.steps, { type: "ramp" }],
 		}));
 	};
 
@@ -238,6 +287,7 @@ export function ProfileEditor() {
 	};
 
 	const downloadProfile = () => {
+		if (hasValidationErrors) return;
 		const json = JSON.stringify(profile, null, 2);
 		const blob = new Blob([json], { type: "application/json" });
 		const url = URL.createObjectURL(blob);
@@ -251,6 +301,7 @@ export function ProfileEditor() {
 	};
 
 	const uploadToPico = () => {
+		if (hasValidationErrors) return;
 		const filename =
 			uploadFilename ||
 			`${profile.name.replace(/\s+/g, "_").toLowerCase()}.json`;
@@ -432,134 +483,26 @@ export function ProfileEditor() {
 						</div>
 					)}
 				</div>
-
-				{/* Export Section */}
-				<div className="space-y-3 pt-4 border-t">
-					<div>
-						<Label className="text-base font-semibold">Export Profile</Label>
-						<p className="text-sm text-muted-foreground">Save your profile</p>
-					</div>
-
-					<div className="flex gap-2">
-						<Button
-							variant={exportMode === "download" ? "default" : "outline"}
-							size="sm"
-							onClick={() => setExportMode("download")}
-						>
-							<Download className="w-4 h-4 mr-2" />
-							Download
-						</Button>
-						<Button
-							variant={exportMode === "upload" ? "default" : "outline"}
-							size="sm"
-							onClick={() => setExportMode("upload")}
-							disabled={!isConfigured}
-						>
-							<FileUp className="w-4 h-4 mr-2" />
-							Upload to Pico
-						</Button>
-					</div>
-
-					{exportMode === "download" && (
-						<Button onClick={downloadProfile} size="sm" className="w-full">
-							<Download className="w-4 h-4 mr-2" />
-							Download as JSON
-						</Button>
-					)}
-
-					{exportMode === "upload" && (
-						<div className="space-y-2">
-							{!isConfigured && (
-								<Alert>
-									<AlertCircle className="h-4 w-4" />
-									<AlertDescription>
-										Please configure Pico connection to upload profiles
-									</AlertDescription>
-								</Alert>
-							)}
-							{isConfigured && (
-								<>
-									<div>
-										<Label htmlFor="upload-filename">Filename (optional)</Label>
-										<Input
-											id="upload-filename"
-											value={uploadFilename}
-											onChange={(e) => setUploadFilename(e.target.value)}
-											placeholder={`${profile.name.replace(/\s+/g, "_").toLowerCase()}.json`}
-											className="mt-1"
-										/>
-										<p className="text-xs text-muted-foreground mt-1">
-											Leave empty to use profile name
-										</p>
-									</div>
-									<Button
-										onClick={uploadToPico}
-										disabled={uploadMutation.isPending}
-										size="sm"
-										className="w-full"
-									>
-										{uploadMutation.isPending ? (
-											<>Uploading...</>
-										) : (
-											<>
-												<FileUp className="w-4 h-4 mr-2" />
-												Upload to Pico
-											</>
-										)}
-									</Button>
-									{uploadMutation.isSuccess && uploadMutation.data?.success && (
-										<Alert>
-											<CheckCircle className="h-4 w-4" />
-											<AlertDescription>
-												Profile uploaded successfully:{" "}
-												{uploadMutation.data.filename}
-											</AlertDescription>
-										</Alert>
-									)}
-									{uploadMutation.isError && (
-										<Alert variant="destructive">
-											<AlertCircle className="h-4 w-4" />
-											<AlertDescription>
-												{uploadMutation.error instanceof Error
-													? uploadMutation.error.message
-													: "Upload failed"}
-											</AlertDescription>
-										</Alert>
-									)}
-									{uploadMutation.isSuccess &&
-										!uploadMutation.data?.success && (
-											<Alert variant="destructive">
-												<AlertCircle className="h-4 w-4" />
-												<AlertDescription>
-													{uploadMutation.data?.error || "Upload failed"}
-												</AlertDescription>
-											</Alert>
-										)}
-								</>
-							)}
-						</div>
-					)}
-				</div>
 			</CardContent>
 
 			<div className="px-6 pb-6 space-y-6 border-t pt-6">
-				<div className="flex items-center justify-between">
-					<div>
-						<h3 className="text-lg font-semibold">Profile Steps</h3>
-					</div>
-					<Button onClick={addStep} size="sm">
-						<Plus className="w-4 h-4 mr-2" />
-						Add Step
-					</Button>
+				<div>
+					<h3 className="text-lg font-semibold">Profile Steps</h3>
 				</div>
 
 				<div className="space-y-3">
-					{profile.steps.map((step, index) => (
-						<div
-							key={index}
-							className="p-4 rounded-lg border bg-muted/30 hover:bg-muted/50 transition-colors"
-						>
-							<div className="flex items-start gap-4">
+					{profile.steps.map((step, index) => {
+						const error = stepErrors[index];
+						return (
+							<div
+								key={index}
+								className={`p-4 rounded-lg border transition-colors ${
+									error
+										? "bg-red-50 border-red-300 dark:bg-red-950/20 dark:border-red-800"
+										: "bg-muted/30 hover:bg-muted/50"
+								}`}
+							>
+								<div className="flex items-start gap-4">
 								<div className="flex flex-col gap-1">
 									<Button
 										variant="ghost"
@@ -590,31 +533,63 @@ export function ProfileEditor() {
 												updateStep(index, { type: value as ProfileStepType })
 											}
 										>
-											<SelectTrigger className="w-32">
+											<SelectTrigger className="w-40">
 												<SelectValue />
 											</SelectTrigger>
 											<SelectContent>
 												<SelectItem value="ramp">Ramp</SelectItem>
 												<SelectItem value="hold">Hold</SelectItem>
+												<SelectItem value="cooling">Cooling</SelectItem>
 											</SelectContent>
 										</Select>
 									</div>
 
 									<div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-										<div>
-											<Label>
-												Target Temp (°{profile.temp_units.toUpperCase()})
-											</Label>
-											<Input
-												type="number"
-												value={step.target_temp ?? ""}
-												onChange={(e) =>
-													updateStep(index, {
-														target_temp: parseFloat(e.target.value) || 0,
-													})
-												}
-											/>
-										</div>
+										{step.type !== "cooling" && (
+											<div>
+												<Label>
+													Target Temp (°{profile.temp_units.toUpperCase()})
+												</Label>
+												<Input
+													type="number"
+													value={step.target_temp ?? ""}
+													onChange={(e) => {
+														const value = e.target.value;
+														updateStep(index, {
+															target_temp:
+																value === "" ? undefined : parseFloat(value),
+														});
+													}}
+													placeholder="0"
+												/>
+											</div>
+										)}
+
+										{step.type === "cooling" && (
+											<div>
+												<Label>
+													Target Temp (°{profile.temp_units.toUpperCase()}) -
+													Optional
+												</Label>
+												<Input
+													type="number"
+													value={step.target_temp ?? ""}
+													onChange={(e) => {
+														const value = e.target.value;
+														updateStep(index, {
+															target_temp:
+																value === ""
+																	? undefined
+																	: parseFloat(value) || undefined,
+														});
+													}}
+													placeholder="Leave empty for natural cooling"
+												/>
+												<p className="text-xs text-muted-foreground mt-1">
+													If empty, cooling continues until manually stopped
+												</p>
+											</div>
+										)}
 
 										{step.type === "ramp" && (
 											<>
@@ -622,12 +597,15 @@ export function ProfileEditor() {
 													<Label>Desired Rate (°C/h)</Label>
 													<Input
 														type="number"
-														value={step.desired_rate ?? 100}
-														onChange={(e) =>
+														value={step.desired_rate ?? ""}
+														onChange={(e) => {
+															const value = e.target.value;
 															updateStep(index, {
-																desired_rate: parseFloat(e.target.value) || 100,
-															})
-														}
+																desired_rate:
+																	value === "" ? undefined : parseFloat(value),
+															});
+														}}
+														placeholder="100"
 													/>
 												</div>
 												<div>
@@ -635,12 +613,13 @@ export function ProfileEditor() {
 													<Input
 														type="number"
 														value={step.min_rate ?? ""}
-														onChange={(e) =>
+														onChange={(e) => {
+															const value = e.target.value;
 															updateStep(index, {
 																min_rate:
-																	parseFloat(e.target.value) || undefined,
-															})
-														}
+																	value === "" ? undefined : parseFloat(value),
+															});
+														}}
 														placeholder="Optional"
 													/>
 												</div>
@@ -655,15 +634,25 @@ export function ProfileEditor() {
 													value={
 														step.duration ? (step.duration / 60).toFixed(0) : ""
 													}
-													onChange={(e) =>
+													onChange={(e) => {
+														const value = e.target.value;
 														updateStep(index, {
-															duration: (parseFloat(e.target.value) || 0) * 60,
-														})
-													}
+															duration:
+																value === "" ? undefined : parseFloat(value) * 60,
+														});
+													}}
+													placeholder="0"
 												/>
 											</div>
 										)}
 									</div>
+
+									{error && (
+										<Alert variant="destructive" className="mt-3">
+											<AlertCircle className="h-4 w-4" />
+											<AlertDescription>{error}</AlertDescription>
+										</Alert>
+									)}
 								</div>
 
 								<Button
@@ -677,8 +666,137 @@ export function ProfileEditor() {
 								</Button>
 							</div>
 						</div>
-					))}
+						);
+					})}
 				</div>
+
+				<Button onClick={addStep} size="sm" className="w-full">
+					<Plus className="w-4 h-4 mr-2" />
+					Add Step
+				</Button>
+			</div>
+
+			{/* Export Section */}
+			<div className="px-6 pb-6 space-y-3 border-t pt-6">
+				<div>
+					<Label className="text-base font-semibold">Export Profile</Label>
+					<p className="text-sm text-muted-foreground">Save your profile</p>
+				</div>
+
+				{hasValidationErrors && (
+					<Alert variant="destructive">
+						<AlertCircle className="h-4 w-4" />
+						<AlertDescription>
+							Please fix all validation errors before exporting the profile
+						</AlertDescription>
+					</Alert>
+				)}
+
+				<div className="flex gap-2">
+					<Button
+						variant={exportMode === "download" ? "default" : "outline"}
+						size="sm"
+						onClick={() => setExportMode("download")}
+						disabled={hasValidationErrors}
+					>
+						<Download className="w-4 h-4 mr-2" />
+						Download
+					</Button>
+					<Button
+						variant={exportMode === "upload" ? "default" : "outline"}
+						size="sm"
+						onClick={() => setExportMode("upload")}
+						disabled={!isConfigured || hasValidationErrors}
+					>
+						<FileUp className="w-4 h-4 mr-2" />
+						Upload to Pico
+					</Button>
+				</div>
+
+				{exportMode === "download" && (
+					<Button
+						onClick={downloadProfile}
+						size="sm"
+						className="w-full"
+						disabled={hasValidationErrors}
+					>
+						<Download className="w-4 h-4 mr-2" />
+						Download as JSON
+					</Button>
+				)}
+
+				{exportMode === "upload" && (
+					<div className="space-y-2">
+						{!isConfigured && (
+							<Alert>
+								<AlertCircle className="h-4 w-4" />
+								<AlertDescription>
+									Please configure Pico connection to upload profiles
+								</AlertDescription>
+							</Alert>
+						)}
+						{isConfigured && (
+							<>
+								<div>
+									<Label htmlFor="upload-filename">Filename (optional)</Label>
+									<Input
+										id="upload-filename"
+										value={uploadFilename}
+										onChange={(e) => setUploadFilename(e.target.value)}
+										placeholder={`${profile.name.replace(/\s+/g, "_").toLowerCase()}.json`}
+										className="mt-1"
+									/>
+									<p className="text-xs text-muted-foreground mt-1">
+										Leave empty to use profile name
+									</p>
+								</div>
+								<Button
+									onClick={uploadToPico}
+									disabled={uploadMutation.isPending || hasValidationErrors}
+									size="sm"
+									className="w-full"
+								>
+									{uploadMutation.isPending ? (
+										<>Uploading...</>
+									) : (
+										<>
+											<FileUp className="w-4 h-4 mr-2" />
+											Upload to Pico
+										</>
+									)}
+								</Button>
+								{uploadMutation.isSuccess && uploadMutation.data?.success && (
+									<Alert>
+										<CheckCircle className="h-4 w-4" />
+										<AlertDescription>
+											Profile uploaded successfully:{" "}
+											{uploadMutation.data.filename}
+										</AlertDescription>
+									</Alert>
+								)}
+								{uploadMutation.isError && (
+									<Alert variant="destructive">
+										<AlertCircle className="h-4 w-4" />
+										<AlertDescription>
+											{uploadMutation.error instanceof Error
+												? uploadMutation.error.message
+												: "Upload failed"}
+										</AlertDescription>
+									</Alert>
+								)}
+								{uploadMutation.isSuccess &&
+									!uploadMutation.data?.success && (
+										<Alert variant="destructive">
+											<AlertCircle className="h-4 w-4" />
+											<AlertDescription>
+												{uploadMutation.data?.error || "Upload failed"}
+											</AlertDescription>
+										</Alert>
+									)}
+							</>
+						)}
+					</div>
+				)}
 			</div>
 
 			{segments.length > 0 && (
@@ -694,7 +812,7 @@ export function ProfileEditor() {
 					</div>
 
 					<div className="space-y-4">
-						<div className="flex gap-4 text-sm">
+						<div className="flex gap-4 text-sm flex-wrap">
 							<div className="flex items-center gap-2">
 								<div className="w-4 h-4 rounded bg-red-500" />
 								<span>Ramp (heating)</span>
@@ -705,7 +823,11 @@ export function ProfileEditor() {
 							</div>
 							<div className="flex items-center gap-2">
 								<div className="w-4 h-4 rounded bg-blue-500" />
-								<span>Cooling</span>
+								<span>Controlled Cooling</span>
+							</div>
+							<div className="flex items-center gap-2">
+								<div className="w-4 h-4 rounded bg-cyan-500" />
+								<span>Natural Cooling</span>
 							</div>
 						</div>
 

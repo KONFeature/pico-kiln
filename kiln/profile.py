@@ -26,11 +26,16 @@ class Profile:
                 "duration": 600       # seconds
             },
             {
-                "type": "ramp",
-                "target_temp": 100    # Cooldown (no min_rate needed)
+                "type": "cooling",
+                "target_temp": 100    # Optional: complete when reached, omit for natural cooling to end
             }
         ]
     }
+    
+    Step Types:
+    - ramp: Heat/cool at controlled rate to target temperature
+    - hold: Maintain target temperature for specified duration
+    - cooling: Natural cooling with SSR off (target_temp optional)
     """
 
     def __init__(self, json_data):
@@ -79,6 +84,19 @@ class Profile:
                     dt_hours = dtemp / rate
                     total_seconds += dt_hours * 3600
                 current_temp = target
+            elif step['type'] == 'cooling':
+                # Natural cooling - estimate based on target if specified
+                target = step.get('target_temp')
+                if target is not None:
+                    # Estimate natural cooling at ~100°C/hour (conservative)
+                    dtemp = abs(current_temp - target)
+                    dt_hours = dtemp / 100.0
+                    total_seconds += dt_hours * 3600
+                    current_temp = target
+                else:
+                    # No target - cannot estimate duration (assume 0 for now)
+                    # This step likely runs until manual stop
+                    pass
 
         return total_seconds
 
@@ -169,6 +187,12 @@ class Profile:
                                     if rate > 0:
                                         duration += (dtemp / rate) * 3600
                                     current_temp = target
+                                elif step['type'] == 'cooling':
+                                    target = step.get('target_temp')
+                                    if target is not None:
+                                        dtemp = abs(current_temp - target)
+                                        duration += (dtemp / 100.0) * 3600
+                                        current_temp = target
 
                         # Extract metadata only (not full data/steps)
                         profiles.append({

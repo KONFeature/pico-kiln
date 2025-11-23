@@ -256,6 +256,14 @@ class KilnController:
                 # Use desired_rate if specified, otherwise use default 100°C/h
                 rate = step.get('desired_rate', 100)
                 step_duration = (dtemp / rate) * 3600 if rate > 0 else 0
+            elif step['type'] == 'cooling':
+                # Natural cooling step
+                target = step.get('target_temp')
+                if target is not None:
+                    dtemp = abs(profile_temp - target)
+                    step_duration = (dtemp / 100.0) * 3600  # Estimate 100°C/h natural cooling
+                else:
+                    step_duration = 0  # Unknown duration
             else:
                 step_duration = 0
 
@@ -268,6 +276,10 @@ class KilnController:
             cumulative_time += step_duration
             if step['type'] == 'ramp':
                 profile_temp = step['target_temp']
+            elif step['type'] == 'cooling':
+                target = step.get('target_temp')
+                if target is not None:
+                    profile_temp = target
 
         # Past all steps - return last step
         return len(self.active_profile.steps) - 1, 0, profile_temp
@@ -468,6 +480,16 @@ class KilnController:
             else:
                 return self.current_temp <= target
 
+        elif step['type'] == 'cooling':
+            # Natural cooling step
+            target = step.get('target_temp')
+            if target is not None:
+                # Complete when cooled to target temperature
+                return self.current_temp <= target
+            else:
+                # No target specified - never completes (must be last step or manually stopped)
+                return False
+
         return False
 
     def _advance_to_next_step(self, elapsed):
@@ -492,7 +514,18 @@ class KilnController:
         step_type = next_step['type']
         step_num = self.current_step_index + 1
         total = len(self.active_profile.steps)
-        print(f"[Step {step_num}/{total}] Advanced to {step_type} step (target: {next_step['target_temp']}°C)")
+        
+        # Format target temp display (handle cooling steps with optional target)
+        if step_type == 'cooling':
+            target_temp = next_step.get('target_temp')
+            if target_temp is not None:
+                target_str = f"{target_temp}°C"
+            else:
+                target_str = "natural cooling"
+        else:
+            target_str = f"{next_step['target_temp']}°C"
+        
+        print(f"[Step {step_num}/{total}] Advanced to {step_type} step (target: {target_str})")
 
     def _record_temp_for_rate(self, elapsed):
         """
@@ -535,6 +568,10 @@ class KilnController:
                 # Cooling ramp
                 calculated = self.step_start_temp - temp_change
                 return max(calculated, target)  # Clamp to step target
+
+        elif step['type'] == 'cooling':
+            # Natural cooling: target = 0 ensures SSR stays off (PID output = 0)
+            return 0
 
         return self.current_temp  # Fallback
 
