@@ -183,43 +183,42 @@ export function FileManager() {
 						{/* Directory Selection */}
 						<div>
 							<Label className="text-base">Select Directory</Label>
-							<div className="flex gap-2 mt-2">
+							<div className="grid grid-cols-2 gap-2 mt-2">
 								<Button
 									variant={
 										selectedDirectory === "profiles" ? "default" : "outline"
 									}
 									size="sm"
 									onClick={() => setSelectedDirectory("profiles")}
-									className="flex-1"
 								>
-									<Folder className="w-4 h-4 mr-2" />
-									Profiles
+									<Folder className="w-4 h-4 mr-2 flex-shrink-0" />
+									<span className="truncate">Profiles</span>
 								</Button>
 								<Button
 									variant={selectedDirectory === "logs" ? "default" : "outline"}
 									size="sm"
 									onClick={() => setSelectedDirectory("logs")}
-									className="flex-1"
 								>
-									<Folder className="w-4 h-4 mr-2" />
-									Logs
+									<Folder className="w-4 h-4 mr-2 flex-shrink-0" />
+									<span className="truncate">Logs</span>
 								</Button>
 							</div>
 						</div>
 
 						{/* Actions */}
-						<div className="flex gap-2 items-center justify-between pt-4 border-t">
+						<div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center justify-between pt-4 border-t">
 							<div className="flex gap-2">
 								<Button
 									variant="outline"
 									size="sm"
 									onClick={() => refetchFiles()}
 									disabled={isLoadingFiles}
+									className="flex-1 sm:flex-initial"
 								>
 									<RefreshCw
-										className={`w-4 h-4 mr-2 ${isLoadingFiles ? "animate-spin" : ""}`}
+										className={`w-4 h-4 mr-2 flex-shrink-0 ${isLoadingFiles ? "animate-spin" : ""}`}
 									/>
-									Refresh
+									<span className="truncate">Refresh</span>
 								</Button>
 								<Button
 									variant="outline"
@@ -229,9 +228,10 @@ export function FileManager() {
 										setShowUploadDialog(true);
 									}}
 									disabled={!isFileOpsAvailable}
+									className="flex-1 sm:flex-initial"
 								>
-									<Upload className="w-4 h-4 mr-2" />
-									Upload
+									<Upload className="w-4 h-4 mr-2 flex-shrink-0" />
+									<span className="truncate">Upload</span>
 								</Button>
 							</div>
 
@@ -241,9 +241,10 @@ export function FileManager() {
 									size="sm"
 									onClick={() => setShowDeleteAllDialog(true)}
 									disabled={!isFileOpsAvailable}
+									className="w-full sm:w-auto"
 								>
-									<Trash2 className="w-4 h-4 mr-2" />
-									Delete All Logs
+									<Trash2 className="w-4 h-4 mr-2 flex-shrink-0" />
+									<span className="truncate">Delete All Logs</span>
 								</Button>
 							)}
 						</div>
@@ -282,12 +283,12 @@ export function FileManager() {
 										{files.map((file) => (
 											<div
 												key={file.name}
-												className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-muted/50 transition-colors"
+												className="flex items-center justify-between gap-2 p-3 rounded-lg border bg-card hover:bg-muted/50 transition-colors"
 											>
-												<div className="flex items-center gap-3 flex-1 min-w-0">
+												<div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
 													<File className="w-4 h-4 text-muted-foreground flex-shrink-0" />
 													<div className="min-w-0 flex-1">
-														<div className="font-medium truncate">
+														<div className="font-medium truncate text-sm">
 															{file.name}
 														</div>
 														<div className="text-xs text-muted-foreground">
@@ -295,13 +296,14 @@ export function FileManager() {
 														</div>
 													</div>
 												</div>
-												<div className="flex items-center gap-1 flex-shrink-0">
+												<div className="flex items-center gap-0.5 sm:gap-1 flex-shrink-0">
 													<Button
 														variant="ghost"
 														size="sm"
 														onClick={() =>
 															handleDownloadFile(selectedDirectory, file.name)
 														}
+														className="h-9 w-9 p-0"
 													>
 														<Download className="w-4 h-4" />
 													</Button>
@@ -315,6 +317,7 @@ export function FileManager() {
 															})
 														}
 														disabled={!isFileOpsAvailable}
+														className="h-9 w-9 p-0"
 													>
 														<Trash2 className="w-4 h-4 text-destructive" />
 													</Button>

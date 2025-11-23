@@ -10,11 +10,11 @@ export default function Header() {
 
 	return (
 		<>
-			<header className="p-4 flex items-center justify-between bg-gray-800 text-white shadow-lg">
+			<header className="p-4 flex items-center justify-between bg-gray-800 text-white shadow-lg safe-top">
 				<div className="flex items-center">
 					<button
 						onClick={() => setIsOpen(true)}
-						className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+						className="p-2 hover:bg-gray-700 rounded-lg transition-colors min-h-[44px] min-w-[44px]"
 						aria-label="Open menu"
 					>
 						<Menu size={24} />
@@ -30,7 +30,7 @@ export default function Header() {
 					<ConnectionStatus />
 					<button
 						onClick={() => setIsSettingsOpen(true)}
-						className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+						className="p-2 hover:bg-gray-700 rounded-lg transition-colors min-h-[44px] min-w-[44px]"
 						aria-label="Settings"
 					>
 						<Settings size={20} />

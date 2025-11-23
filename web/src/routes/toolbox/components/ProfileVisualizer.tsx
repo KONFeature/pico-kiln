@@ -101,6 +101,31 @@ function calculateTrajectory(profile: Profile): Segment[] {
 
 			currentTime += durationSeconds;
 			currentTemp = targetTemp;
+		} else if (stepType === "cooling") {
+			// Natural cooling: estimate at 100°C/h if target specified
+			const coolingTarget = step.target_temp ?? 20; // Default to room temp if no target
+			const tempChange = Math.abs(currentTemp - coolingTarget);
+			const naturalCoolingRate = 100; // Estimated natural cooling rate
+			const durationHours = tempChange / naturalCoolingRate;
+			const durationSeconds = durationHours * 3600;
+
+			const data: TrajectoryPoint[] = [
+				{ time_hours: currentTime / 3600, temp: currentTemp },
+				{
+					time_hours: (currentTime + durationSeconds) / 3600,
+					temp: coolingTarget,
+				},
+			];
+
+			segments.push({
+				data,
+				type: "cooling",
+				color: "#06b6d4", // cyan-500 for natural cooling
+				step,
+			});
+
+			currentTime += durationSeconds;
+			currentTemp = coolingTarget;
 		}
 	}
 
@@ -204,7 +229,7 @@ export function ProfileVisualizer() {
 								</div>
 							)}
 
-							<div className="flex gap-4 text-sm">
+							<div className="flex gap-4 text-sm flex-wrap">
 								<div className="flex items-center gap-2">
 									<div className="w-4 h-4 rounded bg-red-500" />
 									<span>Ramp (heating)</span>
@@ -215,7 +240,11 @@ export function ProfileVisualizer() {
 								</div>
 								<div className="flex items-center gap-2">
 									<div className="w-4 h-4 rounded bg-blue-500" />
-									<span>Cooling</span>
+									<span>Controlled Cooling</span>
+								</div>
+								<div className="flex items-center gap-2">
+									<div className="w-4 h-4 rounded bg-cyan-500" />
+									<span>Natural Cooling</span>
 								</div>
 							</div>
 
@@ -333,6 +362,14 @@ export function ProfileVisualizer() {
 												<span>
 													Hold at {step.target_temp}°C for{" "}
 													{((step.duration ?? 0) / 60).toFixed(0)} minutes
+												</span>
+											)}
+											{step.type === "cooling" && (
+												<span>
+													Natural cooling
+													{step.target_temp !== undefined
+														? ` to ${step.target_temp}°C`
+														: " (no target)"}
 												</span>
 											)}
 										</div>

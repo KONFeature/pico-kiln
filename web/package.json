@@ -9,7 +9,13 @@
     "test": "vitest run",
     "format": "biome format",
     "lint": "biome lint",
-    "check": "biome check"
+    "check": "biome check",
+    "tauri": "tauri",
+    "tauri:android": "tauri android dev",
+    "tauri:android:build": "tauri android build",
+    "tauri:android:build:debug": "tauri android build --debug",
+    "tauri:build": "tauri build --no-sign",
+    "tauri:build:universal": "tauri build --no-sign --target universal-apple-darwin"
   },
   "dependencies": {
     "@radix-ui/react-collapsible": "^1.1.12",
@@ -41,6 +47,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.2.4",
     "@tanstack/devtools-vite": "^0.3.11",
+    "@tauri-apps/cli": "^2.9.4",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.2.0",
     "@types/node": "^22.10.2",

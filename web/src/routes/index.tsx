@@ -36,20 +36,24 @@ function HomePage() {
 
 					<div className="space-y-6">
 						<Tabs defaultValue={defaultTab} key={defaultTab}>
-							<TabsList className="w-full grid grid-cols-2">
+							<TabsList className="w-full grid grid-cols-2 h-auto">
 								<TabsTrigger
 									value="profile"
 									disabled={status?.state === "TUNING"}
+									className="flex items-center gap-2 text-xs sm:text-sm py-2"
 								>
-									<Flame className="w-4 h-4 mr-2" />
-									Run Profile
+									<Flame className="w-4 h-4 flex-shrink-0" />
+									<span className="hidden sm:inline">Run Profile</span>
+									<span className="sm:hidden">Profile</span>
 								</TabsTrigger>
 								<TabsTrigger
 									value="tuning"
 									disabled={status?.state === "RUNNING"}
+									className="flex items-center gap-2 text-xs sm:text-sm py-2"
 								>
-									<Zap className="w-4 h-4 mr-2" />
-									PID Tuning
+									<Zap className="w-4 h-4 flex-shrink-0" />
+									<span className="hidden sm:inline">PID Tuning</span>
+									<span className="sm:hidden">Tuning</span>
 								</TabsTrigger>
 							</TabsList>
 

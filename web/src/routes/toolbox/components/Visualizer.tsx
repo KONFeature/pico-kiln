@@ -61,13 +61,13 @@ export function Visualizer() {
 								Choose what type of data you want to visualize
 							</p>
 						</div>
-						<div className="grid grid-cols-3 gap-2">
+						<div className="grid grid-cols-1 md:grid-cols-3 gap-2">
 							<Button
 								variant={visualizerType === "profile" ? "default" : "outline"}
 								onClick={() => setVisualizerType("profile")}
 								className="flex items-center gap-2 h-auto py-3 px-4"
 							>
-								<LineChart className="w-5 h-5" />
+								<LineChart className="w-5 h-5 flex-shrink-0" />
 								<div className="text-left">
 									<div className="font-semibold">Profile</div>
 									<div className="text-xs opacity-80">
@@ -80,7 +80,7 @@ export function Visualizer() {
 								onClick={() => setVisualizerType("run")}
 								className="flex items-center gap-2 h-auto py-3 px-4"
 							>
-								<Activity className="w-5 h-5" />
+								<Activity className="w-5 h-5 flex-shrink-0" />
 								<div className="text-left">
 									<div className="font-semibold">Run</div>
 									<div className="text-xs opacity-80">Firing & tuning logs</div>
@@ -91,7 +91,7 @@ export function Visualizer() {
 								onClick={() => setVisualizerType("tuning")}
 								className="flex items-center gap-2 h-auto py-3 px-4"
 							>
-								<Zap className="w-5 h-5" />
+								<Zap className="w-5 h-5 flex-shrink-0" />
 								<div className="text-left">
 									<div className="font-semibold">Tuning Phases</div>
 									<div className="text-xs opacity-80">PID phase detection</div>

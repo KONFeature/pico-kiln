@@ -430,14 +430,15 @@ class StatusMessage:
             # Controller tracks current step - use it directly
             status['step_index'] = controller.current_step_index
 
-            # Get step type (ramp/hold) for current step
+            # Get step type (ramp/hold/cooling) for current step
             if controller.current_step_index < len(profile.steps):
                 current_step = profile.steps[controller.current_step_index]
-                # Safe: 'type' and 'desired_rate' are required in validated profile steps
+                # Safe: 'type' is required in validated profile steps
                 status['step_name'] = current_step['type']
 
                 # Add rate information for this step
-                status['desired_rate'] = current_step['desired_rate']
+                # Note: cooling steps don't have desired_rate, default to 0
+                status['desired_rate'] = current_step.get('desired_rate', 0)
             else:
                 status['step_name'] = ''
                 # desired_rate already 0 in template

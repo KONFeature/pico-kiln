@@ -6,16 +6,40 @@ To run this application:
 
 ```bash
 bun install
-bun --bun run start
+bun dev
 ```
 
 # Building For Production
 
-To build this application for production:
+## Web Application
+
+To build the web application for production:
 
 ```bash
-bun --bun run build
+bun run build
 ```
+
+## Android APK
+
+This app can be bundled as an Android APK using Tauri. See [DESKTOP_MOBILE_BUILD.md](./DESKTOP_MOBILE_BUILD.md) for complete instructions.
+
+**Quick Start:**
+
+```bash
+# Build debug APK
+bun run tauri:android:build:debug
+
+# Build release APK
+bun run tauri:android:build
+
+# Sign and install
+./sign-and-install.sh
+```
+
+**Output locations:**
+- Debug APK: `src-tauri/gen/android/app/build/outputs/apk/universal/debug/`
+- Release APK: `src-tauri/gen/android/app/build/outputs/apk/universal/release/`
+- AAB Bundle: `src-tauri/gen/android/app/build/outputs/bundle/universalRelease/`
 
 ## Testing
 

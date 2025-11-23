@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
 	useCancelScheduled,
+	useListFiles,
 	useRunProfile,
 	useScheduleProfile,
 	useShutdown,
@@ -41,16 +42,19 @@ interface ProfileControlsProps {
 	status?: KilnStatus;
 }
 
-// NOTE: In the future, this list should come from an API endpoint
-// For now, we'll use a hardcoded list based on the profiles directory
-const AVAILABLE_PROFILES = ["biscuit_faience_adaptive", "test_adaptive"];
-
 export function ProfileControls({ status }: ProfileControlsProps) {
 	const [selectedProfile, setSelectedProfile] = useState<string>("");
 	const [showShutdownDialog, setShowShutdownDialog] = useState(false);
 	const [showScheduleDialog, setShowScheduleDialog] = useState(false);
 	const [scheduleDate, setScheduleDate] = useState("");
 	const [scheduleTime, setScheduleTime] = useState("");
+
+	// Dynamically load available profiles from the profiles directory
+	const { data: profilesData } = useListFiles("profiles");
+	const availableProfiles =
+		profilesData?.files
+			.filter((file) => file.name.endsWith(".json"))
+			.map((file) => file.name.replace(".json", "")) || [];
 
 	const runProfile = useRunProfile();
 	const stopProfile = useStopProfile();
@@ -231,7 +235,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 									disabled={status?.state === "TUNING"}
 								>
 									<option value="">-- Choose a profile --</option>
-									{AVAILABLE_PROFILES.map((profile) => (
+									{availableProfiles.map((profile) => (
 										<option key={profile} value={profile}>
 											{profile.replace(/_/g, " ")}
 										</option>
