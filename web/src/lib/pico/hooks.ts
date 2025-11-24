@@ -145,6 +145,54 @@ export function useShutdown() {
 	});
 }
 
+/**
+ * Mutation to clear error state
+ */
+export function useClearError() {
+	const { client } = usePico();
+	const queryClient = useQueryClient();
+
+	return useMutation<
+		{ success: boolean; message: string },
+		PicoAPIError,
+		void
+	>({
+		mutationFn: async () => {
+			if (!client) {
+				throw new PicoAPIError("Pico client not initialized");
+			}
+			return await client.clearError();
+		},
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: picoKeys.status });
+		},
+	});
+}
+
+/**
+ * Mutation to reboot the Pico
+ */
+export function useReboot() {
+	const { client } = usePico();
+	const queryClient = useQueryClient();
+
+	return useMutation<
+		{ success: boolean; message: string },
+		PicoAPIError,
+		void
+	>({
+		mutationFn: async () => {
+			if (!client) {
+				throw new PicoAPIError("Pico client not initialized");
+			}
+			return await client.reboot();
+		},
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: picoKeys.status });
+		},
+	});
+}
+
 // === Tuning Mutations ===
 
 interface StartTuningParams {

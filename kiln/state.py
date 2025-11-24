@@ -323,6 +323,39 @@ class KilnController:
         self.target_temp = 0
         print(f"ERROR: {message}")
 
+    def clear_error(self):
+        """
+        Clear error state and return to idle
+        
+        This resets the controller to a safe idle state, clearing any error
+        messages and resetting internal state. The SSR must be turned off
+        by the calling code (control thread).
+        """
+        if self.state != KilnState.ERROR:
+            print(f"[KilnController] Cannot clear error: not in error state (current state: {self.state})")
+            return False
+        
+        print("[KilnController] Clearing error state and returning to idle")
+        
+        self.state = KilnState.IDLE
+        self.active_profile = None
+        self.target_temp = 0
+        self.start_time = None
+        self.elapsed_offset = 0.0
+        self.last_update_time = None
+        self.error_message = None
+        
+        # Reset step state
+        self.current_step_index = 0
+        self.step_start_time = 0
+        self.current_rate = 0
+        
+        # Reset recovery mode
+        self.recovery_target_temp = None
+        self.recovery_start_time = None
+        
+        return True
+
     def get_elapsed_time(self):
         """
         Get elapsed time in profile

@@ -140,6 +140,18 @@ export class PicoAPIClient {
 		});
 	}
 
+	async clearError(): Promise<{ success: boolean; message: string }> {
+		return this.request("/api/clear-error", {
+			method: "POST",
+		});
+	}
+
+	async reboot(): Promise<{ success: boolean; message: string }> {
+		return this.request("/api/reboot", {
+			method: "POST",
+		});
+	}
+
 	// === Tuning Endpoints ===
 
 	async startTuning(

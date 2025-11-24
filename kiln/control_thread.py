@@ -348,6 +348,17 @@ class ControlThread:
                 else:
                     print("[Control Thread] No scheduled profile to cancel")
 
+            elif cmd_type == MessageType.CLEAR_ERROR:
+                # Clear error state and return to idle
+                if self.controller.state == KilnState.ERROR:
+                    success = self.controller.clear_error()
+                    if success:
+                        self.ssr_controller.force_off()
+                        self.pid.reset()
+                        print("[Control Thread] Error cleared, returned to idle state")
+                else:
+                    print(f"[Control Thread] Cannot clear error: kiln is not in error state (current: {self.controller.state})")
+
             elif cmd_type == MessageType.PING:
                 # Ping message for testing
                 print("[Control Thread] Received ping")

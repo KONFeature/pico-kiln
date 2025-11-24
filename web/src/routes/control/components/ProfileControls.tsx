@@ -5,6 +5,7 @@ import {
 	Loader2,
 	Play,
 	Power,
+	RotateCw,
 	Square,
 	X,
 } from "lucide-react";
@@ -31,6 +32,7 @@ import { Label } from "@/components/ui/label";
 import {
 	useCancelScheduled,
 	useListFiles,
+	useReboot,
 	useRunProfile,
 	useScheduleProfile,
 	useShutdown,
@@ -45,6 +47,7 @@ interface ProfileControlsProps {
 export function ProfileControls({ status }: ProfileControlsProps) {
 	const [selectedProfile, setSelectedProfile] = useState<string>("");
 	const [showShutdownDialog, setShowShutdownDialog] = useState(false);
+	const [showRebootDialog, setShowRebootDialog] = useState(false);
 	const [showScheduleDialog, setShowScheduleDialog] = useState(false);
 	const [scheduleDate, setScheduleDate] = useState("");
 	const [scheduleTime, setScheduleTime] = useState("");
@@ -59,6 +62,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 	const runProfile = useRunProfile();
 	const stopProfile = useStopProfile();
 	const shutdown = useShutdown();
+	const reboot = useReboot();
 	const scheduleProfile = useScheduleProfile();
 	const cancelScheduled = useCancelScheduled();
 
@@ -108,6 +112,17 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 			}
 		} catch (error) {
 			console.error("Error during shutdown:", error);
+		}
+	};
+
+	const handleReboot = async () => {
+		try {
+			const result = await reboot.mutateAsync();
+			if (result.success) {
+				setShowRebootDialog(false);
+			}
+		} catch (error) {
+			console.error("Error during reboot:", error);
 		}
 	};
 
@@ -331,7 +346,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 						Use with caution - immediately stops all heating
 					</CardDescription>
 				</CardHeader>
-				<CardContent>
+				<CardContent className="space-y-2">
 					<Button
 						onClick={() => setShowShutdownDialog(true)}
 						variant="destructive"
@@ -340,6 +355,15 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 					>
 						<Power className="w-4 h-4 mr-2" />
 						Emergency Shutdown
+					</Button>
+					<Button
+						onClick={() => setShowRebootDialog(true)}
+						variant="secondary"
+						className="w-full"
+						size="lg"
+					>
+						<RotateCw className="w-4 h-4 mr-2" />
+						Reboot Pico
 					</Button>
 				</CardContent>
 			</Card>
@@ -373,6 +397,41 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 								</>
 							) : (
 								"Confirm Shutdown"
+							)}
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
+
+			<Dialog open={showRebootDialog} onOpenChange={setShowRebootDialog}>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>Confirm Reboot</DialogTitle>
+						<DialogDescription>
+							This will restart the Pico controller. The web interface will be
+							unavailable for a few seconds while the device reboots.
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button
+							variant="outline"
+							onClick={() => setShowRebootDialog(false)}
+							disabled={reboot.isPending}
+						>
+							Cancel
+						</Button>
+						<Button
+							variant="secondary"
+							onClick={handleReboot}
+							disabled={reboot.isPending}
+						>
+							{reboot.isPending ? (
+								<>
+									<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+									Rebooting...
+								</>
+							) : (
+								"Confirm Reboot"
 							)}
 						</Button>
 					</DialogFooter>

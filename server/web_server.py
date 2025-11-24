@@ -170,6 +170,40 @@ def handle_api_stop(conn):
             'error': 'Command queue full, please retry'
         }, 500)
 
+def handle_api_clear_error(conn):
+    """POST /api/clear-error - Clear error state and return to idle"""
+    # Send clear_error command to control thread
+    command = CommandMessage.clear_error()
+
+    if QueueHelper.put_nowait(command_queue, command):
+        print("[Web Server] Clear error requested")
+        send_json_response(conn, {'success': True, 'message': 'Error cleared, returned to idle'})
+    else:
+        print("[Web Server] Failed to send clear_error command (queue full)")
+        send_json_response(conn, {
+            'success': False,
+            'error': 'Command queue full, please retry'
+        }, 500)
+
+def handle_api_reboot(conn):
+    """POST /api/reboot - Reboot the Pico"""
+    import machine
+    
+    print("[Web Server] Reboot requested via API")
+    
+    # Send success response before rebooting
+    send_json_response(conn, {
+        'success': True,
+        'message': 'Rebooting Pico...'
+    })
+    
+    # Give client time to receive response
+    import time
+    time.sleep(0.5)
+    
+    # Reboot the device
+    machine.reset()
+
 def handle_api_schedule(conn, body):
     """POST /api/schedule - Schedule profile for delayed start"""
     try:
@@ -766,6 +800,18 @@ async def handle_client(conn, addr):
         elif path == '/api/stop':
             if method == 'POST':
                 handle_api_stop(conn)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        elif path == '/api/clear-error':
+            if method == 'POST':
+                handle_api_clear_error(conn)
+            else:
+                send_response(conn, 405, b'Method not allowed', 'text/plain')
+
+        elif path == '/api/reboot':
+            if method == 'POST':
+                handle_api_reboot(conn)
             else:
                 send_response(conn, 405, b'Method not allowed', 'text/plain')
 

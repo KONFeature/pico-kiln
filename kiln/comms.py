@@ -199,6 +199,7 @@ class MessageType:
     PING = const(7)             # For testing thread communication
     SCHEDULE_PROFILE = const(8) # Schedule profile for delayed start
     CANCEL_SCHEDULED = const(9) # Cancel scheduled profile
+    CLEAR_ERROR = const(10)     # Clear error state and return to idle
 
 def state_to_string(state_int):
     """
@@ -333,6 +334,13 @@ class CommandMessage:
         """Cancel scheduled profile"""
         return {
             'type': MessageType.CANCEL_SCHEDULED
+        }
+
+    @staticmethod
+    def clear_error():
+        """Clear error state and return to idle"""
+        return {
+            'type': MessageType.CLEAR_ERROR
         }
 
 class StatusMessage:

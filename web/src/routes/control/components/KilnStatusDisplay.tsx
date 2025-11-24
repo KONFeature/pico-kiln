@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { PicoAPIError } from "@/lib/pico/client";
+import { useClearError } from "@/lib/pico/hooks";
 import type { KilnStatus } from "@/lib/pico/types";
 
 interface KilnStatusDisplayProps {
@@ -29,6 +30,19 @@ export function KilnStatusDisplay({
 	error,
 	onRefresh,
 }: KilnStatusDisplayProps) {
+	const clearError = useClearError();
+
+	const handleClearError = async () => {
+		try {
+			const result = await clearError.mutateAsync();
+			if (!result.success) {
+				console.error("Failed to clear error:", result.message);
+			}
+		} catch (error) {
+			console.error("Error clearing error state:", error);
+		}
+	};
+
 	if (error) {
 		return (
 			<Card>
@@ -264,7 +278,32 @@ export function KilnStatusDisplay({
 					{status.error_message && (
 						<Alert variant="destructive">
 							<AlertTriangle className="w-4 h-4" />
-							<AlertDescription>{status.error_message}</AlertDescription>
+							<AlertDescription>
+								<div className="flex items-center justify-between">
+									<span>{status.error_message}</span>
+									{status.state === "ERROR" && (
+										<Button
+											onClick={handleClearError}
+											disabled={clearError.isPending}
+											variant="outline"
+											size="sm"
+											className="ml-4"
+										>
+											{clearError.isPending ? (
+												<>
+													<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+													Clearing...
+												</>
+											) : (
+												<>
+													<AlertCircle className="w-4 h-4 mr-2" />
+													Clear Error
+												</>
+											)}
+										</Button>
+									)}
+								</div>
+							</AlertDescription>
 						</Alert>
 					)}
 				</CardContent>
