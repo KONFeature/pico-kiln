@@ -195,7 +195,7 @@ class KilnController:
             self.step_start_temp = step_start_temp
 
         # Restore or initialize rate
-        current_step = profile.steps[step_index]
+        current_step = profile.steps[self.current_step_index]
         if current_rate is not None and current_rate > 0:
             # Restore adapted rate from CSV log
             self.current_rate = current_rate
@@ -212,19 +212,31 @@ class KilnController:
         self.adaptation_count = 0
 
         # Check for temperature loss and enter recovery mode if needed
+        # BUT: Don't recover during cooling steps (temp drop is expected)
         if last_logged_temp is not None and current_temp is not None:
+            # Determine if current step is a cooling operation
+            is_cooling = (current_step['type'] == 'cooling' or 
+                          (current_step['type'] == 'ramp' and 
+                           current_step['target_temp'] < self.step_start_temp))
+            
             temp_loss = last_logged_temp - current_temp
-            if temp_loss > TEMP_LOSS_THRESHOLD:
+            if temp_loss > TEMP_LOSS_THRESHOLD and not is_cooling:
                 # Enter recovery mode - hold at last logged temp until caught up
                 self.recovery_target_temp = last_logged_temp
                 self.recovery_start_time = time.time()
-                print(f"Resuming profile: {profile.name} at step {step_index + 1}/{len(profile.steps)}, {elapsed_seconds:.1f}s elapsed")
+                print(f"Resuming profile: {profile.name} at step {self.current_step_index + 1}/{len(profile.steps)}, {elapsed_seconds:.1f}s elapsed")
                 print(f"[Recovery] Temperature loss detected: {temp_loss:.1f}°C")
                 print(f"[Recovery] Current temp: {current_temp:.1f}°C, need to reach: {last_logged_temp:.1f}°C")
                 print(f"[Recovery] Profile progression paused until temperature recovered")
                 return
+            elif temp_loss > TEMP_LOSS_THRESHOLD and is_cooling:
+                # Temperature dropped during cooling - this is expected, not a problem
+                print(f"Resuming profile: {profile.name} at step {self.current_step_index + 1}/{len(profile.steps)}, {elapsed_seconds:.1f}s elapsed")
+                print(f"[Recovery] Temperature drop during cooling: {temp_loss:.1f}°C (expected)")
+                print(f"[Recovery] Continuing cooling from current temp: {current_temp:.1f}°C")
+                return
 
-        print(f"Resuming profile: {profile.name} at step {step_index + 1}/{len(profile.steps)}, {elapsed_seconds:.1f}s elapsed")
+        print(f"Resuming profile: {profile.name} at step {self.current_step_index + 1}/{len(profile.steps)}, {elapsed_seconds:.1f}s elapsed")
 
     def _find_step_for_elapsed(self, elapsed_seconds):
         """
