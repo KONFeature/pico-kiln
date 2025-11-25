@@ -55,9 +55,7 @@
       },
       "allowDowngrades": false,
       "nsis": {
-        "installMode": "currentUser",
-        "languages": ["en-US"],
-        "displayLanguageSelector": false
+        "installMode": "currentUser"
       }
     },
     "linux": {
