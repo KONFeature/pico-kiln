@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "kiln",
+  "productName": "Kiln",
   "version": "0.1.0",
   "identifier": "com.nivelais.kiln",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "kiln",
+        "title": "Kiln",
         "width": 800,
         "height": 600,
         "resizable": true,
@@ -33,9 +33,40 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "publisher": "Nivelais",
+    "copyright": "Copyright © 2025 Nivelais",
+    "category": "Utility",
+    "shortDescription": "Kiln temperature control and monitoring application",
+    "longDescription": "A comprehensive kiln temperature control and monitoring application for managing ceramic firing processes with precision.",
     "android": {
-      "autoIncrementVersionCode": false,
       "minSdkVersion": 24
+    },
+    "iOS": {
+      "minimumSystemVersion": "14.0"
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.13",
+      "hardenedRuntime": true
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "allowDowngrades": false,
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["en-US"],
+        "displayLanguageSelector": false
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
     }
   }
 }
