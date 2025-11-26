@@ -491,14 +491,13 @@ class StatusMessage:
         status = StatusMessage._tuning_status_template.copy()
 
         tuner_status = tuner.get_status()
-        elapsed = controller.get_elapsed_time()
 
         # Update with current values
         status['timestamp'] = time.time()
         status['state'] = state_to_string(controller.state)
         status['current_temp'] = round(controller.current_temp, 2)
         status['target_temp'] = round(controller.target_temp, 2)
-        status['elapsed'] = round(elapsed, 1)
+        status['elapsed'] = tuner_status['elapsed']  # Use tuner's elapsed, not controller's
         status['ssr_output'] = round(controller.ssr_output, 2)
         # profile_name already set to None in template
         status['tuning'] = tuner_status

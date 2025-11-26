@@ -172,14 +172,13 @@ class ZieglerNicholsTuner:
     Use analyze_tuning.py to calculate PID parameters from the CSV file.
     """
 
-    def __init__(self, mode=MODE_STANDARD, max_temp=None, max_time=7200):
+    def __init__(self, mode=MODE_STANDARD, max_temp=None):
         """
         Initialize tuner with specified mode
 
         Args:
             mode: Tuning mode ('SAFE', 'STANDARD', or 'THOROUGH')
             max_temp: Maximum temperature for safety (°C), None = use mode default
-            max_time: Maximum total tuning time (seconds)
         """
         if mode not in [MODE_SAFE, MODE_STANDARD, MODE_THOROUGH, MODE_HIGH_TEMP]:
             raise ValueError(f"Invalid mode: {mode}. Must be 'SAFE', 'STANDARD', 'THOROUGH', or 'HIGH_TEMP'")
@@ -198,7 +197,6 @@ class ZieglerNicholsTuner:
                 max_temp = 900
         
         self.max_temp = max_temp
-        self.max_time = max_time
 
         # Build step sequence based on mode
         self.steps = self._build_step_sequence()
@@ -432,7 +430,7 @@ class ZieglerNicholsTuner:
         self.current_step = self.steps[0]
 
         print(f"[Tuner] Starting {self.mode} tuning mode")
-        print(f"[Tuner] Max temp: {self.max_temp}°C, Max time: {self.max_time}s")
+        print(f"[Tuner] Max temp: {self.max_temp}°C")
         print(f"[Tuner] Total steps: {len(self.steps)}")
         print(f"[Tuner] Data will be streamed to CSV for offline analysis")
         print(f"[Tuner] Step 1/{len(self.steps)}: {self.current_step.step_name}")
@@ -459,14 +457,6 @@ class ZieglerNicholsTuner:
             print(f"[Tuner] ERROR: {self.error_message}")
             return 0, False
 
-        # Check global timeout
-        elapsed_total = time.time() - self.start_time
-        if elapsed_total > self.max_time:
-            self.stage = TuningStage.ERROR
-            self.error_message = f"Tuning timeout ({self.max_time}s exceeded)"
-            print(f"[Tuner] ERROR: {self.error_message}")
-            return 0, False
-
         # Start current step if not started
         if self.current_step.start_time is None:
             self.current_step.start(current_temp)
@@ -481,6 +471,7 @@ class ZieglerNicholsTuner:
 
             # Check if all steps complete
             if self.current_step_index >= len(self.steps):
+                elapsed_total = time.time() - self.start_time
                 print(f"[Tuner] All steps complete after {elapsed_total:.1f}s!")
                 print(f"[Tuner] Tuning complete! Data saved to CSV.")
                 print(f"[Tuner] Use analyze_tuning.py to calculate PID parameters from the CSV file.")

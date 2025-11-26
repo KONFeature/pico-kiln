@@ -142,23 +142,23 @@ class DataLogger:
             state = status['state']
 
             # Check if we're in recovery mode
-            # Safe: Field guaranteed by StatusMessage template
-            is_recovering = status['is_recovering']
+            # Use .get() for optional fields that may not exist in all status types (e.g., tuning)
+            is_recovering = status.get('is_recovering', False)
 
             if is_recovering:
                 # In recovery mode - use special markers
                 step_name = 'RECOVERY'
                 step_index = -1
-                total_steps = status['total_steps'] or ''  # Convert None to empty string
+                total_steps = status.get('total_steps') or ''  # Convert None to empty string
                 current_rate = 0.0  # No rate during recovery
             else:
                 # Normal logging - extract step info (populated for both tuning and profile runs)
-                # Safe: Fields guaranteed by StatusMessage template, but can be None
-                step_name = status['step_name'] or ''  # Convert None to empty string
-                step_index = str(status['step_index']) if status['step_index'] is not None else ''
-                total_steps = status['total_steps'] or ''
+                # Use .get() for optional fields that may not be present in all status types
+                step_name = status.get('step_name') or ''  # Convert None to empty string
+                step_index = str(status.get('step_index')) if status.get('step_index') is not None else ''
+                total_steps = status.get('total_steps') or ''
                 # Extract rate info (for adaptive control)
-                current_rate = status['current_rate']
+                current_rate = status.get('current_rate', 0)
 
             # Format row - use simple string concatenation for MicroPython compatibility
             timestamp_iso = self._format_timestamp_iso(timestamp)
