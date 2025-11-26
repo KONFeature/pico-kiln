@@ -138,8 +138,13 @@ pico-kiln/
 │
 ├── logs/                          # Temperature data logs (CSV)
 │
-├── analyze_tuning.py              # Offline tuning data analysis (laptop)
-├── generate_thermal_model_config.py  # Config snippet generator (laptop)
+├── scripts/                       # Analysis scripts (run on laptop)
+│   ├── analyze_tuning.py          # PID tuning data analysis
+│   ├── analyze_final_climb.py     # Final 100°C climb rate analysis for pottery
+│   ├── analyze_heat_loss.py       # Heat loss and energy efficiency analysis
+│   ├── generate_thermal_model_config.py  # Config snippet generator
+│   ├── plot_run.py                # Visualize kiln run data
+│   └── compare_runs.py            # Compare multiple runs
 │
 ├── README.md                      # This file
 ├── TUNING.md                      # Complete tuning guide
@@ -246,6 +251,50 @@ python generate_thermal_model_config.py
 #     ...
 # ]
 ```
+
+### analyze_final_climb.py
+Analyzes the final 100°C climb rate for pottery firing verification:
+
+```bash
+python scripts/analyze_final_climb.py logs/cone6_firing.csv
+
+# Analyze last 120°C instead
+python scripts/analyze_final_climb.py logs/glaze.csv --climb 120
+
+# Save results to JSON
+python scripts/analyze_final_climb.py logs/bisque.csv --output report.json
+```
+
+**Features:**
+- Identifies the maximum temperature reached
+- Calculates heating rate for the last 100°C (configurable)
+- Detects and accounts for hold periods
+- Compares rate against Orton cone chart ranges
+- Essential for verifying cone equivalence
+
+**Use Case:** After a firing, use this tool to verify the heating rate during the critical final climb. This rate determines which Orton cone chart column to use when comparing against actual cone behavior.
+
+### analyze_heat_loss.py
+Analyzes heat loss characteristics and energy efficiency:
+
+```bash
+python scripts/analyze_heat_loss.py logs/firing.csv --volume 50 --power 5000
+
+# With custom ambient temperature
+python scripts/analyze_heat_loss.py logs/firing.csv -v 50 -p 5000 --ambient 20
+
+# Save detailed report
+python scripts/analyze_heat_loss.py logs/firing.csv -v 50 -p 5000 -o heat_loss.json
+```
+
+**Features:**
+- Calculates heat loss at full power (100% SSR)
+- Analyzes cooling periods to estimate heat loss coefficient
+- Shows energy efficiency at different temperatures
+- Identifies insulation effectiveness
+- Estimates power loss in watts
+
+**Use Case:** Understand how much heating power is being lost to the environment at different temperatures. Higher heat loss at high temperatures indicates areas where improved insulation could save energy and improve firing performance.
 
 ## Documentation
 
