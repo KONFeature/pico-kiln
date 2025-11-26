@@ -152,45 +152,53 @@ export function useClearError() {
 	const { client } = usePico();
 	const queryClient = useQueryClient();
 
-	return useMutation<
-		{ success: boolean; message: string },
-		PicoAPIError,
-		void
-	>({
-		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
-			return await client.clearError();
+	return useMutation<{ success: boolean; message: string }, PicoAPIError, void>(
+		{
+			mutationFn: async () => {
+				if (!client) {
+					throw new PicoAPIError("Pico client not initialized");
+				}
+				return await client.clearError();
+			},
+			onSuccess: () => {
+				queryClient.invalidateQueries({ queryKey: picoKeys.status });
+			},
 		},
-		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: picoKeys.status });
-		},
-	});
+	);
 }
 
 /**
  * Mutation to reboot the Pico
+ * Note: The Pico will reboot immediately, so the request may timeout
  */
 export function useReboot() {
 	const { client } = usePico();
 	const queryClient = useQueryClient();
 
-	return useMutation<
-		{ success: boolean; message: string },
-		PicoAPIError,
-		void
-	>({
-		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
-			return await client.reboot();
+	return useMutation<{ success: boolean; message: string }, PicoAPIError, void>(
+		{
+			mutationFn: async () => {
+				if (!client) {
+					throw new PicoAPIError("Pico client not initialized");
+				}
+				try {
+					return await client.reboot();
+				} catch (error) {
+					// If the request times out or fails, it might be because
+					// the Pico already rebooted. Treat as success.
+					if (error instanceof PicoAPIError) {
+						// Consider timeout as success since the Pico may have rebooted
+						return { success: true, message: "Reboot initiated" };
+					}
+					throw error;
+				}
+			},
+			onSuccess: () => {
+				// Invalidate all queries since the Pico is rebooting
+				queryClient.invalidateQueries({ queryKey: picoKeys.status });
+			},
 		},
-		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: picoKeys.status });
-		},
-	});
+	);
 }
 
 // === Tuning Mutations ===
@@ -373,7 +381,7 @@ export function useListFiles(
 		gcTime: 1000 * 60 * 60 * 24, // Keep in cache for 24 hours
 		// Show cached data immediately while fetching
 		placeholderData: (previousData) => previousData,
-		retry: (failureCount, error) => {
+		retry: (failureCount, _error) => {
 			// If kiln is running, don't retry - just use cached data
 			if (!isFileOpsAvailable) return false;
 			// Otherwise retry up to 2 times
@@ -412,7 +420,7 @@ export function useGetFile(
 		staleTime: isFileOpsAvailable ? 1000 * 60 * 10 : Number.POSITIVE_INFINITY, // 10 min when IDLE, never stale when running
 		gcTime: 1000 * 60 * 60 * 24 * 7, // Keep in cache for 7 days
 		placeholderData: (previousData) => previousData,
-		retry: (failureCount, error) => {
+		retry: (failureCount, _error) => {
 			if (!isFileOpsAvailable) return false;
 			return failureCount < 2;
 		},

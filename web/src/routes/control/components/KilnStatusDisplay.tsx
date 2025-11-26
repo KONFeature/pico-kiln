@@ -30,18 +30,7 @@ export function KilnStatusDisplay({
 	error,
 	onRefresh,
 }: KilnStatusDisplayProps) {
-	const clearError = useClearError();
-
-	const handleClearError = async () => {
-		try {
-			const result = await clearError.mutateAsync();
-			if (!result.success) {
-				console.error("Failed to clear error:", result.message);
-			}
-		} catch (error) {
-			console.error("Error clearing error state:", error);
-		}
-	};
+	const { mutate: clearError, isPending: isClearingPending, isError: isClearingError, error: clearingError } = useClearError();
 
 	if (error) {
 		return (
@@ -235,30 +224,30 @@ export function KilnStatusDisplay({
 
 						{(status.actual_rate !== undefined ||
 							status.current_rate !== undefined) && (
-							<div className="space-y-2">
-								<div className="flex items-center gap-2">
-									<TrendingUp className="w-5 h-5 text-muted-foreground" />
-									<span className="text-sm font-medium">Heating Rate</span>
-								</div>
-								{status.actual_rate !== undefined && (
-									<div className="text-sm">
-										Actual: <strong>{status.actual_rate.toFixed(1)}°C/h</strong>
+								<div className="space-y-2">
+									<div className="flex items-center gap-2">
+										<TrendingUp className="w-5 h-5 text-muted-foreground" />
+										<span className="text-sm font-medium">Heating Rate</span>
 									</div>
-								)}
-								{status.current_rate !== undefined &&
-									status.state === "RUNNING" && (
-										<div className="text-sm text-muted-foreground">
-											Target: {status.current_rate.toFixed(1)}°C/h
+									{status.actual_rate !== undefined && (
+										<div className="text-sm">
+											Actual: <strong>{status.actual_rate.toFixed(1)}°C/h</strong>
 										</div>
 									)}
-								{status.adaptation_count !== undefined &&
-									status.state === "RUNNING" && (
-										<div className="text-xs text-muted-foreground">
-											Adaptations: {status.adaptation_count}
-										</div>
-									)}
-							</div>
-						)}
+									{status.current_rate !== undefined &&
+										status.state === "RUNNING" && (
+											<div className="text-sm text-muted-foreground">
+												Target: {status.current_rate.toFixed(1)}°C/h
+											</div>
+										)}
+									{status.adaptation_count !== undefined &&
+										status.state === "RUNNING" && (
+											<div className="text-xs text-muted-foreground">
+												Adaptations: {status.adaptation_count}
+											</div>
+										)}
+								</div>
+							)}
 					</div>
 
 					{/* Recovery Mode Warning */}
@@ -275,21 +264,23 @@ export function KilnStatusDisplay({
 						</Alert>
 					)}
 
-					{status.error_message && (
-						<Alert variant="destructive">
-							<AlertTriangle className="w-4 h-4" />
-							<AlertDescription>
-								<div className="flex items-center justify-between">
-									<span>{status.error_message}</span>
-									{status.state === "ERROR" && (
+					{(status.error_message || status.state === "ERROR") && (
+						<>
+							<Alert variant="destructive">
+								<AlertTriangle className="w-4 h-4" />
+								<AlertDescription>
+									<div className="flex flex-col gap-2">
+										<span>{status.error_message ?? "Error mode"}</span>
 										<Button
-											onClick={handleClearError}
-											disabled={clearError.isPending}
+											onClick={() => clearError}
+											disabled={
+												isClearingPending || status.state !== "ERROR"
+											}
 											variant="outline"
 											size="sm"
-											className="ml-4"
+											className="self-end"
 										>
-											{clearError.isPending ? (
+											{isClearingPending ? (
 												<>
 													<Loader2 className="w-4 h-4 mr-2 animate-spin" />
 													Clearing...
@@ -301,10 +292,19 @@ export function KilnStatusDisplay({
 												</>
 											)}
 										</Button>
-									)}
-								</div>
-							</AlertDescription>
-						</Alert>
+									</div>
+								</AlertDescription>
+							</Alert>
+							{isClearingError && (
+								<Alert variant="destructive">
+									<AlertTriangle className="w-4 h-4" />
+									<AlertDescription>
+										Failed to clear error:{" "}
+										{clearingError?.message || "Unknown error"}
+									</AlertDescription>
+								</Alert>
+							)}
+						</>
 					)}
 				</CardContent>
 			</Card>

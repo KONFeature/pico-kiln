@@ -117,12 +117,14 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 
 	const handleReboot = async () => {
 		try {
-			const result = await reboot.mutateAsync();
-			if (result.success) {
-				setShowRebootDialog(false);
-			}
+			await reboot.mutateAsync();
+			// Always close dialog and consider it successful
+			// The Pico will disconnect immediately upon reboot
+			setShowRebootDialog(false);
 		} catch (error) {
 			console.error("Error during reboot:", error);
+			// Still close the dialog - the reboot might have worked
+			setShowRebootDialog(false);
 		}
 	};
 
@@ -407,9 +409,15 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 				<DialogContent>
 					<DialogHeader>
 						<DialogTitle>Confirm Reboot</DialogTitle>
-						<DialogDescription>
-							This will restart the Pico controller. The web interface will be
-							unavailable for a few seconds while the device reboots.
+						<DialogDescription className="space-y-2">
+							<p>
+								This will restart the Pico controller. The web interface will be
+								unavailable for 10-15 seconds while the device reboots.
+							</p>
+							<p className="text-orange-600 dark:text-orange-400">
+								Note: Any running profile will be stopped and the kiln will
+								enter shutdown mode.
+							</p>
 						</DialogDescription>
 					</DialogHeader>
 					<DialogFooter>
