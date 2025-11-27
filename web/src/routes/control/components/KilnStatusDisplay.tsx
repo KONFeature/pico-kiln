@@ -272,7 +272,7 @@ export function KilnStatusDisplay({
 									<div className="flex flex-col gap-2">
 										<span>{status.error_message ?? "Error mode"}</span>
 										<Button
-											onClick={() => clearError}
+											onClick={() => clearError()}
 											disabled={
 												isClearingPending || status.state !== "ERROR"
 											}
