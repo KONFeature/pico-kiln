@@ -353,11 +353,11 @@ class ZieglerNicholsTuner:
 
                 # Step 2: Cool slightly to reset
                 TuningStep(
-                    step_name="cool_20min",
+                    step_name="cool_10min",
                     ssr_percent=0,
                     target_temp=None,
                     hold_time=0,
-                    timeout=1200  # 20 min
+                    timeout=600  # 10 min
                 ),
 
                 # Step 3: Characterize at 60% SSR (should reach ~300-350°C)
@@ -366,17 +366,17 @@ class ZieglerNicholsTuner:
                     ssr_percent=60,
                     target_temp=None,
                     hold_time=0,
-                    timeout=2700,  # 45 min timeout
+                    timeout=1800,  # 30 min timeout
                     plateau_detect=True
                 ),
 
                 # Step 4: Cool reset
                 TuningStep(
-                    step_name="cool_20min",
+                    step_name="cool_10min",
                     ssr_percent=0,
                     target_temp=None,
                     hold_time=0,
-                    timeout=1200  # 20 min
+                    timeout=600  # 10 min
                 ),
 
                 # Step 5: Characterize at 80% SSR (should reach ~400-450°C)
@@ -385,17 +385,17 @@ class ZieglerNicholsTuner:
                     ssr_percent=80,
                     target_temp=None,
                     hold_time=0,
-                    timeout=2700,  # 45 min timeout
+                    timeout=1800,  # 30 min timeout
                     plateau_detect=True
                 ),
 
                 # Step 6: Cool reset
                 TuningStep(
-                    step_name="cool_20min",
+                    step_name="cool_10min",
                     ssr_percent=0,
                     target_temp=None,
                     hold_time=0,
-                    timeout=1200  # 20 min
+                    timeout=600  # 10 min
                 ),
 
                 # Step 7: Full power push to max temp
@@ -404,7 +404,7 @@ class ZieglerNicholsTuner:
                     ssr_percent=100,
                     target_temp=min(600, self.max_temp),
                     hold_time=300,  # Hold 5 min at max
-                    timeout=2700  # 45 min timeout
+                    timeout=1800,  # 30 min timeout
                 ),
 
                 # Step 8: Final cooldown

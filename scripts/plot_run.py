@@ -28,6 +28,12 @@ except ImportError:
     print("Install it with: pip install matplotlib")
     sys.exit(1)
 
+try:
+    import mplcursors
+    HAS_MPLCURSORS = True
+except ImportError:
+    HAS_MPLCURSORS = False
+
 
 def load_run_data(csv_file):
     """
@@ -140,6 +146,7 @@ def plot_run(data, output_file=None):
     """
     run_type = detect_run_type(data)
     has_rate_data = 'current_rate' in data and data['current_rate']
+    ax4 = None  # Initialize ax4 for rate subplot
 
     # Create figure with subplots - add extra row if rate data available
     if has_rate_data:
@@ -300,7 +307,185 @@ def plot_run(data, output_file=None):
         plt.savefig(output_file, dpi=150, bbox_inches='tight')
         print(f"✓ Graph saved to: {output_file}")
     else:
+        # Add interactive hover tooltips for interactive mode
+        _setup_hover_tooltips(fig, data, ax1, ax2, ax3, ax4)
+        if not HAS_MPLCURSORS:
+            print("💡 Tip: Install mplcursors for better tooltips: pip install mplcursors")
         plt.show()
+
+
+def _format_elapsed_time(hours):
+    """Format elapsed time as Xh YYmin"""
+    total_minutes = int(hours * 60)
+    h = total_minutes // 60
+    m = total_minutes % 60
+    return f"{h}h {m:02d}min"
+
+
+def _setup_hover_tooltips(fig, data, ax1, ax2, ax3, ax4=None):
+    """
+    Setup interactive hover tooltips for all subplots
+
+    Args:
+        fig: matplotlib figure
+        data: Run data dictionary
+        ax1: Temperature subplot
+        ax2: SSR output subplot
+        ax3: Step info subplot
+        ax4: Rate subplot (optional)
+    """
+    if HAS_MPLCURSORS:
+        _setup_mplcursors_tooltips(data, ax1, ax2, ax3, ax4)
+    else:
+        _setup_builtin_tooltips(fig, data, ax1, ax2, ax3, ax4)
+
+
+def _setup_mplcursors_tooltips(data, ax1, ax2, ax3, ax4):
+    """Setup tooltips using mplcursors library (preferred)"""
+    # Get all line objects from subplots
+    lines_ax1 = ax1.get_lines()
+    lines_ax2 = ax2.get_lines()
+    lines_ax3 = ax3.get_lines()
+    lines_ax4 = ax4.get_lines() if ax4 else []
+
+    all_lines = lines_ax1 + lines_ax2 + lines_ax3 + lines_ax4
+
+    cursor = mplcursors.cursor(all_lines, hover=True)
+
+    @cursor.connect("add")
+    def on_add(sel):
+        x = sel.target[0]  # time in hours
+        # Find closest data point index
+        idx = min(range(len(data['time_hours'])), key=lambda i: abs(data['time_hours'][i] - x))
+
+        elapsed = _format_elapsed_time(data['time_hours'][idx])
+        temp = data['temp'][idx]
+        target = data['target_temp'][idx]
+        ssr = data['ssr_output'][idx]
+
+        tooltip_lines = [
+            f"Time: {elapsed}",
+            f"Temp: {temp:.1f}°C",
+            f"Target: {target:.1f}°C",
+            f"SSR: {ssr:.1f}%"
+        ]
+
+        # Add step info if available
+        if 'step_names' in data and data['step_names'] and idx < len(data['step_names']):
+            step_name = data['step_names'][idx]
+            if step_name:
+                tooltip_lines.append(f"Step: {step_name}")
+
+        # Add rate if available
+        if 'current_rate' in data and data['current_rate'] and idx < len(data['current_rate']):
+            rate = data['current_rate'][idx]
+            tooltip_lines.append(f"Rate: {rate:.1f}°C/h")
+
+        sel.annotation.set_text('\n'.join(tooltip_lines))
+        sel.annotation.get_bbox_patch().set(fc="white", alpha=0.9)
+
+
+def _setup_builtin_tooltips(fig, data, ax1, ax2, ax3, ax4):
+    """Setup tooltips using matplotlib's built-in event handling (fallback)"""
+    # Create annotation objects for each subplot
+    annot1 = ax1.annotate("", xy=(0, 0), xytext=(15, 15),
+                          textcoords="offset points",
+                          bbox=dict(boxstyle="round,pad=0.5", fc="white", alpha=0.9),
+                          fontsize=9, visible=False)
+    annot2 = ax2.annotate("", xy=(0, 0), xytext=(15, 15),
+                          textcoords="offset points",
+                          bbox=dict(boxstyle="round,pad=0.5", fc="white", alpha=0.9),
+                          fontsize=9, visible=False)
+    annot3 = ax3.annotate("", xy=(0, 0), xytext=(15, 15),
+                          textcoords="offset points",
+                          bbox=dict(boxstyle="round,pad=0.5", fc="white", alpha=0.9),
+                          fontsize=9, visible=False)
+    annot4 = None
+    if ax4:
+        annot4 = ax4.annotate("", xy=(0, 0), xytext=(15, 15),
+                              textcoords="offset points",
+                              bbox=dict(boxstyle="round,pad=0.5", fc="white", alpha=0.9),
+                              fontsize=9, visible=False)
+
+    annotations = [annot1, annot2, annot3, annot4]
+    axes = [ax1, ax2, ax3, ax4]
+
+    def on_move(event):
+        # Hide all annotations first
+        for annot in annotations:
+            if annot:
+                annot.set_visible(False)
+
+        if event.inaxes is None:
+            fig.canvas.draw_idle()
+            return
+
+        # Find which axis we're in
+        ax_idx = None
+        for i, ax in enumerate(axes):
+            if ax and event.inaxes == ax:
+                ax_idx = i
+                break
+
+        if ax_idx is None:
+            fig.canvas.draw_idle()
+            return
+
+        # Get x position (time in hours)
+        x = event.xdata
+        if x is None:
+            fig.canvas.draw_idle()
+            return
+
+        # Find closest data point index
+        if not data['time_hours']:
+            return
+        idx = min(range(len(data['time_hours'])), key=lambda i: abs(data['time_hours'][i] - x))
+
+        # Build tooltip text
+        elapsed = _format_elapsed_time(data['time_hours'][idx])
+        temp = data['temp'][idx]
+        target = data['target_temp'][idx]
+        ssr = data['ssr_output'][idx]
+
+        tooltip_lines = [
+            f"Time: {elapsed}",
+            f"Temp: {temp:.1f}°C",
+            f"Target: {target:.1f}°C",
+            f"SSR: {ssr:.1f}%"
+        ]
+
+        # Add step info if available
+        if 'step_names' in data and data['step_names'] and idx < len(data['step_names']):
+            step_name = data['step_names'][idx]
+            if step_name:
+                tooltip_lines.append(f"Step: {step_name}")
+
+        # Add rate if available
+        if 'current_rate' in data and data['current_rate'] and idx < len(data['current_rate']):
+            rate = data['current_rate'][idx]
+            tooltip_lines.append(f"Rate: {rate:.1f}°C/h")
+
+        # Update the annotation for the current axis
+        annot = annotations[ax_idx]
+        if annot:
+            # Get y value based on which subplot
+            if ax_idx == 0:
+                y = temp
+            elif ax_idx == 1:
+                y = ssr
+            elif ax_idx == 2:
+                y = data['step_indices'][idx] if 'step_indices' in data and data['step_indices'] else 0
+            else:  # ax_idx == 3 (rate)
+                y = data['current_rate'][idx] if 'current_rate' in data and data['current_rate'] else 0
+
+            annot.xy = (data['time_hours'][idx], y)
+            annot.set_text('\n'.join(tooltip_lines))
+            annot.set_visible(True)
+
+        fig.canvas.draw_idle()
+
+    fig.canvas.mpl_connect('motion_notify_event', on_move)
 
 
 def main():

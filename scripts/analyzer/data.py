@@ -72,7 +72,8 @@ def load_tuning_data(csv_file: str) -> Dict:
             if row.get('state') == 'RECOVERY':
                 continue
 
-            time_data.append(float(row['elapsed_seconds']))
+            # Note: elapsed_seconds in tuning CSV is per-step, not overall
+            # We'll calculate overall elapsed time from timestamps below
             temp_data.append(float(row['current_temp_c']))
             ssr_output_data.append(float(row['ssr_output_percent']))
             timestamps.append(row['timestamp'])
@@ -83,19 +84,14 @@ def load_tuning_data(csv_file: str) -> Dict:
                 step_indices.append(int(row['step_index']))
                 total_steps_data.append(int(row['total_steps']))
 
-    # Fallback: if all elapsed_seconds are 0, calculate from timestamps
-    if all(t == 0.0 for t in time_data):
-        print("\n⚠️  Warning: elapsed_seconds column is all zeros")
-        print("Calculating elapsed time from timestamp column as fallback...")
-
-        start_dt = datetime.strptime(timestamps[0], '%Y-%m-%d %H:%M:%S')
-        time_data = []
-        for ts in timestamps:
-            dt = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
-            elapsed = (dt - start_dt).total_seconds()
-            time_data.append(elapsed)
-
-        print(f"✓ Rebuilt elapsed time: 0s to {time_data[-1]:.1f}s\n")
+    # Always calculate overall elapsed time from timestamps
+    # (elapsed_seconds in tuning CSV is per-step, not overall)
+    start_dt = datetime.strptime(timestamps[0], '%Y-%m-%d %H:%M:%S')
+    time_data = []
+    for ts in timestamps:
+        dt = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+        elapsed = (dt - start_dt).total_seconds()
+        time_data.append(elapsed)
 
     result = {
         'time': time_data,
