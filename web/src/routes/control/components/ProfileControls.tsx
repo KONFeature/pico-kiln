@@ -1,16 +1,21 @@
 import {
 	AlertTriangle,
+	ArrowUp,
 	Calendar,
 	Clock,
+	Flame,
 	Loader2,
+	Pause,
 	Play,
 	Power,
 	RotateCw,
+	Snowflake,
 	Square,
 	X,
 } from "lucide-react";
 import { useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
 	Card,
@@ -38,10 +43,89 @@ import {
 	useShutdown,
 	useStopProfile,
 } from "@/lib/pico/hooks";
-import type { KilnStatus } from "@/lib/pico/types";
+import { useProfileCache } from "@/lib/pico/profile-cache";
+import type { KilnStatus, Profile, ProfileStep } from "@/lib/pico/types";
 
 interface ProfileControlsProps {
 	status?: KilnStatus;
+}
+
+// Helper function to format step details
+function formatStepDetails(step: ProfileStep, tempUnit: string): string {
+	const unit = tempUnit === "f" ? "°F" : "°C";
+	const rateUnit = tempUnit === "f" ? "°F/h" : "°C/h";
+
+	switch (step.type) {
+		case "ramp":
+			return `Ramp to ${step.target_temp}${unit} at ${step.desired_rate}${rateUnit}`;
+		case "hold":
+			if (step.duration) {
+				const hours = Math.floor(step.duration / 3600);
+				const minutes = Math.floor((step.duration % 3600) / 60);
+				const timeStr =
+					hours > 0
+						? `${hours}h ${minutes > 0 ? `${minutes}m` : ""}`
+						: `${minutes}m`;
+				return `Hold at ${step.target_temp}${unit} for ${timeStr}`;
+			}
+			return `Hold at ${step.target_temp}${unit}`;
+		case "cooling":
+			if (step.target_temp !== undefined && step.desired_rate !== undefined) {
+				return `Cool to ${step.target_temp}${unit} at ${step.desired_rate}${rateUnit}`;
+			}
+			if (step.target_temp !== undefined) {
+				return `Cool to ${step.target_temp}${unit}`;
+			}
+			return "Natural cooling";
+		default:
+			return "Unknown step";
+	}
+}
+
+// Step icon component
+function StepIcon({ type }: { type: ProfileStep["type"] }) {
+	switch (type) {
+		case "ramp":
+			return <ArrowUp className="w-4 h-4 text-orange-500" />;
+		case "hold":
+			return <Pause className="w-4 h-4 text-yellow-500" />;
+		case "cooling":
+			return <Snowflake className="w-4 h-4 text-blue-500" />;
+		default:
+			return <Flame className="w-4 h-4" />;
+	}
+}
+
+// Profile details display component
+function ProfileDetails({ profile }: { profile: Profile }) {
+	return (
+		<div className="space-y-3 pt-4 border-t">
+			{profile.description && (
+				<div className="text-sm text-muted-foreground">
+					{profile.description}
+				</div>
+			)}
+			<div className="space-y-2">
+				<div className="text-sm font-medium">Steps ({profile.steps.length})</div>
+				<div className="space-y-1">
+					{profile.steps.map((step, index) => (
+						<div
+							key={index}
+							className="flex items-center gap-2 text-sm p-2 rounded bg-muted/50"
+						>
+							<Badge variant="outline" className="w-6 h-6 p-0 justify-center">
+								{index + 1}
+							</Badge>
+							<StepIcon type={step.type} />
+							<span className="flex-1">
+								{formatStepDetails(step, profile.temp_units)}
+							</span>
+						</div>
+					))}
+				</div>
+			</div>
+		</div>
+	);
 }
 
 export function ProfileControls({ status }: ProfileControlsProps) {
@@ -52,12 +136,25 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 	const [scheduleDate, setScheduleDate] = useState("");
 	const [scheduleTime, setScheduleTime] = useState("");
 
+	// Profile cache for getting profile details
+	const { getProfile, isPreloading, preloadProgress } = useProfileCache();
+
 	// Dynamically load available profiles from the profiles directory
 	const { data: profilesData } = useListFiles("profiles");
 	const availableProfiles =
 		profilesData?.files
 			.filter((file) => file.name.endsWith(".json"))
 			.map((file) => file.name.replace(".json", "")) || [];
+
+	// Get the selected profile data from cache
+	const selectedProfileData = selectedProfile
+		? getProfile(selectedProfile)
+		: undefined;
+
+	// Get the running profile data from cache (when a profile is running)
+	const runningProfileData = status?.profile_name
+		? getProfile(status.profile_name)
+		: undefined;
 
 	const runProfile = useRunProfile();
 	const stopProfile = useStopProfile();
@@ -298,6 +395,20 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 									</AlertDescription>
 								</Alert>
 							)}
+
+							{/* Profile details when a profile is selected */}
+							{selectedProfile && selectedProfileData && (
+								<ProfileDetails profile={selectedProfileData} />
+							)}
+
+							{/* Loading indicator when profile is being loaded */}
+							{selectedProfile && !selectedProfileData && isPreloading && (
+								<div className="flex items-center gap-2 text-sm text-muted-foreground pt-4 border-t">
+									<Loader2 className="w-4 h-4 animate-spin" />
+									Loading profile details ({preloadProgress.loaded}/
+									{preloadProgress.total})...
+								</div>
+							)}
 						</>
 					) : (
 						<>
@@ -335,6 +446,11 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 										{stopProfile.error?.message || "Failed to stop profile"}
 									</AlertDescription>
 								</Alert>
+							)}
+
+							{/* Profile details during run */}
+							{runningProfileData && (
+								<ProfileDetails profile={runningProfileData} />
 							)}
 						</>
 					)}
