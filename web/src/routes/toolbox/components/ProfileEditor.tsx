@@ -46,104 +46,12 @@ import type {
 	ProfileStepType,
 	TempUnits,
 } from "@/lib/pico/types";
+import {
+	calculateTrajectory,
+	type Segment,
+	type TrajectoryPoint,
+} from "@/lib/profile-utils";
 import { readFileAsText } from "@/lib/utils";
-
-interface TrajectoryPoint {
-	time_hours: number;
-	temp: number;
-}
-
-interface Segment {
-	data: TrajectoryPoint[];
-	type: "ramp" | "hold" | "cooling";
-	color: string;
-	step: ProfileStep;
-	desiredRate?: number;
-	minRate?: number;
-	duration?: number;
-}
-
-function calculateTrajectory(profile: Profile): Segment[] {
-	const segments: Segment[] = [];
-	let currentTime = 0;
-	let currentTemp = 20;
-
-	for (const step of profile.steps) {
-		const targetTemp = step.target_temp ?? currentTemp;
-
-		if (step.type === "hold") {
-			const duration = step.duration ?? 0;
-			const data: TrajectoryPoint[] = [
-				{ time_hours: currentTime / 3600, temp: currentTemp },
-				{ time_hours: (currentTime + duration) / 3600, temp: currentTemp },
-			];
-
-			segments.push({
-				data,
-				type: "hold",
-				color: "#eab308",
-				step,
-				duration: duration / 60,
-			});
-
-			currentTime += duration;
-		} else if (step.type === "ramp") {
-			const desiredRate = step.desired_rate ?? 100;
-			const tempChange = Math.abs(targetTemp - currentTemp);
-			const durationHours =
-				desiredRate > 0 ? tempChange / desiredRate : tempChange / 100;
-			const durationSeconds = durationHours * 3600;
-
-			const data: TrajectoryPoint[] = [
-				{ time_hours: currentTime / 3600, temp: currentTemp },
-				{
-					time_hours: (currentTime + durationSeconds) / 3600,
-					temp: targetTemp,
-				},
-			];
-
-			const isHeating = targetTemp > currentTemp;
-			segments.push({
-				data,
-				type: isHeating ? "ramp" : "cooling",
-				color: isHeating ? "#ef4444" : "#3b82f6",
-				step,
-				desiredRate: step.desired_rate ?? 100,
-				minRate: step.min_rate,
-			});
-
-			currentTime += durationSeconds;
-			currentTemp = targetTemp;
-		} else if (step.type === "cooling") {
-			// Natural cooling: estimate at 100°C/h if target specified
-			const coolingTarget = step.target_temp ?? 20; // Default to room temp
-			const tempChange = Math.abs(currentTemp - coolingTarget);
-			const naturalCoolingRate = 100; // Estimated natural cooling rate
-			const durationHours = tempChange / naturalCoolingRate;
-			const durationSeconds = durationHours * 3600;
-
-			const data: TrajectoryPoint[] = [
-				{ time_hours: currentTime / 3600, temp: currentTemp },
-				{
-					time_hours: (currentTime + durationSeconds) / 3600,
-					temp: coolingTarget,
-				},
-			];
-
-			segments.push({
-				data,
-				type: "cooling",
-				color: "#06b6d4", // cyan-500 for natural cooling
-				step,
-			});
-
-			currentTime += durationSeconds;
-			currentTemp = coolingTarget;
-		}
-	}
-
-	return segments;
-}
 
 const DEFAULT_PROFILE: Profile = {
 	name: "New Profile",
@@ -234,10 +142,8 @@ export function ProfileEditor() {
 		return null;
 	};
 
-	const stepErrors = useMemo(() => {
-		return profile.steps.map((step) => validateStep(step));
-	}, [profile.steps]);
-
+	// Simple validation - no need for useMemo as validation is cheap
+	const stepErrors = profile.steps.map((step) => validateStep(step));
 	const hasValidationErrors = stepErrors.some((error) => error !== null);
 
 	const updateProfile = (updates: Partial<Profile>) => {
