@@ -19,118 +19,13 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
-import type { Profile, ProfileStep } from "@/lib/pico/types";
+import type { Profile } from "@/lib/pico/types";
+import {
+	calculateTrajectory,
+	type Segment,
+	type TrajectoryPoint,
+} from "@/lib/profile-utils";
 import { FileSourceSelector } from "./FileSourceSelector";
-
-interface TrajectoryPoint {
-	time_hours: number;
-	temp: number;
-}
-
-interface Segment {
-	data: TrajectoryPoint[];
-	type: "ramp" | "hold" | "cooling";
-	color: string;
-	step: ProfileStep;
-	desiredRate?: number;
-	minRate?: number;
-	duration?: number; // for holds, in minutes
-}
-
-/**
- * Calculate temperature trajectory from profile steps
- * Returns separate data arrays for each segment to enable different colors
- */
-function calculateTrajectory(profile: Profile): Segment[] {
-	const segments: Segment[] = [];
-	let currentTime = 0;
-	let currentTemp = 20; // Start at room temperature
-
-	for (let i = 0; i < profile.steps.length; i++) {
-		const step = profile.steps[i];
-		const stepType = step.type;
-		const targetTemp = step.target_temp ?? currentTemp;
-
-		if (stepType === "hold") {
-			// Hold: constant temperature for duration
-			const duration = step.duration ?? 0;
-			const data: TrajectoryPoint[] = [
-				{ time_hours: currentTime / 3600, temp: currentTemp },
-				{ time_hours: (currentTime + duration) / 3600, temp: currentTemp },
-			];
-
-			segments.push({
-				data,
-				type: "hold",
-				color: "#eab308", // yellow-500
-				step,
-				duration: duration / 60, // convert to minutes
-			});
-
-			currentTime += duration;
-		} else if (stepType === "ramp") {
-			// Ramp: linear temperature change at desired rate
-			const desiredRate = step.desired_rate ?? 100; // Default 100°C/h
-			const tempChange = Math.abs(targetTemp - currentTemp);
-
-			let durationSeconds: number;
-			if (desiredRate > 0) {
-				const durationHours = tempChange / desiredRate;
-				durationSeconds = durationHours * 3600;
-			} else {
-				durationSeconds = tempChange * 36; // ~100°C/h
-			}
-
-			const data: TrajectoryPoint[] = [
-				{ time_hours: currentTime / 3600, temp: currentTemp },
-				{
-					time_hours: (currentTime + durationSeconds) / 3600,
-					temp: targetTemp,
-				},
-			];
-
-			const isHeating = targetTemp > currentTemp;
-			segments.push({
-				data,
-				type: isHeating ? "ramp" : "cooling",
-				color: isHeating ? "#ef4444" : "#3b82f6", // red-500 for heating, blue-500 for cooling
-				step,
-				desiredRate: step.desired_rate,
-				minRate: step.min_rate,
-			});
-
-			currentTime += durationSeconds;
-			currentTemp = targetTemp;
-		} else if (stepType === "cooling") {
-			// Natural cooling: estimate at 100°C/h if target specified
-			const coolingTarget = step.target_temp ?? 20; // Default to room temp if no target
-			const tempChange = Math.abs(currentTemp - coolingTarget);
-			const naturalCoolingRate = 100; // Estimated natural cooling rate
-			const durationHours = tempChange / naturalCoolingRate;
-			const durationSeconds = durationHours * 3600;
-
-			const data: TrajectoryPoint[] = [
-				{ time_hours: currentTime / 3600, temp: currentTemp },
-				{
-					time_hours: (currentTime + durationSeconds) / 3600,
-					temp: coolingTarget,
-				},
-			];
-
-			segments.push({
-				data,
-				type: "cooling",
-				color: "#06b6d4", // cyan-500 for natural cooling
-				step,
-			});
-
-			currentTime += durationSeconds;
-			currentTemp = coolingTarget;
-		}
-	}
-
-	return segments;
-}
 
 export function ProfileVisualizer() {
 	const [profile, setProfile] = useState<Profile | null>(null);
