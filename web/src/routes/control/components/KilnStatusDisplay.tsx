@@ -1,11 +1,14 @@
 import {
 	AlertCircle,
 	AlertTriangle,
+	ArrowUp,
 	Clock,
 	Flame,
 	Gauge,
 	Loader2,
+	Pause,
 	RefreshCw,
+	Snowflake,
 	Thermometer,
 	TrendingUp,
 } from "lucide-react";
@@ -15,13 +18,60 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { PicoAPIError } from "@/lib/pico/client";
 import { useClearError } from "@/lib/pico/hooks";
-import type { KilnStatus } from "@/lib/pico/types";
+import { useProfileCache } from "@/lib/pico/profile-cache";
+import type { KilnStatus, ProfileStep } from "@/lib/pico/types";
 
 interface KilnStatusDisplayProps {
 	status?: KilnStatus;
 	isLoading: boolean;
 	error: PicoAPIError | null;
 	onRefresh?: () => void;
+}
+
+// Step icon component
+function StepIcon({ type }: { type: ProfileStep["type"] }) {
+	switch (type) {
+		case "ramp":
+			return <ArrowUp className="w-4 h-4 text-orange-500" />;
+		case "hold":
+			return <Pause className="w-4 h-4 text-yellow-500" />;
+		case "cooling":
+			return <Snowflake className="w-4 h-4 text-blue-500" />;
+		default:
+			return <Flame className="w-4 h-4" />;
+	}
+}
+
+// Format step details for display
+function formatStepInfo(step: ProfileStep, tempUnit: string): string {
+	const unit = tempUnit === "f" ? "°F" : "°C";
+	const rateUnit = tempUnit === "f" ? "°F/h" : "°C/h";
+
+	switch (step.type) {
+		case "ramp":
+			return `Ramp to ${step.target_temp}${unit} at ${step.desired_rate}${rateUnit}`;
+		case "hold":
+			if (step.duration) {
+				const hours = Math.floor(step.duration / 3600);
+				const minutes = Math.floor((step.duration % 3600) / 60);
+				const timeStr =
+					hours > 0
+						? `${hours}h ${minutes > 0 ? `${minutes}m` : ""}`
+						: `${minutes}m`;
+				return `Hold at ${step.target_temp}${unit} for ${timeStr}`;
+			}
+			return `Hold at ${step.target_temp}${unit}`;
+		case "cooling":
+			if (step.target_temp !== undefined && step.desired_rate !== undefined) {
+				return `Cool to ${step.target_temp}${unit} at ${step.desired_rate}${rateUnit}`;
+			}
+			if (step.target_temp !== undefined) {
+				return `Cool to ${step.target_temp}${unit}`;
+			}
+			return "Natural cooling";
+		default:
+			return "Unknown step";
+	}
 }
 
 export function KilnStatusDisplay({
@@ -31,6 +81,16 @@ export function KilnStatusDisplay({
 	onRefresh,
 }: KilnStatusDisplayProps) {
 	const { mutate: clearError, isPending: isClearingPending, isError: isClearingError, error: clearingError } = useClearError();
+	const { getProfile } = useProfileCache();
+
+	// Get the running profile data from cache if available
+	const runningProfile = status?.profile_name
+		? getProfile(status.profile_name)
+		: undefined;
+	const currentStep =
+		runningProfile && status?.step_index !== undefined
+			? runningProfile.steps[status.step_index]
+			: undefined;
 
 	if (error) {
 		return (
@@ -335,17 +395,22 @@ export function KilnStatusDisplay({
 						{/* Current Step Info */}
 						{status.step_name && (
 							<div className="p-3 rounded-lg bg-muted/50 space-y-2">
-								<div className="flex items-center justify-between">
-									<span className="text-sm font-medium">
-										Current Step: {status.step_name}
+								<div className="flex items-center gap-2">
+									{currentStep && (
+										<StepIcon type={currentStep.type} />
+									)}
+									<span className="text-sm font-medium flex-1">
+										{currentStep && runningProfile
+											? formatStepInfo(currentStep, runningProfile.temp_units)
+											: `Current Step: ${status.step_name}`}
 									</span>
-									{status.desired_rate !== undefined &&
-										status.step_name === "ramp" && (
-											<span className="text-sm text-muted-foreground">
-												{status.desired_rate.toFixed(0)}°C/h
-											</span>
-										)}
 								</div>
+								{status.desired_rate !== undefined &&
+									status.step_name === "ramp" && (
+										<div className="text-xs text-muted-foreground">
+											Target rate: {status.desired_rate.toFixed(0)}°C/h
+										</div>
+									)}
 							</div>
 						)}
 
@@ -358,6 +423,51 @@ export function KilnStatusDisplay({
 										<Clock className="w-4 h-4" />
 										{formatDuration(status.elapsed)}
 									</div>
+								</div>
+							</div>
+						)}
+
+						{/* All Steps Overview (from cached profile) */}
+						{runningProfile && (
+							<div className="pt-2 border-t space-y-2">
+								<div className="text-sm font-medium text-muted-foreground">
+									Profile Steps
+								</div>
+								<div className="space-y-1">
+									{runningProfile.steps.map((step, index) => {
+										const isCurrent = index === status.step_index;
+										const isCompleted =
+											status.step_index !== undefined &&
+											index < status.step_index;
+										return (
+											<div
+												key={index}
+												className={`flex items-center gap-2 text-xs p-2 rounded ${
+													isCurrent
+														? "bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700"
+														: isCompleted
+															? "bg-muted/30 text-muted-foreground"
+															: "bg-muted/50"
+												}`}
+											>
+												<Badge
+													variant={isCurrent ? "default" : "outline"}
+													className="w-5 h-5 p-0 justify-center text-xs"
+												>
+													{index + 1}
+												</Badge>
+												<StepIcon type={step.type} />
+												<span className="flex-1 truncate">
+													{formatStepInfo(step, runningProfile.temp_units)}
+												</span>
+												{isCurrent && (
+													<Badge variant="secondary" className="text-xs">
+														Current
+													</Badge>
+												)}
+											</div>
+										);
+									})}
 								</div>
 							</div>
 						)}
