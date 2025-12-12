@@ -151,6 +151,11 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 		? getProfile(selectedProfile)
 		: undefined;
 
+	// Get the running profile data from cache (when a profile is running)
+	const runningProfileData = status?.profile_name
+		? getProfile(status.profile_name)
+		: undefined;
+
 	const runProfile = useRunProfile();
 	const stopProfile = useStopProfile();
 	const shutdown = useShutdown();
@@ -441,6 +446,11 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 										{stopProfile.error?.message || "Failed to stop profile"}
 									</AlertDescription>
 								</Alert>
+							)}
+
+							{/* Profile details during run */}
+							{runningProfileData && (
+								<ProfileDetails profile={runningProfileData} />
 							)}
 						</>
 					)}
