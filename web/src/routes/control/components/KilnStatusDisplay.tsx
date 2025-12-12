@@ -29,7 +29,10 @@ interface KilnStatusDisplayProps {
 }
 
 // Step icon component
-function StepIcon({ type }: { type: ProfileStep["type"] }) {
+function StepIcon({ type, isControlledCooldown }: { type: ProfileStep["type"]; isControlledCooldown?: boolean }) {
+	if (type === "ramp" && isControlledCooldown) {
+		return <Snowflake className="w-4 h-4 text-blue-500" />;
+	}
 	switch (type) {
 		case "ramp":
 			return <ArrowUp className="w-4 h-4 text-orange-500" />;
@@ -43,13 +46,22 @@ function StepIcon({ type }: { type: ProfileStep["type"] }) {
 }
 
 // Format step details for display
-function formatStepInfo(step: ProfileStep, tempUnit: string): string {
+function formatStepInfo(step: ProfileStep, tempUnit: string, prevTargetTemp?: number): string {
 	const unit = tempUnit === "f" ? "°F" : "°C";
 	const rateUnit = tempUnit === "f" ? "°F/h" : "°C/h";
 
 	switch (step.type) {
-		case "ramp":
+		case "ramp": {
+			// Check if this is actually a controlled cooldown (ramping to lower temp)
+			const isControlledCooldown = prevTargetTemp !== undefined &&
+				step.target_temp !== undefined &&
+				step.target_temp < prevTargetTemp;
+
+			if (isControlledCooldown) {
+				return `Cool to ${step.target_temp}${unit} at ${step.desired_rate}${rateUnit}`;
+			}
 			return `Ramp to ${step.target_temp}${unit} at ${step.desired_rate}${rateUnit}`;
+		}
 		case "hold":
 			if (step.duration) {
 				const hours = Math.floor(step.duration / 3600);
@@ -91,6 +103,15 @@ export function KilnStatusDisplay({
 		runningProfile && status?.step_index !== undefined
 			? runningProfile.steps[status.step_index]
 			: undefined;
+	const prevStep =
+		runningProfile && status?.step_index !== undefined && status.step_index > 0
+			? runningProfile.steps[status.step_index - 1]
+			: undefined;
+	const currentStepIsControlledCooldown =
+		currentStep?.type === "ramp" &&
+		prevStep?.target_temp !== undefined &&
+		currentStep?.target_temp !== undefined &&
+		currentStep.target_temp < prevStep.target_temp;
 
 	if (error) {
 		return (
@@ -397,11 +418,11 @@ export function KilnStatusDisplay({
 							<div className="p-3 rounded-lg bg-muted/50 space-y-2">
 								<div className="flex items-center gap-2">
 									{currentStep && (
-										<StepIcon type={currentStep.type} />
+										<StepIcon type={currentStep.type} isControlledCooldown={currentStepIsControlledCooldown} />
 									)}
 									<span className="text-sm font-medium flex-1">
 										{currentStep && runningProfile
-											? formatStepInfo(currentStep, runningProfile.temp_units)
+											? formatStepInfo(currentStep, runningProfile.temp_units, prevStep?.target_temp)
 											: `Current Step: ${status.step_name}`}
 									</span>
 								</div>
@@ -439,6 +460,13 @@ export function KilnStatusDisplay({
 										const isCompleted =
 											status.step_index !== undefined &&
 											index < status.step_index;
+										const stepPrev = index > 0 ? runningProfile.steps[index - 1] : undefined;
+										const stepPrevTargetTemp = stepPrev?.target_temp;
+										const stepIsControlledCooldown = step.type === "ramp" &&
+											stepPrevTargetTemp !== undefined &&
+											step.target_temp !== undefined &&
+											step.target_temp < stepPrevTargetTemp;
+
 										return (
 											<div
 												key={index}
@@ -456,9 +484,9 @@ export function KilnStatusDisplay({
 												>
 													{index + 1}
 												</Badge>
-												<StepIcon type={step.type} />
+												<StepIcon type={step.type} isControlledCooldown={stepIsControlledCooldown} />
 												<span className="flex-1 truncate">
-													{formatStepInfo(step, runningProfile.temp_units)}
+													{formatStepInfo(step, runningProfile.temp_units, stepPrevTargetTemp)}
 												</span>
 												{isCurrent && (
 													<Badge variant="secondary" className="text-xs">

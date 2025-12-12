@@ -51,13 +51,22 @@ interface ProfileControlsProps {
 }
 
 // Helper function to format step details
-function formatStepDetails(step: ProfileStep, tempUnit: string): string {
+function formatStepDetails(step: ProfileStep, tempUnit: string, prevTargetTemp?: number): string {
 	const unit = tempUnit === "f" ? "°F" : "°C";
 	const rateUnit = tempUnit === "f" ? "°F/h" : "°C/h";
 
 	switch (step.type) {
-		case "ramp":
+		case "ramp": {
+			// Check if this is actually a controlled cooldown (ramping to lower temp)
+			const isControlledCooldown = prevTargetTemp !== undefined &&
+				step.target_temp !== undefined &&
+				step.target_temp < prevTargetTemp;
+
+			if (isControlledCooldown) {
+				return `Cool to ${step.target_temp}${unit} at ${step.desired_rate}${rateUnit}`;
+			}
 			return `Ramp to ${step.target_temp}${unit} at ${step.desired_rate}${rateUnit}`;
+		}
 		case "hold":
 			if (step.duration) {
 				const hours = Math.floor(step.duration / 3600);
@@ -83,7 +92,10 @@ function formatStepDetails(step: ProfileStep, tempUnit: string): string {
 }
 
 // Step icon component
-function StepIcon({ type }: { type: ProfileStep["type"] }) {
+function StepIcon({ type, isControlledCooldown }: { type: ProfileStep["type"]; isControlledCooldown?: boolean }) {
+	if (type === "ramp" && isControlledCooldown) {
+		return <Snowflake className="w-4 h-4 text-blue-500" />;
+	}
 	switch (type) {
 		case "ramp":
 			return <ArrowUp className="w-4 h-4 text-orange-500" />;
@@ -108,20 +120,29 @@ function ProfileDetails({ profile }: { profile: Profile }) {
 			<div className="space-y-2">
 				<div className="text-sm font-medium">Steps ({profile.steps.length})</div>
 				<div className="space-y-1">
-					{profile.steps.map((step, index) => (
-						<div
-							key={index}
-							className="flex items-center gap-2 text-sm p-2 rounded bg-muted/50"
-						>
-							<Badge variant="outline" className="w-6 h-6 p-0 justify-center">
-								{index + 1}
-							</Badge>
-							<StepIcon type={step.type} />
-							<span className="flex-1">
-								{formatStepDetails(step, profile.temp_units)}
-							</span>
-						</div>
-					))}
+					{profile.steps.map((step, index) => {
+						const prevStep = index > 0 ? profile.steps[index - 1] : undefined;
+						const prevTargetTemp = prevStep?.target_temp;
+						const isControlledCooldown = step.type === "ramp" &&
+							prevTargetTemp !== undefined &&
+							step.target_temp !== undefined &&
+							step.target_temp < prevTargetTemp;
+
+						return (
+							<div
+								key={index}
+								className="flex items-center gap-2 text-sm p-2 rounded bg-muted/50"
+							>
+								<Badge variant="outline" className="w-6 h-6 p-0 justify-center">
+									{index + 1}
+								</Badge>
+								<StepIcon type={step.type} isControlledCooldown={isControlledCooldown} />
+								<span className="flex-1">
+									{formatStepDetails(step, profile.temp_units, prevTargetTemp)}
+								</span>
+							</div>
+						);
+					})}
 				</div>
 			</div>
 		</div>
