@@ -5,9 +5,13 @@ import time
 from micropython import const
 
 # Module-level constants for sensor fault detection and temperature ranges
-MAX_CONSECUTIVE_FAULTS = const(10)  # Emergency shutdown after this many consecutive faults
-TEMP_MIN_RANGE = const(-50)         # Minimum reasonable temperature in °C
-TEMP_MAX_RANGE = const(1500)        # Maximum reasonable temperature in °C
+MAX_CONSECUTIVE_FAULTS = const(20)      # Emergency shutdown after this many consecutive faults
+COLD_START_FAULT_LIMIT = const(40)      # Higher tolerance during cold start (S-type noise at low mV)
+COLD_START_TEMP_THRESHOLD = const(100)  # Below this, use COLD_START_FAULT_LIMIT instead
+TEMP_MIN_RANGE = const(-50)             # Minimum reasonable temperature in °C
+TEMP_MAX_RANGE = const(1500)            # Maximum reasonable temperature in °C
+EMA_ALPHA = 0.3                         # Temp smoothing factor (0=max smooth, 1=none). 90% response in ~7s
+MIN_SSR_OUTPUT = 5.0                    # Floor when PID > 0% (5% × 20s cycle = 1s minimum relay pulse)
 
 class TemperatureSensor:
     """
@@ -42,6 +46,8 @@ class TemperatureSensor:
             self.last_good_temp = None  # No fake default - require first valid read
             self.initialized = False  # Track if we've ever had a valid reading
             self.fault_count = 0
+            self.ema_temp = None       # EMA-filtered temperature (None until first reading)
+            self.max_recorded_temp = 0.0  # Highest temp seen since boot (for cold-start detection)
 
             # Perform initial conversion to clear power-up faults
             # The chip needs ~160ms to complete first conversion
@@ -68,67 +74,73 @@ class TemperatureSensor:
     @micropython.native
     def read(self):
         """
-        Read temperature with fault checking
+        Read temperature with EMA smoothing and fault checking
 
         Returns:
-            Temperature in Celsius
+            Temperature in Celsius (EMA-filtered)
 
         Raises:
             Exception if persistent sensor fault detected or sensor not initialized
         """
         try:
-            # Read temperature
             temp = self.sensor.temperature
 
             if temp is None:
                 raise Exception("Sensor returned None")
 
-            # Check for faults
             faults = self.sensor.fault
             if any(faults.values()):
                 fault_list = [k for k, v in faults.items() if v]
                 raise Exception(f"Thermocouple faults: {', '.join(fault_list)}")
 
-            # Sanity check: temperature should be in reasonable range
             if temp < TEMP_MIN_RANGE or temp > TEMP_MAX_RANGE:
                 raise Exception(f"Temperature {temp}°C out of reasonable range")
 
-            # Apply calibration offset
             temp += self.offset
 
-            # First successful read - mark as initialized
+            # EMA smoothing — tames S-type thermocouple noise at low temps
+            # while adding negligible lag (~0.1°C at 100°C/h ramp rates)
+            if self.ema_temp is None:
+                self.ema_temp = temp
+            else:
+                self.ema_temp = EMA_ALPHA * temp + (1.0 - EMA_ALPHA) * self.ema_temp
+
+            if self.ema_temp > self.max_recorded_temp:
+                self.max_recorded_temp = self.ema_temp
+
             if not self.initialized:
-                print(f"✅ Temperature sensor initialized: {temp:.1f}°C")
+                print(f"Temperature sensor initialized: {self.ema_temp:.1f}°C")
                 self.initialized = True
 
-            # Success - reset fault counter immediately
             if self.fault_count > 0:
                 print(f"Temperature sensor recovered (after {self.fault_count} faults)")
                 self.fault_count = 0
 
-            self.last_good_temp = temp
-            return temp
+            self.last_good_temp = self.ema_temp
+            return self.ema_temp
 
         except Exception as e:
             self.fault_count += 1
 
-            # SAFETY: If never initialized, don't allow heating - fail immediately
             if not self.initialized:
                 error_msg = f"Temperature sensor failed to initialize: {e}"
                 print(error_msg)
                 raise Exception(error_msg)
 
-            # Log error
-            print(f"Temperature read error ({self.fault_count}/{MAX_CONSECUTIVE_FAULTS}): {e}")
+            # Use higher fault tolerance during cold start (S-type thermocouple has
+            # very low output voltage below 100°C, making it prone to noise/faults)
+            if self.max_recorded_temp < COLD_START_TEMP_THRESHOLD:
+                fault_limit = COLD_START_FAULT_LIMIT
+            else:
+                fault_limit = MAX_CONSECUTIVE_FAULTS
 
-            # Check if we've hit the consecutive fault limit
-            if self.fault_count >= MAX_CONSECUTIVE_FAULTS:
-                # Emergency shutdown - sensor is genuinely failing
-                error_msg = f"EMERGENCY SHUTDOWN: {MAX_CONSECUTIVE_FAULTS} consecutive sensor failures: {e}"
+            print(f"Temperature read error ({self.fault_count}/{fault_limit}): {e}")
+
+            if self.fault_count >= fault_limit:
+                error_msg = f"EMERGENCY SHUTDOWN: {self.fault_count} consecutive sensor failures: {e}"
                 print(error_msg)
                 raise Exception(error_msg)
             else:
-                # Transient fault - return last good value and continue
                 print(f"Using last good temperature: {self.last_good_temp:.1f}°C")
                 return self.last_good_temp
 
@@ -196,9 +208,13 @@ class SSRController:
         Set SSR output percentage
 
         Args:
-            percent: Output percentage (0-100)
+            percent: Output percentage (0-100). Values > 0 are floored to MIN_SSR_OUTPUT
+                     to ensure minimum relay on-time.
         """
-        self.duty_cycle = max(0.0, min(100.0, percent))
+        if percent > 0:
+            self.duty_cycle = max(MIN_SSR_OUTPUT, min(100.0, percent))
+        else:
+            self.duty_cycle = 0.0
 
     # Performance optimization: CRITICAL - Called 10 times per second for time-proportional control
     @micropython.native
