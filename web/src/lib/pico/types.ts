@@ -1,6 +1,6 @@
 // Type definitions for the Pico Kiln API
 
-export type KilnState = "IDLE" | "RUNNING" | "TUNING" | "ERROR";
+export type KilnState = "IDLE" | "RUNNING" | "TUNING" | "COMPLETE" | "ERROR";
 export type TempUnits = "c" | "f";
 export type TuningMode = "SAFE" | "STANDARD" | "THOROUGH" | "HIGH_TEMP";
 export type ProfileStepType = "ramp" | "hold" | "cooling";

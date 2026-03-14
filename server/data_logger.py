@@ -343,6 +343,11 @@ class DataLogger:
 
         # Stop logging when leaving RUNNING or TUNING state
         if self.previous_state in ['RUNNING', 'TUNING'] and current_state not in ['RUNNING', 'TUNING']:
+            # Write one final entry with the terminal state (COMPLETE/IDLE/ERROR)
+            # This prevents recovery from treating a completed run as interrupted
+            if self.is_logging:
+                self.last_log_time = 0  # Force write regardless of interval
+                self.log_status(status)
             self.stop_logging()
 
         self.previous_state = current_state

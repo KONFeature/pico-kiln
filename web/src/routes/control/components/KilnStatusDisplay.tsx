@@ -209,6 +209,10 @@ export function KilnStatusDisplay({
 				);
 			case "ERROR":
 				return <Badge variant="destructive">Error</Badge>;
+			case "COMPLETE":
+				return (
+					<Badge className="bg-green-600 hover:bg-green-700">Complete</Badge>
+				);
 			default:
 				return <Badge variant="outline">{state}</Badge>;
 		}

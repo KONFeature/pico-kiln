@@ -66,6 +66,7 @@ export function useKilnStatus(
 				case "TUNING":
 					return 2000; // 2s - tuning is more critical
 				case "IDLE":
+				case "COMPLETE":
 					return 30000; // 30s - nothing happening
 				case "ERROR":
 					return 15000; // 15s - check for recovery
