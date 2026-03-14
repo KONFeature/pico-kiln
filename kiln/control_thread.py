@@ -545,21 +545,12 @@ class ControlThread:
                 self.handle_command(command)
 
             # 1.5. Auto-transition COMPLETE → IDLE
-            # After a profile finishes, send one COMPLETE status then return to IDLE
-            # so the scheduler and new runs can proceed
             if self.controller.state == KilnState.COMPLETE:
                 self.send_status_update()
                 self.last_status_update = time.time()
                 profile_name = self.controller.active_profile.name if self.controller.active_profile else "unknown"
                 print(f"[Control Thread] Profile '{profile_name}' complete - returning to IDLE")
-                self.controller.active_profile = None
-                self.controller.state = KilnState.IDLE
-                self.controller.start_time = None
-                self.controller.elapsed_offset = 0.0
-                self.controller.last_update_time = None
-                self.controller.current_step_index = 0
-                self.controller.step_start_time = 0
-                self.controller.current_rate = 0
+                self.controller._reset_to_idle()
 
             # 1.6. Check for scheduled profile (IDLE or COMPLETE as safety net)
             if self.controller.state == KilnState.IDLE or self.controller.state == KilnState.COMPLETE:

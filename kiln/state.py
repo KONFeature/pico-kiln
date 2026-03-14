@@ -302,7 +302,15 @@ class KilnController:
         Sets target to 0 but does NOT turn off SSR (main loop handles that)
         """
         print(f"Stop requested (was in {self.state} state)")
+        self._reset_to_idle()
 
+    def _reset_to_idle(self):
+        """
+        Full reset of all runtime state back to IDLE.
+        
+        Used by stop(), clear_error(), and auto-transition from COMPLETE.
+        Does NOT print any messages — callers handle their own logging.
+        """
         self.state = KilnState.IDLE
         self.active_profile = None
         self.target_temp = 0
@@ -314,7 +322,22 @@ class KilnController:
         # Reset step state
         self.current_step_index = 0
         self.step_start_time = 0
+        self.step_start_temp = 0.0
         self.current_rate = 0
+
+        # Reset recovery mode
+        self.recovery_target_temp = None
+        self.recovery_start_time = None
+
+        # Reset adaptation tracking
+        self.temp_history.clear()
+        self.last_adaptation_check = 0
+        self.last_temp_recording = 0
+        self.last_adaptation_time = 0
+        self.adaptation_count = 0
+
+        # Reset PID flag
+        self.pid_reset_requested = False
 
     def set_error(self, message):
         """Set error state with message"""
@@ -336,24 +359,7 @@ class KilnController:
             return False
         
         print("[KilnController] Clearing error state and returning to idle")
-        
-        self.state = KilnState.IDLE
-        self.active_profile = None
-        self.target_temp = 0
-        self.start_time = None
-        self.elapsed_offset = 0.0
-        self.last_update_time = None
-        self.error_message = None
-        
-        # Reset step state
-        self.current_step_index = 0
-        self.step_start_time = 0
-        self.current_rate = 0
-        
-        # Reset recovery mode
-        self.recovery_target_temp = None
-        self.recovery_start_time = None
-        
+        self._reset_to_idle()
         return True
 
     def get_elapsed_time(self):
