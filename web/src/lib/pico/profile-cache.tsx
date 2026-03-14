@@ -43,7 +43,10 @@ export function ProfileCacheProvider({ children }: ProfileCacheProviderProps) {
 		new Map(),
 	);
 	const [isPreloading, setIsPreloading] = useState(false);
-	const [preloadProgress, setPreloadProgress] = useState({ loaded: 0, total: 0 });
+	const [preloadProgress, setPreloadProgress] = useState({
+		loaded: 0,
+		total: 0,
+	});
 
 	// Track which profiles we've already attempted to load
 	const loadedNamesRef = useRef<Set<string>>(new Set());
@@ -102,7 +105,10 @@ export function ProfileCacheProvider({ children }: ProfileCacheProviderProps) {
 							);
 						} else {
 							loadedNamesRef.current.add(profileName);
-							setPreloadProgress({ loaded: i + 1, total: unloadedProfiles.length });
+							setPreloadProgress({
+								loaded: i + 1,
+								total: unloadedProfiles.length,
+							});
 							continue;
 						}
 					}

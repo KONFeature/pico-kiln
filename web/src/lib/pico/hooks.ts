@@ -153,19 +153,17 @@ export function useClearError() {
 	const { client } = usePico();
 	const queryClient = useQueryClient();
 
-	return useMutation<{ success: boolean; message: string }, PicoAPIError, void>(
-		{
-			mutationFn: async () => {
-				if (!client) {
-					throw new PicoAPIError("Pico client not initialized");
-				}
-				return await client.clearError();
-			},
-			onSuccess: () => {
-				queryClient.invalidateQueries({ queryKey: picoKeys.status });
-			},
+	return useMutation({
+		mutationFn: async () => {
+			if (!client) {
+				throw new PicoAPIError("Pico client not initialized");
+			}
+			return await client.clearError();
 		},
-	);
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: picoKeys.status });
+		},
+	});
 }
 
 /**

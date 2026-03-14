@@ -409,169 +409,177 @@ export function ProfileEditor() {
 								}`}
 							>
 								<div className="flex items-start gap-4">
-								<div className="flex flex-col gap-1">
-									<Button
-										variant="ghost"
-										size="sm"
-										onClick={() => moveStepUp(index)}
-										disabled={index === 0}
-										className="h-8 w-8 p-0"
-									>
-										↑
-									</Button>
-									<Button
-										variant="ghost"
-										size="sm"
-										onClick={() => moveStepDown(index)}
-										disabled={index === profile.steps.length - 1}
-										className="h-8 w-8 p-0"
-									>
-										↓
-									</Button>
-								</div>
-
-								<div className="flex-1 space-y-3">
-									<div className="flex items-center gap-4">
-										<div className="font-semibold">Step {index + 1}</div>
-										<Select
-											value={step.type}
-											onValueChange={(value) =>
-												updateStep(index, { type: value as ProfileStepType })
-											}
+									<div className="flex flex-col gap-1">
+										<Button
+											variant="ghost"
+											size="sm"
+											onClick={() => moveStepUp(index)}
+											disabled={index === 0}
+											className="h-8 w-8 p-0"
 										>
-											<SelectTrigger className="w-40">
-												<SelectValue />
-											</SelectTrigger>
-											<SelectContent>
-												<SelectItem value="ramp">Ramp</SelectItem>
-												<SelectItem value="hold">Hold</SelectItem>
-												<SelectItem value="cooling">Cooling</SelectItem>
-											</SelectContent>
-										</Select>
+											↑
+										</Button>
+										<Button
+											variant="ghost"
+											size="sm"
+											onClick={() => moveStepDown(index)}
+											disabled={index === profile.steps.length - 1}
+											className="h-8 w-8 p-0"
+										>
+											↓
+										</Button>
 									</div>
 
-									<div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-										{step.type !== "cooling" && (
-											<div>
-												<Label>
-													Target Temp (°{profile.temp_units.toUpperCase()})
-												</Label>
-												<Input
-													type="number"
-													value={step.target_temp ?? ""}
-													onChange={(e) => {
-														const value = e.target.value;
-														updateStep(index, {
-															target_temp:
-																value === "" ? undefined : parseFloat(value),
-														});
-													}}
-													placeholder="0"
-												/>
-											</div>
-										)}
+									<div className="flex-1 space-y-3">
+										<div className="flex items-center gap-4">
+											<div className="font-semibold">Step {index + 1}</div>
+											<Select
+												value={step.type}
+												onValueChange={(value) =>
+													updateStep(index, { type: value as ProfileStepType })
+												}
+											>
+												<SelectTrigger className="w-40">
+													<SelectValue />
+												</SelectTrigger>
+												<SelectContent>
+													<SelectItem value="ramp">Ramp</SelectItem>
+													<SelectItem value="hold">Hold</SelectItem>
+													<SelectItem value="cooling">Cooling</SelectItem>
+												</SelectContent>
+											</Select>
+										</div>
 
-										{step.type === "cooling" && (
-											<div>
-												<Label>
-													Target Temp (°{profile.temp_units.toUpperCase()}) -
-													Optional
-												</Label>
-												<Input
-													type="number"
-													value={step.target_temp ?? ""}
-													onChange={(e) => {
-														const value = e.target.value;
-														updateStep(index, {
-															target_temp:
-																value === ""
-																	? undefined
-																	: parseFloat(value) || undefined,
-														});
-													}}
-													placeholder="Leave empty for natural cooling"
-												/>
-												<p className="text-xs text-muted-foreground mt-1">
-													If empty, cooling continues until manually stopped
-												</p>
-											</div>
-										)}
-
-										{step.type === "ramp" && (
-											<>
+										<div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+											{step.type !== "cooling" && (
 												<div>
-													<Label>Desired Rate (°C/h)</Label>
+													<Label>
+														Target Temp (°{profile.temp_units.toUpperCase()})
+													</Label>
 													<Input
 														type="number"
-														value={step.desired_rate ?? ""}
+														value={step.target_temp ?? ""}
 														onChange={(e) => {
 															const value = e.target.value;
 															updateStep(index, {
-																desired_rate:
+																target_temp:
 																	value === "" ? undefined : parseFloat(value),
 															});
 														}}
-														placeholder="100"
+														placeholder="0"
 													/>
 												</div>
+											)}
+
+											{step.type === "cooling" && (
 												<div>
-													<Label>Min Rate (°C/h)</Label>
+													<Label>
+														Target Temp (°{profile.temp_units.toUpperCase()}) -
+														Optional
+													</Label>
 													<Input
 														type="number"
-														value={step.min_rate ?? ""}
+														value={step.target_temp ?? ""}
 														onChange={(e) => {
 															const value = e.target.value;
 															updateStep(index, {
-																min_rate:
-																	value === "" ? undefined : parseFloat(value),
+																target_temp:
+																	value === ""
+																		? undefined
+																		: parseFloat(value) || undefined,
 															});
 														}}
-														placeholder="Optional"
+														placeholder="Leave empty for natural cooling"
+													/>
+													<p className="text-xs text-muted-foreground mt-1">
+														If empty, cooling continues until manually stopped
+													</p>
+												</div>
+											)}
+
+											{step.type === "ramp" && (
+												<>
+													<div>
+														<Label>Desired Rate (°C/h)</Label>
+														<Input
+															type="number"
+															value={step.desired_rate ?? ""}
+															onChange={(e) => {
+																const value = e.target.value;
+																updateStep(index, {
+																	desired_rate:
+																		value === ""
+																			? undefined
+																			: parseFloat(value),
+																});
+															}}
+															placeholder="100"
+														/>
+													</div>
+													<div>
+														<Label>Min Rate (°C/h)</Label>
+														<Input
+															type="number"
+															value={step.min_rate ?? ""}
+															onChange={(e) => {
+																const value = e.target.value;
+																updateStep(index, {
+																	min_rate:
+																		value === ""
+																			? undefined
+																			: parseFloat(value),
+																});
+															}}
+															placeholder="Optional"
+														/>
+													</div>
+												</>
+											)}
+
+											{step.type === "hold" && (
+												<div>
+													<Label>Duration (minutes)</Label>
+													<Input
+														type="number"
+														value={
+															step.duration
+																? (step.duration / 60).toFixed(0)
+																: ""
+														}
+														onChange={(e) => {
+															const value = e.target.value;
+															updateStep(index, {
+																duration:
+																	value === ""
+																		? undefined
+																		: parseFloat(value) * 60,
+															});
+														}}
+														placeholder="0"
 													/>
 												</div>
-											</>
-										)}
+											)}
+										</div>
 
-										{step.type === "hold" && (
-											<div>
-												<Label>Duration (minutes)</Label>
-												<Input
-													type="number"
-													value={
-														step.duration ? (step.duration / 60).toFixed(0) : ""
-													}
-													onChange={(e) => {
-														const value = e.target.value;
-														updateStep(index, {
-															duration:
-																value === "" ? undefined : parseFloat(value) * 60,
-														});
-													}}
-													placeholder="0"
-												/>
-											</div>
+										{error && (
+											<Alert variant="destructive" className="mt-3">
+												<AlertCircle className="h-4 w-4" />
+												<AlertDescription>{error}</AlertDescription>
+											</Alert>
 										)}
 									</div>
 
-									{error && (
-										<Alert variant="destructive" className="mt-3">
-											<AlertCircle className="h-4 w-4" />
-											<AlertDescription>{error}</AlertDescription>
-										</Alert>
-									)}
+									<Button
+										variant="ghost"
+										size="sm"
+										onClick={() => removeStep(index)}
+										disabled={profile.steps.length <= 1}
+										className="h-8 w-8 p-0"
+									>
+										<Trash2 className="w-4 h-4 text-destructive" />
+									</Button>
 								</div>
-
-								<Button
-									variant="ghost"
-									size="sm"
-									onClick={() => removeStep(index)}
-									disabled={profile.steps.length <= 1}
-									className="h-8 w-8 p-0"
-								>
-									<Trash2 className="w-4 h-4 text-destructive" />
-								</Button>
 							</div>
-						</div>
 						);
 					})}
 				</div>
@@ -690,15 +698,14 @@ export function ProfileEditor() {
 										</AlertDescription>
 									</Alert>
 								)}
-								{uploadMutation.isSuccess &&
-									!uploadMutation.data?.success && (
-										<Alert variant="destructive">
-											<AlertCircle className="h-4 w-4" />
-											<AlertDescription>
-												{uploadMutation.data?.error || "Upload failed"}
-											</AlertDescription>
-										</Alert>
-									)}
+								{uploadMutation.isSuccess && !uploadMutation.data?.success && (
+									<Alert variant="destructive">
+										<AlertCircle className="h-4 w-4" />
+										<AlertDescription>
+											{uploadMutation.data?.error || "Upload failed"}
+										</AlertDescription>
+									</Alert>
+								)}
 							</>
 						)}
 					</div>

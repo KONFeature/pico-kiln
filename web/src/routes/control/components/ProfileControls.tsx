@@ -51,14 +51,19 @@ interface ProfileControlsProps {
 }
 
 // Helper function to format step details
-function formatStepDetails(step: ProfileStep, tempUnit: string, prevTargetTemp?: number): string {
+function formatStepDetails(
+	step: ProfileStep,
+	tempUnit: string,
+	prevTargetTemp?: number,
+): string {
 	const unit = tempUnit === "f" ? "°F" : "°C";
 	const rateUnit = tempUnit === "f" ? "°F/h" : "°C/h";
 
 	switch (step.type) {
 		case "ramp": {
 			// Check if this is actually a controlled cooldown (ramping to lower temp)
-			const isControlledCooldown = prevTargetTemp !== undefined &&
+			const isControlledCooldown =
+				prevTargetTemp !== undefined &&
 				step.target_temp !== undefined &&
 				step.target_temp < prevTargetTemp;
 
@@ -92,7 +97,13 @@ function formatStepDetails(step: ProfileStep, tempUnit: string, prevTargetTemp?:
 }
 
 // Step icon component
-function StepIcon({ type, isControlledCooldown }: { type: ProfileStep["type"]; isControlledCooldown?: boolean }) {
+function StepIcon({
+	type,
+	isControlledCooldown,
+}: {
+	type: ProfileStep["type"];
+	isControlledCooldown?: boolean;
+}) {
 	if (type === "ramp" && isControlledCooldown) {
 		return <Snowflake className="w-4 h-4 text-blue-500" />;
 	}
@@ -118,12 +129,15 @@ function ProfileDetails({ profile }: { profile: Profile }) {
 				</div>
 			)}
 			<div className="space-y-2">
-				<div className="text-sm font-medium">Steps ({profile.steps.length})</div>
+				<div className="text-sm font-medium">
+					Steps ({profile.steps.length})
+				</div>
 				<div className="space-y-1">
 					{profile.steps.map((step, index) => {
 						const prevStep = index > 0 ? profile.steps[index - 1] : undefined;
 						const prevTargetTemp = prevStep?.target_temp;
-						const isControlledCooldown = step.type === "ramp" &&
+						const isControlledCooldown =
+							step.type === "ramp" &&
 							prevTargetTemp !== undefined &&
 							step.target_temp !== undefined &&
 							step.target_temp < prevTargetTemp;
@@ -136,7 +150,10 @@ function ProfileDetails({ profile }: { profile: Profile }) {
 								<Badge variant="outline" className="w-6 h-6 p-0 justify-center">
 									{index + 1}
 								</Badge>
-								<StepIcon type={step.type} isControlledCooldown={isControlledCooldown} />
+								<StepIcon
+									type={step.type}
+									isControlledCooldown={isControlledCooldown}
+								/>
 								<span className="flex-1">
 									{formatStepDetails(step, profile.temp_units, prevTargetTemp)}
 								</span>

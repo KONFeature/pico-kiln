@@ -29,7 +29,13 @@ interface KilnStatusDisplayProps {
 }
 
 // Step icon component
-function StepIcon({ type, isControlledCooldown }: { type: ProfileStep["type"]; isControlledCooldown?: boolean }) {
+function StepIcon({
+	type,
+	isControlledCooldown,
+}: {
+	type: ProfileStep["type"];
+	isControlledCooldown?: boolean;
+}) {
 	if (type === "ramp" && isControlledCooldown) {
 		return <Snowflake className="w-4 h-4 text-blue-500" />;
 	}
@@ -46,14 +52,19 @@ function StepIcon({ type, isControlledCooldown }: { type: ProfileStep["type"]; i
 }
 
 // Format step details for display
-function formatStepInfo(step: ProfileStep, tempUnit: string, prevTargetTemp?: number): string {
+function formatStepInfo(
+	step: ProfileStep,
+	tempUnit: string,
+	prevTargetTemp?: number,
+): string {
 	const unit = tempUnit === "f" ? "°F" : "°C";
 	const rateUnit = tempUnit === "f" ? "°F/h" : "°C/h";
 
 	switch (step.type) {
 		case "ramp": {
 			// Check if this is actually a controlled cooldown (ramping to lower temp)
-			const isControlledCooldown = prevTargetTemp !== undefined &&
+			const isControlledCooldown =
+				prevTargetTemp !== undefined &&
 				step.target_temp !== undefined &&
 				step.target_temp < prevTargetTemp;
 
@@ -92,7 +103,12 @@ export function KilnStatusDisplay({
 	error,
 	onRefresh,
 }: KilnStatusDisplayProps) {
-	const { mutate: clearError, isPending: isClearingPending, isError: isClearingError, error: clearingError } = useClearError();
+	const {
+		mutate: clearError,
+		isPending: isClearingPending,
+		isError: isClearingError,
+		error: clearingError,
+	} = useClearError();
 	const { getProfile } = useProfileCache();
 
 	// Get the running profile data from cache if available
@@ -309,30 +325,30 @@ export function KilnStatusDisplay({
 
 						{(status.actual_rate !== undefined ||
 							status.current_rate !== undefined) && (
-								<div className="space-y-2">
-									<div className="flex items-center gap-2">
-										<TrendingUp className="w-5 h-5 text-muted-foreground" />
-										<span className="text-sm font-medium">Heating Rate</span>
+							<div className="space-y-2">
+								<div className="flex items-center gap-2">
+									<TrendingUp className="w-5 h-5 text-muted-foreground" />
+									<span className="text-sm font-medium">Heating Rate</span>
+								</div>
+								{status.actual_rate !== undefined && (
+									<div className="text-sm">
+										Actual: <strong>{status.actual_rate.toFixed(1)}°C/h</strong>
 									</div>
-									{status.actual_rate !== undefined && (
-										<div className="text-sm">
-											Actual: <strong>{status.actual_rate.toFixed(1)}°C/h</strong>
+								)}
+								{status.current_rate !== undefined &&
+									status.state === "RUNNING" && (
+										<div className="text-sm text-muted-foreground">
+											Target: {status.current_rate.toFixed(1)}°C/h
 										</div>
 									)}
-									{status.current_rate !== undefined &&
-										status.state === "RUNNING" && (
-											<div className="text-sm text-muted-foreground">
-												Target: {status.current_rate.toFixed(1)}°C/h
-											</div>
-										)}
-									{status.adaptation_count !== undefined &&
-										status.state === "RUNNING" && (
-											<div className="text-xs text-muted-foreground">
-												Adaptations: {status.adaptation_count}
-											</div>
-										)}
-								</div>
-							)}
+								{status.adaptation_count !== undefined &&
+									status.state === "RUNNING" && (
+										<div className="text-xs text-muted-foreground">
+											Adaptations: {status.adaptation_count}
+										</div>
+									)}
+							</div>
+						)}
 					</div>
 
 					{/* Recovery Mode Warning */}
@@ -358,9 +374,7 @@ export function KilnStatusDisplay({
 										<span>{status.error_message ?? "Error mode"}</span>
 										<Button
 											onClick={() => clearError()}
-											disabled={
-												isClearingPending || status.state !== "ERROR"
-											}
+											disabled={isClearingPending || status.state !== "ERROR"}
 											variant="outline"
 											size="sm"
 											className="self-end"
@@ -422,11 +436,18 @@ export function KilnStatusDisplay({
 							<div className="p-3 rounded-lg bg-muted/50 space-y-2">
 								<div className="flex items-center gap-2">
 									{currentStep && (
-										<StepIcon type={currentStep.type} isControlledCooldown={currentStepIsControlledCooldown} />
+										<StepIcon
+											type={currentStep.type}
+											isControlledCooldown={currentStepIsControlledCooldown}
+										/>
 									)}
 									<span className="text-sm font-medium flex-1">
 										{currentStep && runningProfile
-											? formatStepInfo(currentStep, runningProfile.temp_units, prevStep?.target_temp)
+											? formatStepInfo(
+													currentStep,
+													runningProfile.temp_units,
+													prevStep?.target_temp,
+												)
 											: `Current Step: ${status.step_name}`}
 									</span>
 								</div>
@@ -464,9 +485,11 @@ export function KilnStatusDisplay({
 										const isCompleted =
 											status.step_index !== undefined &&
 											index < status.step_index;
-										const stepPrev = index > 0 ? runningProfile.steps[index - 1] : undefined;
+										const stepPrev =
+											index > 0 ? runningProfile.steps[index - 1] : undefined;
 										const stepPrevTargetTemp = stepPrev?.target_temp;
-										const stepIsControlledCooldown = step.type === "ramp" &&
+										const stepIsControlledCooldown =
+											step.type === "ramp" &&
 											stepPrevTargetTemp !== undefined &&
 											step.target_temp !== undefined &&
 											step.target_temp < stepPrevTargetTemp;
@@ -488,9 +511,16 @@ export function KilnStatusDisplay({
 												>
 													{index + 1}
 												</Badge>
-												<StepIcon type={step.type} isControlledCooldown={stepIsControlledCooldown} />
+												<StepIcon
+													type={step.type}
+													isControlledCooldown={stepIsControlledCooldown}
+												/>
 												<span className="flex-1 truncate">
-													{formatStepInfo(step, runningProfile.temp_units, stepPrevTargetTemp)}
+													{formatStepInfo(
+														step,
+														runningProfile.temp_units,
+														stepPrevTargetTemp,
+													)}
 												</span>
 												{isCurrent && (
 													<Badge variant="secondary" className="text-xs">
