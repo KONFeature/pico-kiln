@@ -1,5 +1,5 @@
 import { AlertCircle } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
 	Area,
 	AreaChart,
@@ -137,7 +137,7 @@ export function TuningPhasesVisualizer() {
 	const [logData, setLogData] = useState<LogDataPoint[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
-	const handleFileSelected = (content: string, filename: string) => {
+	const handleFileSelected = useCallback((content: string) => {
 		try {
 			const { data } = parseLogCSV(content);
 
@@ -157,7 +157,7 @@ export function TuningPhasesVisualizer() {
 			setError(err instanceof Error ? err.message : "Failed to parse log file");
 			setLogData(null);
 		}
-	};
+	}, []);
 
 	const phases = useMemo<Phase[]>(() => {
 		if (!logData) return [];

@@ -25,7 +25,7 @@ const ToolboxIndexRoute = ToolboxIndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/toolbox': typeof ToolboxIndexRoute
+  '/toolbox/': typeof ToolboxIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -38,7 +38,7 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/toolbox'
+  fullPaths: '/' | '/toolbox/'
   fileRoutesByTo: FileRoutesByTo
   to: '/' | '/toolbox'
   id: '__root__' | '/' | '/toolbox/'
@@ -61,7 +61,7 @@ declare module '@tanstack/react-router' {
     '/toolbox/': {
       id: '/toolbox/'
       path: '/toolbox'
-      fullPath: '/toolbox'
+      fullPath: '/toolbox/'
       preLoaderRoute: typeof ToolboxIndexRouteImport
       parentRoute: typeof rootRouteImport
     }

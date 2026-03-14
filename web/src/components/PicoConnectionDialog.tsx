@@ -37,7 +37,7 @@ export function PicoConnectionDialog({
 			setInputURL(picoURL || "http://");
 			testConnection.reset();
 		}
-	}, [open, picoURL]);
+	}, [open, picoURL, testConnection.reset]);
 
 	const handleSave = () => {
 		const trimmedURL = inputURL.trim();

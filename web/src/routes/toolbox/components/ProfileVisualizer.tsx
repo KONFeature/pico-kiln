@@ -1,11 +1,10 @@
 import { AlertCircle } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
 	CartesianGrid,
 	Legend,
 	Line,
 	LineChart,
-	ReferenceArea,
 	ResponsiveContainer,
 	Tooltip,
 	XAxis,
@@ -31,7 +30,7 @@ export function ProfileVisualizer() {
 	const [profile, setProfile] = useState<Profile | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
-	const handleFileSelected = (content: string, filename: string) => {
+	const handleFileSelected = useCallback((content: string) => {
 		try {
 			const parsed = JSON.parse(content) as Profile;
 
@@ -46,7 +45,7 @@ export function ProfileVisualizer() {
 			setError(err instanceof Error ? err.message : "Failed to parse profile");
 			setProfile(null);
 		}
-	};
+	}, []);
 
 	const segments = useMemo(() => {
 		if (!profile) return [];

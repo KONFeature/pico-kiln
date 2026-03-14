@@ -39,7 +39,7 @@ export function Visualizer() {
 		useState<VisualizerType>("profile");
 
 	const currentInfo = VISUALIZER_INFO[visualizerType];
-	const Icon = currentInfo.icon;
+	const _Icon = currentInfo.icon;
 
 	return (
 		<div className="space-y-6">

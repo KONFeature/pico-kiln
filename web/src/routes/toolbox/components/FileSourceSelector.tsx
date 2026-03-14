@@ -50,7 +50,7 @@ export function FileSourceSelector({
 		error: filesError,
 	} = useQuery({
 		queryKey: ["files", directory],
-		queryFn: () => client!.listFiles(directory),
+		queryFn: () => client?.listFiles(directory),
 		enabled: sourceMode === "pico" && client !== null,
 		retry: 1,
 	});
@@ -58,7 +58,7 @@ export function FileSourceSelector({
 	// Query to get file content from Pico
 	const { data: fileContent, isFetching: isFetchingContent } = useQuery({
 		queryKey: ["file-content", directory, selectedFile],
-		queryFn: () => client!.getFile(directory, selectedFile),
+		queryFn: () => client?.getFile(directory, selectedFile),
 		enabled: sourceMode === "pico" && selectedFile !== "" && client !== null,
 		retry: 1,
 	});

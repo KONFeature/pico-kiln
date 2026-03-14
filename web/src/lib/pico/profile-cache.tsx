@@ -1,16 +1,16 @@
 // Profile cache context for preloading and caching profile data
 // Ensures profiles are loaded sequentially to avoid overloading the Pico
 
-import React, {
+import { useQueryClient } from "@tanstack/react-query";
+import {
 	createContext,
+	type ReactNode,
 	useCallback,
 	useContext,
 	useEffect,
 	useRef,
 	useState,
-	type ReactNode,
 } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { usePico } from "./context";
 import { picoKeys, useListFiles } from "./hooks";
 import type { Profile } from "./types";

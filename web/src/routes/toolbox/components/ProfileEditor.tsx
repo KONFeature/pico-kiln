@@ -46,11 +46,7 @@ import type {
 	ProfileStepType,
 	TempUnits,
 } from "@/lib/pico/types";
-import {
-	calculateTrajectory,
-	type Segment,
-	type TrajectoryPoint,
-} from "@/lib/profile-utils";
+import { calculateTrajectory, type TrajectoryPoint } from "@/lib/profile-utils";
 import { readFileAsText } from "@/lib/utils";
 
 const DEFAULT_PROFILE: Profile = {
@@ -77,7 +73,7 @@ export function ProfileEditor() {
 	// Query to list profiles from Pico
 	const { data: profilesData, isLoading: isLoadingProfiles } = useQuery({
 		queryKey: ["files", "profiles"],
-		queryFn: () => client!.listFiles("profiles"),
+		queryFn: () => client?.listFiles("profiles"),
 		enabled: importMode === "pico" && isConfigured && client !== null,
 		retry: 1,
 	});
@@ -85,7 +81,7 @@ export function ProfileEditor() {
 	// Query to get profile content from Pico
 	const { data: picoProfileContent } = useQuery({
 		queryKey: ["file-content", "profiles", selectedPicoProfile],
-		queryFn: () => client!.getFile("profiles", selectedPicoProfile),
+		queryFn: () => client?.getFile("profiles", selectedPicoProfile),
 		enabled:
 			importMode === "pico" && selectedPicoProfile !== "" && client !== null,
 		retry: 1,
@@ -224,7 +220,7 @@ export function ProfileEditor() {
 			const json = await readFileAsText(file);
 			const imported = JSON.parse(json) as Profile;
 			setProfile(imported);
-		} catch (err) {
+		} catch (_err) {
 			alert("Failed to import profile: Invalid JSON");
 		}
 	};
@@ -234,7 +230,7 @@ export function ProfileEditor() {
 			try {
 				const imported = JSON.parse(picoProfileContent.content) as Profile;
 				setProfile(imported);
-			} catch (err) {
+			} catch (_err) {
 				alert("Failed to import profile: Invalid JSON");
 			}
 		}

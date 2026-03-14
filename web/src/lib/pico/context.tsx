@@ -1,6 +1,6 @@
 // Context for managing Pico connection state and API client
 
-import React, {
+import {
 	createContext,
 	type ReactNode,
 	useCallback,
