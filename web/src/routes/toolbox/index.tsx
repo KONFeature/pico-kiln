@@ -1,9 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Edit, FolderOpen, LineChart, Wrench } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { FileManager } from "./components/FileManager";
-import { ProfileEditor } from "./components/ProfileEditor";
-import { Visualizer } from "./components/Visualizer";
+import { FileManager } from "../../components/routes/toolbox/FileManager";
+import { ProfileEditor } from "../../components/routes/toolbox/ProfileEditor";
+import { Visualizer } from "../../components/routes/toolbox/Visualizer";
 
 export const Route = createFileRoute("/toolbox/")({
 	component: ToolboxPage,

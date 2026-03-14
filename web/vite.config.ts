@@ -11,7 +11,9 @@ const config = defineConfig({
   },
   plugins: [
     devtools(),
-    tanstackRouter(),
+    tanstackRouter({
+      routeFileIgnorePattern: '.*/components/.*',
+    }),
     tailwindcss(),
     viteReact(),
   ],

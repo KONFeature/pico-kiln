@@ -1,11 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Flame, Zap } from "lucide-react";
 import { RequireConnection } from "@/components/RequireConnection";
+import { KilnStatusDisplay } from "@/components/routes/control/KilnStatusDisplay";
+import { ProfileControls } from "@/components/routes/control/ProfileControls";
+import { TuningControls } from "@/components/routes/control/TuningControls";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useKilnStatus } from "@/lib/pico/hooks";
-import { KilnStatusDisplay } from "@/routes/control/components/KilnStatusDisplay";
-import { ProfileControls } from "@/routes/control/components/ProfileControls";
-import { TuningControls } from "@/routes/control/components/TuningControls";
 
 export const Route = createFileRoute("/")({
 	component: HomePage,
