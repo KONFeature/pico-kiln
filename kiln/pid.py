@@ -107,6 +107,13 @@ class PID:
         if not (saturated_high or saturated_low):
             self.integral = candidate_integral
 
+        # Safety clamp: catch edge cases like sensor noise spikes unfreezing
+        # the integral via a large negative D-term
+        if self.ki > 0:
+            integral_max = self.output_limits[1] / self.ki
+            integral_min = self.output_limits[0] / self.ki
+            self.integral = max(min(self.integral, integral_max), integral_min)
+
         i_term = self.ki * self.integral
 
         # Calculate raw output
@@ -149,7 +156,7 @@ class PID:
 
         # Reset stats
         for key in self.stats:
-            self.stats[key] = 0
+            self.stats[key] = False if key == 'integral_frozen' else 0
 
     def set_gains(self, kp=None, ki=None, kd=None):
         """Update PID gains on the fly"""
