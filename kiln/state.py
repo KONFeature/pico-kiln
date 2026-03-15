@@ -45,7 +45,7 @@ class KilnController:
         self.ssr_output = 0.0
 
         self.max_temp = config.MAX_TEMP
-        self.max_temp_error = config.MAX_TEMP_ERROR
+
 
         # Rate measurement config
         self.rate_measurement_window = getattr(config, 'RATE_MEASUREMENT_WINDOW', 600)
@@ -433,10 +433,14 @@ class KilnController:
                 self.target_temp = target
                 return target
 
-        # Check for stall condition (every check interval for ramp steps with min_rate)
+        # Check for stall condition (every check interval for ramp steps)
+        # Use explicit min_rate if specified, otherwise default to 20% of desired_rate
         min_rate = current_step.get('min_rate')
+        if current_step['type'] == 'ramp' and min_rate is None:
+            min_rate = current_step.get('desired_rate', 100) * 0.2
+
         if (current_step['type'] == 'ramp' and
-            min_rate and
+            min_rate > 0 and
             elapsed - self.last_stall_check >= self.stall_check_interval):
 
             self.last_stall_check = elapsed

@@ -109,7 +109,6 @@ SSR_STAGGER_DELAY = 0.01
 # ============================================================================
 
 MAX_TEMP = 1300          # Maximum safe temperature (°C)
-MAX_TEMP_ERROR = 50      # Max deviation from target before emergency stop (°C)
 
 # ============================================================================
 # FIRING PROFILES
