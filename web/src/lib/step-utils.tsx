@@ -86,7 +86,7 @@ export interface ETAResult {
  * Hold durations added as-is. Natural cooling steps (no rate) are skipped.
  */
 export function calculateETAs(status: KilnStatus, profile: Profile): ETAResult {
-	const { current_temp, measured_rate, step_index } = status;
+	const { current_temp, measured_rate, step_index, step_elapsed } = status;
 
 	if (step_index === undefined || !profile.steps[step_index]) {
 		return { currentStepSeconds: null, profileSeconds: null };
@@ -109,9 +109,23 @@ export function calculateETAs(status: KilnStatus, profile: Profile): ETAResult {
 		} else if (remaining <= 1) {
 			currentStepSeconds = 0;
 		}
+	} else if (
+		currentStep.type === "hold" &&
+		currentStep.duration !== undefined &&
+		step_elapsed !== undefined
+	) {
+		currentStepSeconds = Math.max(0, currentStep.duration - step_elapsed);
 	}
 
 	let profileSeconds: number = currentStepSeconds ?? 0;
+
+	if (
+		currentStep.type === "hold" &&
+		currentStep.duration !== undefined &&
+		currentStepSeconds == null
+	) {
+		profileSeconds = currentStep.duration;
+	}
 
 	for (let i = step_index + 1; i < profile.steps.length; i++) {
 		const step = profile.steps[i];

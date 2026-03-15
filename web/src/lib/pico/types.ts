@@ -59,6 +59,7 @@ export interface KilnStatus {
 	ssr_output?: number; // SSR duty cycle percentage (0-100)
 	timestamp?: number;
 	elapsed?: number; // Elapsed time in seconds
+	step_elapsed?: number; // Elapsed time within current step in seconds
 
 	// PID information
 	pid?: PIDStats;

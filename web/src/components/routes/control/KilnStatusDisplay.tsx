@@ -388,12 +388,18 @@ export function KilnStatusDisplay({
 											Target rate: {status.desired_rate.toFixed(0)}°C/h
 										</div>
 									)}
-								{etas?.currentStepSeconds != null &&
-									etas.currentStepSeconds > 0 && (
-										<div className="text-xs text-muted-foreground">
-											Step ETA: ~{formatETA(etas.currentStepSeconds)}
-										</div>
-									)}
+								<div className="flex gap-4 text-xs text-muted-foreground">
+									{status.step_elapsed !== undefined &&
+										status.step_elapsed > 0 && (
+											<span>
+												Step time: {formatDuration(status.step_elapsed)}
+											</span>
+										)}
+									{etas?.currentStepSeconds != null &&
+										etas.currentStepSeconds > 0 && (
+											<span>ETA: ~{formatETA(etas.currentStepSeconds)}</span>
+										)}
+								</div>
 							</div>
 						)}
 

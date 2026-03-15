@@ -369,6 +369,7 @@ class StatusMessage:
         'step_name': None,
         'total_steps': None,
         'desired_rate': 0,
+        'step_elapsed': 0,
         'is_recovering': False,
         'recovery_target_temp': None,
         'measured_rate': 0,
@@ -443,6 +444,7 @@ class StatusMessage:
                 # Add rate information for this step
                 # Note: cooling steps don't have desired_rate, default to 0
                 status['desired_rate'] = current_step.get('desired_rate', 0)
+                status['step_elapsed'] = round(elapsed - controller.step_start_time, 1)
             else:
                 status['step_name'] = ''
                 # desired_rate already 0 in template
