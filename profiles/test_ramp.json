@@ -1,7 +1,7 @@
 {
-  "name": "Test Adaptive Control",
+  "name": "Test Ramp",
   "temp_units": "c",
-  "description": "Short test profile for adaptive rate control validation",
+  "description": "Short test profile for rate control validation",
   "steps": [
     {
       "type": "ramp",

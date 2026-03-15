@@ -149,6 +149,6 @@ python scripts/analyze_heat_loss.py logs/run_*.csv
 
 - `ARCHITECTURE.md` - Detailed system architecture
 - `TUNING.md` - PID tuning guide
-- `ADAPTIVE_CONTROL.md` - Adaptive control system documentation
+- `RATE_CONTROL.md` - Rolling rate control and stall detection documentation
 - `THERMAL_MODEL.md` - Thermal model documentation
 - `web/README.md` - Web application details

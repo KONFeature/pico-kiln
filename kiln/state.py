@@ -434,10 +434,10 @@ class KilnController:
                 return target
 
         # Check for stall condition (every check interval for ramp steps)
-        # Use explicit min_rate if specified, otherwise default to 20% of desired_rate
+        # Use explicit min_rate if specified, otherwise default to 80% of desired_rate
         min_rate = current_step.get('min_rate')
         if current_step['type'] == 'ramp' and min_rate is None:
-            min_rate = current_step.get('desired_rate', 100) * 0.2
+            min_rate = current_step.get('desired_rate', 100) * 0.8
 
         if (current_step['type'] == 'ramp' and
             min_rate > 0 and
@@ -448,13 +448,13 @@ class KilnController:
 
             if time_in_step >= self.stall_min_step_time:
                 actual_rate = self.temp_history.get_rate(self.rate_measurement_window)
-                if actual_rate < min_rate:
+                if abs(actual_rate) < min_rate:
                     self.stall_fail_count += 1
-                    print(f"[Stall check] Rate {actual_rate:.1f}°C/h < min {min_rate:.1f}°C/h "
+                    print(f"[Stall check] Rate {abs(actual_rate):.1f}°C/h < min {min_rate:.1f}°C/h "
                           f"({self.stall_fail_count}/{self.stall_consecutive_fails})")
                     if self.stall_fail_count >= self.stall_consecutive_fails:
                         self.set_error(
-                            f"Stall detected: {actual_rate:.1f}°C/h below minimum "
+                            f"Stall detected: {abs(actual_rate):.1f}°C/h below minimum "
                             f"{min_rate:.1f}°C/h for {self.stall_consecutive_fails} "
                             f"consecutive checks. Kiln may be underpowered or needs maintenance."
                         )
