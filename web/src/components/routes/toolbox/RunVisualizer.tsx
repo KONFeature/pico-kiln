@@ -35,7 +35,7 @@ interface ChartDataPoint {
 	target_temp: number;
 	ssr_output: number;
 	step_index?: number;
-	current_rate?: number;
+	measured_rate?: number;
 }
 
 export function RunVisualizer() {
@@ -70,7 +70,7 @@ export function RunVisualizer() {
 			target_temp: point.target_temp_c,
 			ssr_output: point.ssr_output_percent,
 			step_index: point.step_index,
-			current_rate: point.current_rate_c_per_hour,
+			measured_rate: point.measured_rate_c_per_hour,
 		}));
 	}, [logData]);
 
@@ -87,7 +87,7 @@ export function RunVisualizer() {
 	}, [chartData, logData]);
 
 	const hasRateData = useMemo(() => {
-		return chartData.some((p) => p.current_rate !== undefined);
+		return chartData.some((p) => p.measured_rate !== undefined);
 	}, [chartData]);
 
 	// Calculate step transitions for visual boundaries
@@ -277,7 +277,7 @@ export function RunVisualizer() {
 								<div className="pt-6 border-t">
 									<h4 className="text-base font-semibold mb-1">Heating Rate</h4>
 									<p className="text-sm text-muted-foreground mb-4">
-										Current temperature change rate (°C/hour)
+										Measured temperature change rate (°C/hour)
 									</p>
 									<ResponsiveContainer width="100%" height={200}>
 										<LineChart
@@ -322,11 +322,11 @@ export function RunVisualizer() {
 											<Legend />
 											<Line
 												type="monotone"
-												dataKey="current_rate"
+												dataKey="measured_rate"
 												stroke="#22c55e"
 												strokeWidth={2}
 												dot={false}
-												name="Current Rate (°C/h)"
+												name="Measured Rate"
 											/>
 										</LineChart>
 									</ResponsiveContainer>

@@ -115,7 +115,6 @@ class RecoveryListener:
             resume_cmd = CommandMessage.resume_profile(
                 profile_filename,
                 recovery_info.elapsed_seconds,
-                recovery_info.current_rate,
                 recovery_info.last_temp,
                 current_temp,
                 recovery_info.step_index
@@ -141,7 +140,6 @@ class RecoveryInfo:
         last_target_temp: Last target temperature
         log_file: Path to the log file being recovered from
         recovery_reason: String explaining why recovery is/isn't possible
-        current_rate: Last adapted rate (for adaptive control)
         step_index: Last step index from CSV (0-based)
     """
     def __init__(self):
@@ -152,8 +150,7 @@ class RecoveryInfo:
         self.last_target_temp = 0.0
         self.log_file = None
         self.recovery_reason = "No recovery needed"
-        self.current_rate = None  # Adapted rate from CSV
-        self.step_index = None  # Step index from CSV (0-based)
+        self.step_index = None
 
 
 def check_recovery(logs_dir, current_temp, max_temp_delta):
@@ -201,7 +198,6 @@ def check_recovery(logs_dir, current_temp, max_temp_delta):
         info.last_temp = last_entry['current_temp']
         info.last_target_temp = last_entry['target_temp']
         info.elapsed_seconds = last_entry['elapsed']
-        info.current_rate = last_entry['current_rate']
         info.step_index = last_entry['step_index']
 
         # Extract profile name from filename
@@ -306,7 +302,7 @@ def _parse_last_log_entry(log_file):
 
     CSV format:
     timestamp,elapsed_seconds,current_temp_c,target_temp_c,
-    ssr_output_percent,state,step_name,step_index,total_steps,current_rate_c_per_hour
+    ssr_output_percent,state,step_name,step_index,total_steps,measured_rate_c_per_hour
 
     Args:
         log_file: Path to CSV log file
@@ -346,8 +342,7 @@ def _parse_last_log_entry(log_file):
             'current_temp': float(values[2]),
             'target_temp': float(values[3]),
             'state': values[5],
-            'step_index': int(values[7]) if values[7] else None,
-            'current_rate': float(values[9]) if values[9] else None
+            'step_index': int(values[7]) if values[7] else None
         }
 
         # Force garbage collection after parsing

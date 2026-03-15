@@ -54,7 +54,7 @@ def load_run_data(csv_file):
     step_names = []
     step_indices = []
     total_steps_data = []
-    current_rate_data = []
+    measured_rate_data = []
 
     with open(csv_file, 'r') as f:
         reader = csv.DictReader(f)
@@ -80,8 +80,8 @@ def load_run_data(csv_file):
                 step_indices.append(int(row['step_index']) if row.get('step_index', '') else -1)
             if 'total_steps' in fieldnames:
                 total_steps_data.append(int(row['total_steps']) if row.get('total_steps', '') else 0)
-            if 'current_rate_c_per_hour' in fieldnames:
-                current_rate_data.append(float(row.get('current_rate_c_per_hour', 0)))
+            if 'measured_rate_c_per_hour' in fieldnames:
+                measured_rate_data.append(float(row.get('measured_rate_c_per_hour', 0)))
 
     # Fallback: if all elapsed_seconds are 0, calculate from timestamps
     if all(t == 0.0 for t in time_data):
@@ -117,8 +117,8 @@ def load_run_data(csv_file):
         result['step_indices'] = step_indices
     if total_steps_data:
         result['total_steps'] = total_steps_data
-    if current_rate_data:
-        result['current_rate'] = current_rate_data
+    if measured_rate_data:
+        result['measured_rate'] = measured_rate_data
 
     return result
 
@@ -145,7 +145,7 @@ def plot_run(data, output_file=None):
         output_file: Optional output file path (None = show interactive plot)
     """
     run_type = detect_run_type(data)
-    has_rate_data = 'current_rate' in data and data['current_rate']
+    has_rate_data = 'measured_rate' in data and data['measured_rate']
     ax4 = None  # Initialize ax4 for rate subplot
 
     # Create figure with subplots - add extra row if rate data available
@@ -277,25 +277,12 @@ def plot_run(data, output_file=None):
                     ax4.axvline(x=data['time_hours'][i], color='gray', linestyle='--', alpha=0.4, linewidth=1)
                     prev_step = step_idx
 
-        ax4.plot(data['time_hours'], data['current_rate'], 'green', linewidth=2, label='Current Rate (°C/h)')
+        ax4.plot(data['time_hours'], data['measured_rate'], 'green', linewidth=2, label='Measured Rate (°C/h)')
         ax4.axhline(y=0, color='black', linestyle='-', alpha=0.3, linewidth=0.5)
         ax4.set_xlabel('Time (hours)', fontsize=12)
         ax4.set_ylabel('Rate (°C/h)', fontsize=12)
         ax4.grid(True, alpha=0.3)
         ax4.legend(loc='upper right', fontsize=10)
-
-        # Add info about rate adaptations
-        rate_changes = 0
-        if len(data['current_rate']) > 1:
-            for i in range(1, len(data['current_rate'])):
-                if abs(data['current_rate'][i] - data['current_rate'][i-1]) > 10:
-                    rate_changes += 1
-
-        if rate_changes > 0:
-            ax4.text(0.02, 0.98, f'Rate adaptations: {rate_changes}',
-                    transform=ax4.transAxes, fontsize=9,
-                    verticalalignment='top', horizontalalignment='left',
-                    bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
 
     # Add run info as title
     start_time = data['timestamps'][0]
@@ -377,8 +364,8 @@ def _setup_mplcursors_tooltips(data, ax1, ax2, ax3, ax4):
                 tooltip_lines.append(f"Step: {step_name}")
 
         # Add rate if available
-        if 'current_rate' in data and data['current_rate'] and idx < len(data['current_rate']):
-            rate = data['current_rate'][idx]
+        if 'measured_rate' in data and data['measured_rate'] and idx < len(data['measured_rate']):
+            rate = data['measured_rate'][idx]
             tooltip_lines.append(f"Rate: {rate:.1f}°C/h")
 
         sel.annotation.set_text('\n'.join(tooltip_lines))
@@ -462,8 +449,8 @@ def _setup_builtin_tooltips(fig, data, ax1, ax2, ax3, ax4):
                 tooltip_lines.append(f"Step: {step_name}")
 
         # Add rate if available
-        if 'current_rate' in data and data['current_rate'] and idx < len(data['current_rate']):
-            rate = data['current_rate'][idx]
+        if 'measured_rate' in data and data['measured_rate'] and idx < len(data['measured_rate']):
+            rate = data['measured_rate'][idx]
             tooltip_lines.append(f"Rate: {rate:.1f}°C/h")
 
         # Update the annotation for the current axis
@@ -477,7 +464,7 @@ def _setup_builtin_tooltips(fig, data, ax1, ax2, ax3, ax4):
             elif ax_idx == 2:
                 y = data['step_indices'][idx] if 'step_indices' in data and data['step_indices'] else 0
             else:  # ax_idx == 3 (rate)
-                y = data['current_rate'][idx] if 'current_rate' in data and data['current_rate'] else 0
+                y = data['measured_rate'][idx] if 'measured_rate' in data and data['measured_rate'] else 0
 
             annot.xy = (data['time_hours'][idx], y)
             annot.set_text('\n'.join(tooltip_lines))

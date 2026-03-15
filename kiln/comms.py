@@ -250,13 +250,12 @@ class CommandMessage:
         }
 
     @staticmethod
-    def resume_profile(profile_filename, elapsed_seconds, current_rate=None, last_logged_temp=None, current_temp=None, step_index=None):
+    def resume_profile(profile_filename, elapsed_seconds, last_logged_temp=None, current_temp=None, step_index=None):
         """Resume a previously interrupted firing profile
 
         Args:
             profile_filename: Filename of the profile to resume (e.g., "cone6_glaze.json")
             elapsed_seconds: How far through the profile execution to resume from
-            current_rate: Adapted rate to restore (from CSV log), or None for desired_rate
             last_logged_temp: Last logged temperature before crash (for recovery detection)
             current_temp: Current temperature (for recovery detection)
             step_index: Step index from CSV log (0-based), or None to calculate
@@ -265,7 +264,6 @@ class CommandMessage:
             'type': MessageType.RESUME_PROFILE,
             'profile_filename': profile_filename,
             'elapsed_seconds': elapsed_seconds,
-            'current_rate': current_rate,
             'last_logged_temp': last_logged_temp,
             'current_temp': current_temp,
             'step_index': step_index
@@ -373,9 +371,7 @@ class StatusMessage:
         'desired_rate': 0,
         'is_recovering': False,
         'recovery_target_temp': None,
-        'current_rate': 0,
-        'actual_rate': 0,
-        'adaptation_count': 0,
+        'measured_rate': 0,
         'scheduled_profile': None
     }
 
@@ -456,10 +452,8 @@ class StatusMessage:
         status['is_recovering'] = controller.recovery_target_temp is not None
         status['recovery_target_temp'] = round(controller.recovery_target_temp, 2) if controller.recovery_target_temp is not None else None
 
-        # Add adaptive rate control information
-        status['current_rate'] = round(controller.current_rate, 1)  # Adapted rate
-        status['actual_rate'] = round(controller.temp_history.get_rate(controller.rate_measurement_window), 1)  # Measured rate
-        status['adaptation_count'] = controller.adaptation_count  # Number of adaptations
+        # Add rate monitoring information
+        status['measured_rate'] = round(controller.temp_history.get_rate(controller.rate_measurement_window), 1)
 
         # Add scheduler information
         if scheduler:

@@ -118,19 +118,16 @@ MAX_TEMP_ERROR = 50      # Max deviation from target before emergency stop (°C)
 PROFILES_DIR = "profiles"  # Directory for storing firing profiles
 
 # ============================================================================
-# ADAPTIVE RATE CONTROL
+# RATE MONITORING & STALL DETECTION
 # ============================================================================
 
-# Automatically adjust ramp rates if kiln cannot maintain desired rate
-# Allows profiles to complete successfully even with insufficient kiln capacity
+# Rolling rate control: the kiln always runs at full power during ramp steps.
+# If the measured rate drops below min_rate (defined per profile step) for
+# STALL_CONSECUTIVE_FAILS consecutive checks, the firing is stopped.
 
-ADAPTATION_ENABLED = True
-ADAPTATION_CHECK_INTERVAL = 60           # Check interval (seconds)
-ADAPTATION_MIN_STEP_TIME = 600           # Wait before first adaptation (seconds)
-ADAPTATION_MIN_TIME_BETWEEN = 300        # Wait between adaptations (seconds)
-ADAPTATION_TEMP_ERROR_THRESHOLD = 20     # Trigger if behind by this temp (°C)
-ADAPTATION_RATE_THRESHOLD = 0.85         # Trigger if actual < 85% of target
-ADAPTATION_REDUCTION_FACTOR = 0.95       # Reduce to 95% of measured rate
+STALL_CHECK_INTERVAL = 60               # Check for stall every N seconds
+STALL_CONSECUTIVE_FAILS = 3             # Consecutive fails before error (3 min at 60s interval)
+STALL_MIN_STEP_TIME = 600               # Wait 10 min in step before stall checking
 RATE_MEASUREMENT_WINDOW = 600            # Rate measurement window (seconds)
 RATE_RECORDING_INTERVAL = 10             # Temp recording interval (seconds)
 

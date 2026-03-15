@@ -150,15 +150,14 @@ class DataLogger:
                 step_name = 'RECOVERY'
                 step_index = -1
                 total_steps = status.get('total_steps') or ''  # Convert None to empty string
-                current_rate = 0.0  # No rate during recovery
+                measured_rate = 0.0
             else:
                 # Normal logging - extract step info (populated for both tuning and profile runs)
                 # Use .get() for optional fields that may not be present in all status types
                 step_name = status.get('step_name') or ''  # Convert None to empty string
                 step_index = str(status.get('step_index')) if status.get('step_index') is not None else ''
                 total_steps = status.get('total_steps') or ''
-                # Extract rate info (for adaptive control)
-                current_rate = status.get('current_rate', 0)
+                measured_rate = status.get('measured_rate', 0)
 
             # Format row - use simple string concatenation for MicroPython compatibility
             timestamp_iso = self._format_timestamp_iso(timestamp)
@@ -175,7 +174,7 @@ class DataLogger:
                 f"{step_name if step_name else ''},"
                 f"{step_index if step_index is not None and step_index != '' else ''},"
                 f"{total_steps if total_steps is not None and total_steps != '' else ''},"
-                f"{current_rate:.1f}\n"
+                f"{measured_rate:.1f}\n"
             )
 
             # Write to file
@@ -222,8 +221,8 @@ class DataLogger:
             target_temp = current_status['target_temp']
             ssr_output = current_status['ssr_output']
 
-            # Extract rate info (for adaptive control)
-            current_rate = current_status['current_rate']
+            # Extract rate info
+            measured_rate = current_status['measured_rate']
 
             # Format row with RECOVERY marker in state column
             timestamp_iso = self._format_timestamp_iso(timestamp)
@@ -238,7 +237,7 @@ class DataLogger:
                 f"{ssr_output:.2f},"
                 f"RECOVERY,"  # Special state marker
                 f",,,"  # Empty step fields for recovery events
-                f"{current_rate:.1f}\n"
+                f"{measured_rate:.1f}\n"
             )
 
             # Write to file
@@ -364,7 +363,7 @@ class DataLogger:
             "step_name,"
             "step_index,"
             "total_steps,"
-            "current_rate_c_per_hour\n"
+            "measured_rate_c_per_hour\n"
         )
         self.file.write(header)
         self.file.flush()

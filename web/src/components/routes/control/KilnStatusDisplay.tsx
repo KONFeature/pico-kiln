@@ -323,28 +323,20 @@ export function KilnStatusDisplay({
 							</div>
 						</div>
 
-						{(status.actual_rate !== undefined ||
-							status.current_rate !== undefined) && (
+						{status.measured_rate !== undefined && (
 							<div className="space-y-2">
 								<div className="flex items-center gap-2">
 									<TrendingUp className="w-5 h-5 text-muted-foreground" />
 									<span className="text-sm font-medium">Heating Rate</span>
 								</div>
-								{status.actual_rate !== undefined && (
-									<div className="text-sm">
-										Actual: <strong>{status.actual_rate.toFixed(1)}°C/h</strong>
-									</div>
-								)}
-								{status.current_rate !== undefined &&
+								<div className="text-sm">
+									Measured:{" "}
+									<strong>{status.measured_rate.toFixed(1)}°C/h</strong>
+								</div>
+								{status.desired_rate !== undefined &&
 									status.state === "RUNNING" && (
 										<div className="text-sm text-muted-foreground">
-											Target: {status.current_rate.toFixed(1)}°C/h
-										</div>
-									)}
-								{status.adaptation_count !== undefined &&
-									status.state === "RUNNING" && (
-										<div className="text-xs text-muted-foreground">
-											Adaptations: {status.adaptation_count}
+											Target: {status.desired_rate.toFixed(1)}°C/h
 										</div>
 									)}
 							</div>

@@ -161,7 +161,7 @@ class ControlThread:
             print(f"[Control Thread] Continuous gain scheduling DISABLED (constant gains)")
             print(f"[Control Thread] PID: Kp={self.pid_kp_base:.3f} Ki={self.pid_ki_base:.4f} Kd={self.pid_kd_base:.3f}")
 
-        # Initialize kiln controller (pass config for adaptive control parameters)
+        # Initialize kiln controller
         self.controller = KilnController(self.config)
 
         # Initialize watchdog timer (if enabled)
@@ -259,10 +259,9 @@ class ControlThread:
                 # Resume a previously interrupted profile
                 profile_filename = command.get('profile_filename')
                 elapsed_seconds = command.get('elapsed_seconds', 0)
-                current_rate = command.get('current_rate')  # Adapted rate from recovery
-                last_logged_temp = command.get('last_logged_temp')  # For recovery detection
-                current_temp = command.get('current_temp')  # For recovery detection
-                step_index = command.get('step_index')  # Step index from CSV
+                last_logged_temp = command.get('last_logged_temp')
+                current_temp = command.get('current_temp')
+                step_index = command.get('step_index')
 
                 if not profile_filename:
                     print("[Control Thread] Error: No profile filename in resume_profile command")
@@ -270,7 +269,7 @@ class ControlThread:
 
                 try:
                     profile = self.load_profile_with_retry(f"profiles/{profile_filename}")
-                    self.controller.resume_profile(profile, elapsed_seconds, current_rate, last_logged_temp, current_temp, step_index)
+                    self.controller.resume_profile(profile, elapsed_seconds, last_logged_temp, current_temp, step_index)
                     print(f"[Control Thread] Resumed profile: {profile.name} at {elapsed_seconds:.1f}s")
                 except Exception as e:
                     print(f"[Control Thread] Error loading profile '{profile_filename}': {e}")
@@ -570,12 +569,6 @@ class ControlThread:
 
             # 3. Update controller state and get target temperature
             target_temp = self.controller.update(current_temp)
-
-            # 3.5. Check if PID reset was requested (e.g., after rate adaptation)
-            if self.controller.pid_reset_requested:
-                self.pid.reset()
-                self.controller.pid_reset_requested = False
-                print("[Control Thread] PID reset after rate adaptation")
 
             # 4. Calculate PID output
             if self.controller.state == KilnState.RUNNING:

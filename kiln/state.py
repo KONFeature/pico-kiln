@@ -1,13 +1,12 @@
 # kiln/state.py
-# Kiln state machine and controller with adaptive rate control
+# Kiln state machine and controller with rolling rate control
 
 import time
 from micropython import const
 from kiln.rate_monitor import TempHistory
 
-# Module-level constants for temperature thresholds and SSR saturation
+# Module-level constants for temperature thresholds
 TEMP_LOSS_THRESHOLD = const(5)  # Temperature loss tolerance in °C for recovery detection
-SSR_SATURATION_THRESHOLD = const(95)  # SSR saturation threshold in % for adaptation
 
 class KilnState:
     """Kiln state constants - using integer const for memory optimization"""
@@ -19,10 +18,10 @@ class KilnState:
 
 class KilnController:
     """
-    Main kiln control state machine with adaptive rate control
+    Main kiln control state machine with rolling rate control
 
     Coordinates profile execution, step sequencing, rate monitoring,
-    and adaptive control adjustments. Performs safety checks and
+    and stall detection. Performs safety checks and
     state transitions.
 
     Does not directly control hardware - that's handled in main loop.
@@ -33,57 +32,46 @@ class KilnController:
         Initialize controller
 
         Args:
-            config: Configuration object with safety limits and adaptation parameters
+            config: Configuration object with safety limits and stall detection parameters
         """
-        # State
         self.state = KilnState.IDLE
         self.active_profile = None
         self.start_time = None
-        self.elapsed_offset = 0.0  # For recovery: offset to add to elapsed time
-        self.last_update_time = None  # Track last update for delta calculation
+        self.elapsed_offset = 0.0
+        self.last_update_time = None
 
-        # Current values
         self.current_temp = 0.0
         self.target_temp = 0.0
-        self.ssr_output = 0.0  # 0-100%
+        self.ssr_output = 0.0
 
-        # Safety limits from config
         self.max_temp = config.MAX_TEMP
         self.max_temp_error = config.MAX_TEMP_ERROR
 
-        # Adaptive control configuration
-        self.adaptation_enabled = getattr(config, 'ADAPTATION_ENABLED', True)
-        self.adaptation_check_interval = getattr(config, 'ADAPTATION_CHECK_INTERVAL', 60)
-        self.adaptation_min_step_time = getattr(config, 'ADAPTATION_MIN_STEP_TIME', 600)  # 10 min
-        self.adaptation_min_time_between = getattr(config, 'ADAPTATION_MIN_TIME_BETWEEN', 300)  # 5 min
-        self.adaptation_temp_error_threshold = getattr(config, 'ADAPTATION_TEMP_ERROR_THRESHOLD', 20)
-        self.adaptation_rate_threshold = getattr(config, 'ADAPTATION_RATE_THRESHOLD', 0.85)
-        self.adaptation_reduction_factor = getattr(config, 'ADAPTATION_REDUCTION_FACTOR', 0.9)
-        self.rate_measurement_window = getattr(config, 'RATE_MEASUREMENT_WINDOW', 600)  # 10 min
+        # Rate measurement config
+        self.rate_measurement_window = getattr(config, 'RATE_MEASUREMENT_WINDOW', 600)
         self.rate_recording_interval = getattr(config, 'RATE_RECORDING_INTERVAL', 10)
+
+        # Stall detection config
+        self.stall_check_interval = getattr(config, 'STALL_CHECK_INTERVAL', 60)
+        self.stall_consecutive_fails = getattr(config, 'STALL_CONSECUTIVE_FAILS', 3)
+        self.stall_min_step_time = getattr(config, 'STALL_MIN_STEP_TIME', 600)
 
         # Step execution state
         self.current_step_index = 0
         self.step_start_time = 0
         self.step_start_temp = 0.0
-        self.current_rate = 0.0  # Adapted rate (starts at desired_rate)
 
         # Rate monitoring
-        self.temp_history = TempHistory(capacity=60)  # 10 min history at 10-sec intervals
-        self.last_adaptation_check = 0
+        self.temp_history = TempHistory(capacity=60)
         self.last_temp_recording = 0
-        self.last_adaptation_time = 0
-        self.adaptation_count = 0
+        self.last_stall_check = 0
+        self.stall_fail_count = 0
 
-        # Error tracking
         self.error_message = None
 
         # Recovery mode state
-        self.recovery_target_temp = None  # If set, we're in recovery mode
-        self.recovery_start_time = None   # When recovery started (for time adjustment)
-
-        # PID reset flag (set by controller when PID should be reset)
-        self.pid_reset_requested = False
+        self.recovery_target_temp = None
+        self.recovery_start_time = None
 
     def run_profile(self, profile):
         """
@@ -101,30 +89,22 @@ class KilnController:
         self.active_profile = profile
         self.state = KilnState.RUNNING
         self.start_time = time.time()
-        self.elapsed_offset = 0.0  # Start from 0
-        self.last_update_time = None  # Will be set on first get_elapsed_time()
+        self.elapsed_offset = 0.0
+        self.last_update_time = None
         self.error_message = None
 
-        # Initialize step execution
         self.current_step_index = 0
         self.step_start_time = 0
         self.step_start_temp = self.current_temp
 
-        # Initialize rate from first step
-        first_step = profile.steps[0]
-        # Use desired_rate if specified, otherwise use a conservative default
-        self.current_rate = first_step.get('desired_rate', 100)
-
-        # Reset adaptation tracking
         self.temp_history.clear()
-        self.last_adaptation_check = 0
         self.last_temp_recording = 0
-        self.last_adaptation_time = 0
-        self.adaptation_count = 0
+        self.last_stall_check = 0
+        self.stall_fail_count = 0
 
         print(f"Starting profile: {profile.name} ({len(profile.steps)} steps)")
 
-    def resume_profile(self, profile, elapsed_seconds, current_rate=None, last_logged_temp=None, current_temp=None, step_index=None):
+    def resume_profile(self, profile, elapsed_seconds, last_logged_temp=None, current_temp=None, step_index=None):
         """
         Resume a previously interrupted firing profile
 
@@ -137,7 +117,6 @@ class KilnController:
         Args:
             profile: Profile instance to resume
             elapsed_seconds: How far through the profile to resume from
-            current_rate: Adapted rate to restore (from CSV log), or None for desired_rate
             last_logged_temp: Last logged temperature before crash (for recovery detection)
             current_temp: Current temperature (for recovery detection)
             step_index: Step index from CSV log (0-based), or None to calculate
@@ -165,7 +144,7 @@ class KilnController:
         # Use step_index from CSV if available (more reliable), otherwise use calculated
         if step_index is not None:
             # CSV knows the actual step that was running
-            # Use it instead of calculated (handles adaptation timing changes)
+            # Use it instead of calculated (handles recovery timing changes)
             print(f"[Recovery] Using step index from CSV: {step_index} (calculated: {calc_step_index})")
             self.current_step_index = step_index
         else:
@@ -174,42 +153,27 @@ class KilnController:
         self.step_start_time = elapsed_seconds - time_in_step
         
         # For ramp steps, calculate step_start_temp by working backwards from last_logged_temp
-        # This ensures target temp calculation continues smoothly from where it left off
         current_step = profile.steps[self.current_step_index]
         if current_step['type'] == 'ramp' and last_logged_temp is not None and time_in_step > 0:
-            # Work backwards: step_start_temp = current_temp - (rate * time_in_step)
-            rate = current_rate if current_rate is not None else current_step['desired_rate']
+            rate = current_step.get('desired_rate', 100)
             hours_in_step = time_in_step / 3600.0
             temp_change = rate * hours_in_step
             
-            # Calculate what the start temp must have been
             target = current_step['target_temp']
-            if target > last_logged_temp:  # Heating ramp
+            if target > last_logged_temp:
                 self.step_start_temp = last_logged_temp - temp_change
-            else:  # Cooling ramp
+            else:
                 self.step_start_temp = last_logged_temp + temp_change
             
             print(f"[Recovery] Calculated step_start_temp: {self.step_start_temp:.1f}°C (working backwards from {last_logged_temp:.1f}°C)")
         else:
-            # Hold step or no time elapsed yet
             self.step_start_temp = step_start_temp
 
-        # Restore or initialize rate
-        current_step = profile.steps[self.current_step_index]
-        if current_rate is not None and current_rate > 0:
-            # Restore adapted rate from CSV log
-            self.current_rate = current_rate
-            print(f"Resuming with adapted rate: {current_rate:.1f}°C/h")
-        else:
-            # Use desired rate from step, or default to 100°C/h for cooldown
-            self.current_rate = current_step.get('desired_rate', 100)
-
-        # Reset adaptation tracking
+        # Reset rate monitoring and stall detection
         self.temp_history.clear()
-        self.last_adaptation_check = elapsed_seconds
         self.last_temp_recording = elapsed_seconds
-        self.last_adaptation_time = elapsed_seconds
-        self.adaptation_count = 0
+        self.last_stall_check = elapsed_seconds
+        self.stall_fail_count = 0
 
         # Check for temperature loss and enter recovery mode if needed
         # BUT: Don't recover during cooling steps (temp drop is expected)
@@ -319,25 +283,17 @@ class KilnController:
         self.last_update_time = None
         self.error_message = None
 
-        # Reset step state
         self.current_step_index = 0
         self.step_start_time = 0
         self.step_start_temp = 0.0
-        self.current_rate = 0
 
-        # Reset recovery mode
         self.recovery_target_temp = None
         self.recovery_start_time = None
 
-        # Reset adaptation tracking
         self.temp_history.clear()
-        self.last_adaptation_check = 0
         self.last_temp_recording = 0
-        self.last_adaptation_time = 0
-        self.adaptation_count = 0
-
-        # Reset PID flag
-        self.pid_reset_requested = False
+        self.last_stall_check = 0
+        self.stall_fail_count = 0
 
     def set_error(self, message):
         """Set error state with message"""
@@ -427,7 +383,7 @@ class KilnController:
             return 0
 
     def _update_running(self):
-        """Update logic for RUNNING state with adaptive control"""
+        """Update logic for RUNNING state"""
         if not self.active_profile:
             self.set_error("No active profile")
             return 0
@@ -477,24 +433,32 @@ class KilnController:
                 self.target_temp = target
                 return target
 
-        # Check for adaptation (every minute for ramp steps)
-        # Cache self references (hot path optimization - called every control loop)
-        adaptation_enabled = self.adaptation_enabled
-        last_adaptation_check = self.last_adaptation_check
-        adaptation_check_interval = self.adaptation_check_interval
-
+        # Check for stall condition (every check interval for ramp steps with min_rate)
+        min_rate = current_step.get('min_rate')
         if (current_step['type'] == 'ramp' and
-            adaptation_enabled and
-            elapsed - last_adaptation_check >= adaptation_check_interval):
+            min_rate and
+            elapsed - self.last_stall_check >= self.stall_check_interval):
 
-            self.last_adaptation_check = elapsed
-            self._check_and_adapt_rate(elapsed, current_step)
+            self.last_stall_check = elapsed
+            time_in_step = elapsed - self.step_start_time
 
-            # If adaptation failed, state is now ERROR
-            if self.state == KilnState.ERROR:
-                return 0
+            if time_in_step >= self.stall_min_step_time:
+                actual_rate = self.temp_history.get_rate(self.rate_measurement_window)
+                if actual_rate < min_rate:
+                    self.stall_fail_count += 1
+                    print(f"[Stall check] Rate {actual_rate:.1f}°C/h < min {min_rate:.1f}°C/h "
+                          f"({self.stall_fail_count}/{self.stall_consecutive_fails})")
+                    if self.stall_fail_count >= self.stall_consecutive_fails:
+                        self.set_error(
+                            f"Stall detected: {actual_rate:.1f}°C/h below minimum "
+                            f"{min_rate:.1f}°C/h for {self.stall_consecutive_fails} "
+                            f"consecutive checks. Kiln may be underpowered or needs maintenance."
+                        )
+                        return 0
+                else:
+                    self.stall_fail_count = 0
 
-        # Get target temperature (using possibly adapted rate)
+        # Get target temperature (always uses desired_rate from step)
         target = self._get_step_target_temp(elapsed, current_step)
         self.target_temp = target
 
@@ -554,13 +518,10 @@ class KilnController:
         self.step_start_time = elapsed
         self.step_start_temp = self.current_temp
 
-        # Reset for new step
         next_step = self.active_profile.steps[self.current_step_index]
-        # Use desired_rate if specified, otherwise default to 100°C/h
-        self.current_rate = next_step.get('desired_rate', 100)
         self.temp_history.clear()
-        self.last_adaptation_check = elapsed
-        self.last_adaptation_time = elapsed
+        self.last_stall_check = elapsed
+        self.stall_fail_count = 0
 
         step_type = next_step['type']
         step_num = self.current_step_index + 1
@@ -608,8 +569,7 @@ class KilnController:
             hours_in_step = time_in_step / 3600.0
             target = step['target_temp']
 
-            # Calculate using CURRENT (possibly adapted) rate
-            temp_change = self.current_rate * hours_in_step
+            temp_change = step.get('desired_rate', 100) * hours_in_step
 
             if target > self.step_start_temp:
                 # Heating ramp
@@ -626,107 +586,13 @@ class KilnController:
 
         return self.current_temp  # Fallback
 
-    def _check_and_adapt_rate(self, elapsed, step):
-        """
-        Check if rate adaptation is needed and perform it
-
-        Args:
-            elapsed: Elapsed seconds since profile start
-            step: Current step dictionary
-        """
-        time_in_step = elapsed - self.step_start_time
-
-        # Don't adapt if we don't have enough history
-        if time_in_step < self.adaptation_min_step_time:
-            return
-
-        # Don't adapt too frequently
-        if elapsed - self.last_adaptation_time < self.adaptation_min_time_between:
-            return
-
-        # Don't adapt if no min_rate specified
-        min_rate = step.get('min_rate')
-        if not min_rate:
-            return
-
-        # Check for temperature going UP during cooldown
-        target = step['target_temp']
-        if target < self.step_start_temp:  # This is a cooldown
-            if self.current_temp > self.step_start_temp + 10:  # 10°C margin
-                self.set_error(f"Temperature increasing during cooldown: {self.current_temp:.1f}°C > {self.step_start_temp:.1f}°C")
-                return
-
-        # Measure actual rate over measurement window
-        actual_rate = self.temp_history.get_rate(window_seconds=self.rate_measurement_window)
-
-        # Calculate current target temp
-        target_temp = self._get_step_target_temp(elapsed, step)
-        temp_error = target_temp - self.current_temp
-
-        # CRITICAL SAFETY CHECK: Only adapt if SSR is saturated (at or near 100%)
-        # This prevents death spiral where adaptation reduces rate, SSR drops,
-        # rate drops further, triggers another adaptation, etc.
-        # The kiln can only be "underpowered" if it's already at full power!
-        if self.ssr_output < SSR_SATURATION_THRESHOLD:
-            # SSR not saturated - PID has headroom, so rate issue is transient
-            # Don't adapt - let PID controller increase output naturally
-            return
-
-        # Check if adaptation is needed
-        needs_adaptation = (
-            temp_error > self.adaptation_temp_error_threshold and  # Behind schedule
-            actual_rate < self.current_rate * self.adaptation_rate_threshold  # Rate below target
-        )
-
-        if not needs_adaptation:
-            return
-
-        # Calculate proposed new rate (conservative: reduce to % of measured rate)
-        proposed_rate = actual_rate * self.adaptation_reduction_factor
-
-        # Check against minimum
-        if proposed_rate >= min_rate:
-            # Accept adaptation
-            old_rate = self.current_rate
-            self.current_rate = proposed_rate
-            self.last_adaptation_time = elapsed
-            self.adaptation_count += 1
-
-            print(f"[Adaptation {self.adaptation_count}] Rate adjusted: {old_rate:.1f} → {proposed_rate:.1f}°C/h "
-                  f"(actual: {actual_rate:.1f}°C/h, min: {min_rate:.1f}°C/h, error: {temp_error:.1f}°C, SSR: {self.ssr_output:.1f}%)")
-
-            # CRITICAL FIX: Reset step start point to current position
-            # This prevents target temp from dropping when rate is reduced
-            # New target calculation will start from where we are NOW, not from old step_start_temp
-            self.step_start_temp = self.current_temp
-            self.step_start_time = elapsed
-            print(f"[Adaptation {self.adaptation_count}] Step restart: continuing from {self.current_temp:.1f}°C at {elapsed:.1f}s")
-
-            # Clear temp history to start fresh rate measurements after adaptation
-            # Old data reflects pre-adaptation conditions and will give wrong rate calculations
-            self.temp_history.clear()
-
-            # Request PID reset to clear integral accumulator
-            # This prevents overshoot from stale integral term after target change
-            self.pid_reset_requested = True
-
-            # Force immediate temp recording so adapted rate gets logged ASAP
-            self._record_temp_for_rate(elapsed)
-        else:
-            # Cannot achieve minimum rate - fail
-            self.set_error(
-                f"Cannot achieve minimum rate {min_rate:.1f}°C/h. "
-                f"Actual rate: {actual_rate:.1f}°C/h after {time_in_step/60:.0f} minutes. "
-                f"Kiln may be underpowered or needs maintenance."
-            )
-
     def get_status(self):
         """
         Get current status dictionary for API/WebSocket
 
         Returns:
             Dictionary with comprehensive status information including
-            step and adaptation details
+            step and stall detection details
         """
         elapsed = self.get_elapsed_time()
 
@@ -746,9 +612,7 @@ class KilnController:
 
             # Rate information
             'desired_rate': 0,
-            'current_rate': round(self.current_rate, 1),
-            'actual_rate': round(self.temp_history.get_rate(self.rate_measurement_window), 1),
-            'adaptation_count': self.adaptation_count,
+            'measured_rate': round(self.temp_history.get_rate(self.rate_measurement_window), 1),
 
             # Recovery mode information
             'is_recovering': self.recovery_target_temp is not None,
