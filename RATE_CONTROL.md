@@ -87,7 +87,15 @@ The controller uses a `TempHistory` circular buffer to store recent temperature 
 ### CSV Logging
 The data logger records the `measured_rate_c_per_hour` in every log entry. This allows you to analyze your kiln's performance after a run and adjust your `min_rate` values or identify degrading elements.
 
-### PID Behavior and Overshoot
-When the virtual target runs ahead of the actual temperature (common during aggressive ramps), the PID controller will saturate at 100% output. Because the integral term continues to accumulate during this saturation, you may see a brief overshoot when the kiln finally catches up to the target or transitions to a hold step. 
+### PID Anti-Windup: Conditional Integration
+When the virtual target runs ahead of the actual temperature (common during aggressive ramps), the PID controller saturates at 100% output. Without protection, the integral term would continue accumulating during this saturation, leading to massive overshoot when the kiln finally catches up or transitions to a hold step.
 
-Future improvements will include an integral reset on step transitions to minimize this effect.
+The PID controller uses **conditional integration** (Åström & Hägglund) to prevent this:
+- Before updating the integral, the controller predicts what the output *would be* with the new integral value
+- If the predicted output would exceed the output limit AND the error is pushing further into saturation, the integral is **frozen** at its current value
+- If the error reverses (kiln overshooting), the integral is allowed to **unwind** normally even if the output is still near its limit
+
+This means:
+- During ramps where the kiln can't keep up, P term alone drives 100% output while the integral stays at a useful value
+- On step transitions, the integral is already at a moderate value (near steady-state needs), not maxed out
+- No integral reset is needed at step transitions — the controller transitions cleanly on its own

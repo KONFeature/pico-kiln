@@ -1,18 +1,23 @@
 # kiln/pid.py
-# PID controller with anti-windup
+# PID controller with conditional integration anti-windup
 
 import time
 import micropython
 
 class PID:
     """
-    PID controller with anti-windup and comprehensive statistics
+    PID controller with conditional integration anti-windup.
 
-    Based on the velocity form of PID to prevent integral windup.
-    Output is clamped to output_limits.
+    Uses conditional integration (Åström & Hägglund) to prevent integral
+    windup: the integral term is frozen when the output is saturated in
+    the same direction as the error. This allows the integral to unwind
+    when the error reverses, but prevents useless accumulation when the
+    controller is already at its output limit.
 
     References:
-    - https://en.wikipedia.org/wiki/PID_controller
+    - Åström & Hägglund, "Advanced PID Control"
+    - Siemens FB41 PID (INT_HOLD anti-windup)
+    - https://github.com/Dlloydev/QuickPID (iAwCondition mode)
     - https://github.com/jbruce12000/kiln-controller
     """
 
@@ -83,21 +88,26 @@ class PID:
         # Proportional term
         p_term = self.kp * error
 
-        # Integral term with anti-windup
-        self.integral += error * dt
-
-        # Clamp integral to prevent windup
-        # Map output limits to integral limits based on ki
-        if self.ki != 0:
-            integral_max = self.output_limits[1] / abs(self.ki)
-            integral_min = self.output_limits[0] / abs(self.ki)
-            self.integral = max(min(self.integral, integral_max), integral_min)
-
-        i_term = self.ki * self.integral
-
-        # Derivative term
+        # Derivative term (compute before integral so we can use all three
+        # to predict output for the conditional integration check)
         error_delta = error - self.prev_error
         d_term = self.kd * (error_delta / dt)
+
+        # Conditional integration anti-windup (Åström & Hägglund):
+        # Predict what the output would be if we accumulated normally.
+        # If that output would saturate AND the error is pushing further
+        # into saturation, freeze the integral. Otherwise, accumulate.
+        candidate_integral = self.integral + error * dt
+        i_term_candidate = self.ki * candidate_integral
+        output_candidate = p_term + i_term_candidate + d_term
+
+        saturated_high = output_candidate >= self.output_limits[1] and error > 0
+        saturated_low = output_candidate <= self.output_limits[0] and error < 0
+
+        if not (saturated_high or saturated_low):
+            self.integral = candidate_integral
+
+        i_term = self.ki * self.integral
 
         # Calculate raw output
         output_raw = p_term + i_term + d_term
@@ -124,7 +134,8 @@ class PID:
             'output_raw': output_raw,
             'kp': self.kp,
             'ki': self.ki,
-            'kd': self.kd
+            'kd': self.kd,
+            'integral_frozen': saturated_high or saturated_low
         }
 
         return output
