@@ -347,7 +347,8 @@ class KilnController:
             delta = 1.0  # Assume 1 second passed
         
         self.last_update_time = current_time
-        self.elapsed_offset += delta
+        if self.recovery_target_temp is None:
+            self.elapsed_offset += delta
         
         return self.elapsed_offset
 
@@ -417,14 +418,14 @@ class KilnController:
             if self.current_temp >= self.recovery_target_temp - 1.0:
                 recovery_duration = time.time() - self.recovery_start_time
                 print(f"[Recovery] Temperature recovered! Took {recovery_duration/60:.1f} minutes")
-                print(f"[Recovery] Adjusting profile clock to exclude recovery time")
-
-                # Adjust start_time to exclude recovery duration from profile progression
-                self.start_time += recovery_duration
-
                 # Exit recovery mode
                 self.recovery_target_temp = None
                 self.recovery_start_time = None
+
+                # Drop pre-recovery rate samples to avoid a phantom dY/dt across the paused gap
+                self.temp_history.clear()
+                self.last_temp_recording = self.elapsed_offset
+                self.last_stall_check = self.elapsed_offset
 
                 print(f"[Recovery] Resuming normal profile execution")
                 # Continue to normal profile execution below
