@@ -93,26 +93,25 @@ class PID:
         error_delta = error - self.prev_error
         d_term = self.kd * (error_delta / dt)
 
-        # Conditional integration anti-windup (Åström & Hägglund):
-        # Predict what the output would be if we accumulated normally.
-        # If that output would saturate AND the error is pushing further
-        # into saturation, freeze the integral. Otherwise, accumulate.
-        candidate_integral = self.integral + error * dt
-        i_term_candidate = self.ki * candidate_integral
-        output_candidate = p_term + i_term_candidate + d_term
-
-        saturated_high = output_candidate >= self.output_limits[1] and error > 0
-        saturated_low = output_candidate <= self.output_limits[0] and error < 0
-
-        if not (saturated_high or saturated_low):
-            self.integral = candidate_integral
-
-        # Safety clamp: catch edge cases like sensor noise spikes unfreezing
-        # the integral via a large negative D-term
+        # Integral term: predict saturation from P+I only (D ignored to avoid
+        # noise spikes unfreezing the integral). Safety clamp catches edge cases.
         if self.ki > 0:
+            candidate_integral = self.integral + error * dt
+            pi_candidate = p_term + self.ki * candidate_integral
+
+            saturated_high = pi_candidate >= self.output_limits[1] and error > 0
+            saturated_low = pi_candidate <= self.output_limits[0] and error < 0
+
+            if not (saturated_high or saturated_low):
+                self.integral = candidate_integral
+
             integral_max = self.output_limits[1] / self.ki
             integral_min = self.output_limits[0] / self.ki
             self.integral = max(min(self.integral, integral_max), integral_min)
+        else:
+            self.integral = 0.0
+            saturated_high = False
+            saturated_low = False
 
         i_term = self.ki * self.integral
 
@@ -159,13 +158,20 @@ class PID:
             self.stats[key] = False if key == 'integral_frozen' else 0
 
     def set_gains(self, kp=None, ki=None, kd=None):
-        """Update PID gains on the fly"""
+        """Update PID gains on the fly (bumpless transfer for ki changes)"""
+        old_ki = self.ki
         if kp is not None:
             self.kp = kp
         if ki is not None:
             self.ki = ki
         if kd is not None:
             self.kd = kd
+
+        # Preserve i_term across ki change so output doesn't jump
+        if self.ki > 0 and old_ki > 0 and self.ki != old_ki:
+            self.integral = self.integral * (old_ki / self.ki)
+        elif self.ki == 0:
+            self.integral = 0.0
 
     def get_stats(self):
         """Get current statistics dictionary"""
