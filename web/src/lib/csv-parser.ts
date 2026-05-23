@@ -10,7 +10,7 @@ export interface LogDataPoint {
 	step_name?: string;
 	step_index?: number;
 	total_steps?: number;
-	current_rate_c_per_hour?: number;
+	measured_rate_c_per_hour?: number;
 }
 
 export interface ParsedLogData {
@@ -64,9 +64,9 @@ export function parseLogCSV(content: string): ParsedLogData {
 		if (row.step_name) dataPoint.step_name = row.step_name;
 		if (row.step_index) dataPoint.step_index = parseInt(row.step_index, 10);
 		if (row.total_steps) dataPoint.total_steps = parseInt(row.total_steps, 10);
-		if (row.current_rate_c_per_hour) {
-			dataPoint.current_rate_c_per_hour = parseFloat(
-				row.current_rate_c_per_hour,
+		if (row.measured_rate_c_per_hour) {
+			dataPoint.measured_rate_c_per_hour = parseFloat(
+				row.measured_rate_c_per_hour,
 			);
 		}
 

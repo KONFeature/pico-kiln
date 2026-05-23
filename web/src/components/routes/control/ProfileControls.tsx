@@ -1,15 +1,11 @@
 import {
 	AlertTriangle,
-	ArrowUp,
 	Calendar,
 	Clock,
-	Flame,
 	Loader2,
-	Pause,
 	Play,
 	Power,
 	RotateCw,
-	Snowflake,
 	Square,
 	X,
 } from "lucide-react";
@@ -44,82 +40,17 @@ import {
 	useStopProfile,
 } from "@/lib/pico/hooks";
 import { useProfileCache } from "@/lib/pico/profile-cache";
-import type { KilnStatus, Profile, ProfileStep } from "@/lib/pico/types";
+import type { KilnStatus, Profile } from "@/lib/pico/types";
+import {
+	formatStepInfo,
+	isStepControlledCooldown,
+	StepIcon,
+} from "@/lib/step-utils";
 
 interface ProfileControlsProps {
 	status?: KilnStatus;
 }
 
-// Helper function to format step details
-function formatStepDetails(
-	step: ProfileStep,
-	tempUnit: string,
-	prevTargetTemp?: number,
-): string {
-	const unit = tempUnit === "f" ? "°F" : "°C";
-	const rateUnit = tempUnit === "f" ? "°F/h" : "°C/h";
-
-	switch (step.type) {
-		case "ramp": {
-			// Check if this is actually a controlled cooldown (ramping to lower temp)
-			const isControlledCooldown =
-				prevTargetTemp !== undefined &&
-				step.target_temp !== undefined &&
-				step.target_temp < prevTargetTemp;
-
-			if (isControlledCooldown) {
-				return `Cool to ${step.target_temp}${unit} at ${step.desired_rate}${rateUnit}`;
-			}
-			return `Ramp to ${step.target_temp}${unit} at ${step.desired_rate}${rateUnit}`;
-		}
-		case "hold":
-			if (step.duration) {
-				const hours = Math.floor(step.duration / 3600);
-				const minutes = Math.floor((step.duration % 3600) / 60);
-				const timeStr =
-					hours > 0
-						? `${hours}h ${minutes > 0 ? `${minutes}m` : ""}`
-						: `${minutes}m`;
-				return `Hold at ${step.target_temp}${unit} for ${timeStr}`;
-			}
-			return `Hold at ${step.target_temp}${unit}`;
-		case "cooling":
-			if (step.target_temp !== undefined && step.desired_rate !== undefined) {
-				return `Cool to ${step.target_temp}${unit} at ${step.desired_rate}${rateUnit}`;
-			}
-			if (step.target_temp !== undefined) {
-				return `Cool to ${step.target_temp}${unit}`;
-			}
-			return "Natural cooling";
-		default:
-			return "Unknown step";
-	}
-}
-
-// Step icon component
-function StepIcon({
-	type,
-	isControlledCooldown,
-}: {
-	type: ProfileStep["type"];
-	isControlledCooldown?: boolean;
-}) {
-	if (type === "ramp" && isControlledCooldown) {
-		return <Snowflake className="w-4 h-4 text-blue-500" />;
-	}
-	switch (type) {
-		case "ramp":
-			return <ArrowUp className="w-4 h-4 text-orange-500" />;
-		case "hold":
-			return <Pause className="w-4 h-4 text-yellow-500" />;
-		case "cooling":
-			return <Snowflake className="w-4 h-4 text-blue-500" />;
-		default:
-			return <Flame className="w-4 h-4" />;
-	}
-}
-
-// Profile details display component
 function ProfileDetails({ profile }: { profile: Profile }) {
 	return (
 		<div className="space-y-3 pt-4 border-t">
@@ -136,11 +67,10 @@ function ProfileDetails({ profile }: { profile: Profile }) {
 					{profile.steps.map((step, index) => {
 						const prevStep = index > 0 ? profile.steps[index - 1] : undefined;
 						const prevTargetTemp = prevStep?.target_temp;
-						const isControlledCooldown =
-							step.type === "ramp" &&
-							prevTargetTemp !== undefined &&
-							step.target_temp !== undefined &&
-							step.target_temp < prevTargetTemp;
+						const controlledCooldown = isStepControlledCooldown(
+							step,
+							prevTargetTemp,
+						);
 
 						return (
 							<div
@@ -152,10 +82,10 @@ function ProfileDetails({ profile }: { profile: Profile }) {
 								</Badge>
 								<StepIcon
 									type={step.type}
-									isControlledCooldown={isControlledCooldown}
+									isControlledCooldown={controlledCooldown}
 								/>
 								<span className="flex-1">
-									{formatStepDetails(step, profile.temp_units, prevTargetTemp)}
+									{formatStepInfo(step, profile.temp_units, prevTargetTemp)}
 								</span>
 							</div>
 						);
@@ -184,14 +114,8 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 			.filter((file) => file.name.endsWith(".json"))
 			.map((file) => file.name.replace(".json", "")) || [];
 
-	// Get the selected profile data from cache
 	const selectedProfileData = selectedProfile
 		? getProfile(selectedProfile)
-		: undefined;
-
-	// Get the running profile data from cache (when a profile is running)
-	const runningProfileData = status?.profile_name
-		? getProfile(status.profile_name)
 		: undefined;
 
 	const runProfile = useRunProfile();
@@ -484,11 +408,6 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 										{stopProfile.error?.message || "Failed to stop profile"}
 									</AlertDescription>
 								</Alert>
-							)}
-
-							{/* Profile details during run */}
-							{runningProfileData && (
-								<ProfileDetails profile={runningProfileData} />
 							)}
 						</>
 					)}

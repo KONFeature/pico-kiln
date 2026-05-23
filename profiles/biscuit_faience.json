@@ -1,7 +1,7 @@
 {
-  "name": "biscuit faience adaptive",
+  "name": "Biscuit Faience",
   "temp_units": "c",
-  "description": "Bisque firing to 1050°C with adaptive rate control - 100°C/h to 600, then 150°C/h to 1050",
+  "description": "Bisque firing to 1050°C - 150°C/h to 600, then 100°C/h to 1050",
   "steps": [
     {
       "type": "ramp",

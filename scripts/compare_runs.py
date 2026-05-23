@@ -42,7 +42,7 @@ def load_run_data(csv_file):
     target_temp_data = []
     ssr_output_data = []
     timestamps = []
-    current_rate_data = []
+    measured_rate_data = []
 
     with open(csv_file, 'r') as f:
         reader = csv.DictReader(f)
@@ -61,8 +61,8 @@ def load_run_data(csv_file):
             timestamps.append(row['timestamp'])
 
             # Handle new optional columns (backward compatibility)
-            if 'current_rate_c_per_hour' in fieldnames:
-                current_rate_data.append(float(row.get('current_rate_c_per_hour', 0)))
+            if 'measured_rate_c_per_hour' in fieldnames:
+                measured_rate_data.append(float(row.get('measured_rate_c_per_hour', 0)))
 
     # Convert elapsed seconds to hours for better readability
     time_hours = [t / 3600 for t in time_data]
@@ -78,8 +78,8 @@ def load_run_data(csv_file):
     }
 
     # Add rate data if available
-    if current_rate_data:
-        result['current_rate'] = current_rate_data
+    if measured_rate_data:
+        result['measured_rate'] = measured_rate_data
 
     return result
 
@@ -132,7 +132,7 @@ def compare_runs(datasets, output_file=None):
     colors = plt.cm.tab10(range(len(datasets)))
 
     # Check if any dataset has rate data
-    has_rate_data = any('current_rate' in d and d['current_rate'] for d in datasets)
+    has_rate_data = any('measured_rate' in d and d['measured_rate'] for d in datasets)
 
     # Create figure with subplots - add rate row if data available
     if has_rate_data:
@@ -174,18 +174,18 @@ def compare_runs(datasets, output_file=None):
     if not has_rate_data:
         ax2.set_xlabel('Time (hours)', fontsize=12)
 
-    # Subplot 3: Rate Comparison (if available)
+     # Subplot 3: Rate Comparison (if available)
     if has_rate_data:
         ax_rate = fig.add_subplot(gs[2, 0], sharex=ax1)
         for i, data in enumerate(datasets):
-            if 'current_rate' in data and data['current_rate']:
-                ax_rate.plot(data['time_hours'], data['current_rate'],
+            if 'measured_rate' in data and data['measured_rate']:
+                ax_rate.plot(data['time_hours'], data['measured_rate'],
                            linewidth=1.5, label=data['filename'], color=colors[i], alpha=0.7)
 
         ax_rate.axhline(y=0, color='black', linestyle='-', alpha=0.3, linewidth=0.5)
         ax_rate.set_xlabel('Time (hours)', fontsize=12)
         ax_rate.set_ylabel('Rate (°C/h)', fontsize=12)
-        ax_rate.set_title('Rate Comparison (Adaptive Control)', fontsize=12, fontweight='bold')
+        ax_rate.set_title('Rate Comparison (Measured Heating Rate)', fontsize=12, fontweight='bold')
         ax_rate.grid(True, alpha=0.3)
         ax_rate.legend(loc='best', fontsize=9)
 

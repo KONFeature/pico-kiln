@@ -1,5 +1,5 @@
 # kiln/profile.py
-# Kiln firing profile management with adaptive rate control
+# Kiln firing profile management
 
 import json
 import gc
@@ -65,7 +65,7 @@ class Profile:
         Calculate total profile duration from steps
 
         Estimates duration based on desired rates. Actual duration may vary
-        if adaptive control adjusts rates during execution.
+        based on kiln thermal capacity.
 
         Returns:
             Estimated duration in seconds
@@ -120,7 +120,7 @@ class Profile:
         Get progress percentage
 
         Estimates progress based on elapsed time vs total duration.
-        With adaptive control, actual progress may differ.
+        With rolling rate control, actual progress may differ.
 
         Args:
             elapsed_seconds: Time since profile start

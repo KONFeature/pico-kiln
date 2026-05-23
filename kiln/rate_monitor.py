@@ -1,8 +1,8 @@
 # kiln/rate_monitor.py
-# Temperature rate monitoring for adaptive control
+# Temperature rate monitoring for stall detection
 #
 # Memory-efficient circular buffer that tracks temperature history
-# to calculate heating/cooling rates for adaptive profile execution.
+# to calculate heating/cooling rates for rolling rate control.
 
 class TempHistory:
     """
