@@ -17,10 +17,10 @@ try:
     from busio import SPI
     from digitalio import DigitalInOut
 except ImportError:
-    pass
+    DigitalInOut = None
 
 
-__version__ = "5.2.13"
+__version__ = "5.2.17"
 __repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_BusDevice.git"
 
 

@@ -47,7 +47,7 @@ try:
 except ImportError:
     from ustruct import unpack
 
-__version__ = "0.12.4"
+__version__ = "0.12.7"
 __repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_MAX31856.git"
 
 # Register constants
@@ -276,7 +276,7 @@ class MAX31856:
 
         # Adjust for two's complement (sign extension for negative values)
         if combined & 0x40000:  # Check if 19th bit is set (negative temperature)
-            combined = combined - 0x80000
+            combined -= 0x80000
 
         # Convert to temperature using the resolution
         return combined * resolution

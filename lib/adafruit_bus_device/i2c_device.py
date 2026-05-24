@@ -20,7 +20,7 @@ except ImportError:
     pass
 
 
-__version__ = "5.2.13"
+__version__ = "5.2.17"
 __repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_BusDevice.git"
 
 
@@ -173,6 +173,6 @@ class I2CDevice:
                 result = bytearray(1)
                 self.i2c.readfrom_into(self.device_address, result)
             except OSError:
-                raise ValueError("No I2C device at address: 0x%x" % self.device_address)
+                raise ValueError(f"No I2C device at address: 0x{self.device_address:x}")
         finally:
             self.i2c.unlock()
