@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-	AlertCircle,
 	CheckCircle,
+	CircleAlert,
 	Download,
 	FileUp,
 	HardDrive,
@@ -334,7 +334,7 @@ export function ProfileEditor() {
 						<div className="space-y-2">
 							{!isConfigured && (
 								<Alert>
-									<AlertCircle className="h-4 w-4" />
+									<CircleAlert className="h-4 w-4" />
 									<AlertDescription>
 										Please configure Pico connection to import profiles
 									</AlertDescription>
@@ -559,7 +559,7 @@ export function ProfileEditor() {
 
 										{error && (
 											<Alert variant="destructive" className="mt-3">
-												<AlertCircle className="h-4 w-4" />
+												<CircleAlert className="h-4 w-4" />
 												<AlertDescription>{error}</AlertDescription>
 											</Alert>
 										)}
@@ -595,7 +595,7 @@ export function ProfileEditor() {
 
 				{hasValidationErrors && (
 					<Alert variant="destructive">
-						<AlertCircle className="h-4 w-4" />
+						<CircleAlert className="h-4 w-4" />
 						<AlertDescription>
 							Please fix all validation errors before exporting the profile
 						</AlertDescription>
@@ -639,7 +639,7 @@ export function ProfileEditor() {
 					<div className="space-y-2">
 						{!isConfigured && (
 							<Alert>
-								<AlertCircle className="h-4 w-4" />
+								<CircleAlert className="h-4 w-4" />
 								<AlertDescription>
 									Please configure Pico connection to upload profiles
 								</AlertDescription>
@@ -686,7 +686,7 @@ export function ProfileEditor() {
 								)}
 								{uploadMutation.isError && (
 									<Alert variant="destructive">
-										<AlertCircle className="h-4 w-4" />
+										<CircleAlert className="h-4 w-4" />
 										<AlertDescription>
 											{uploadMutation.error instanceof Error
 												? uploadMutation.error.message
@@ -696,7 +696,7 @@ export function ProfileEditor() {
 								)}
 								{uploadMutation.isSuccess && !uploadMutation.data?.success && (
 									<Alert variant="destructive">
-										<AlertCircle className="h-4 w-4" />
+										<CircleAlert className="h-4 w-4" />
 										<AlertDescription>
 											{uploadMutation.data?.error || "Upload failed"}
 										</AlertDescription>

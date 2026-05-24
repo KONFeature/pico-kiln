@@ -1,4 +1,4 @@
-import { AlertCircle } from "lucide-react";
+import { CircleAlert } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import {
 	CartesianGrid,
@@ -83,7 +83,7 @@ export function ProfileVisualizer() {
 
 				{error && (
 					<Alert variant="destructive">
-						<AlertCircle className="h-4 w-4" />
+						<CircleAlert className="h-4 w-4" />
 						<AlertDescription>{error}</AlertDescription>
 					</Alert>
 				)}

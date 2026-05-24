@@ -1,6 +1,6 @@
 // Dialog for editing Pico connection settings
 
-import { CheckCircle2, Loader2, Wifi, XCircle } from "lucide-react";
+import { CircleCheckBig, CircleX, Loader2, Wifi } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -101,7 +101,7 @@ export function PicoConnectionDialog({
 
 					{testConnection.isSuccess && testConnection.data && (
 						<Alert className="border-green-600 bg-green-50">
-							<CheckCircle2 className="w-4 h-4 text-green-600" />
+							<CircleCheckBig className="w-4 h-4 text-green-600" />
 							<AlertDescription className="text-green-800">
 								Connection successful!
 							</AlertDescription>
@@ -111,7 +111,7 @@ export function PicoConnectionDialog({
 					{testConnection.isError ||
 					(testConnection.isSuccess && !testConnection.data) ? (
 						<Alert variant="destructive">
-							<XCircle className="w-4 h-4" />
+							<CircleX className="w-4 h-4" />
 							<AlertDescription>
 								Connection failed. Please check the URL and ensure the Pico is
 								on the same network.

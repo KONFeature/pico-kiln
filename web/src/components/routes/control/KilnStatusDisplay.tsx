@@ -1,6 +1,6 @@
 import {
-	AlertCircle,
 	AlertTriangle,
+	CircleAlert,
 	Clock,
 	Flame,
 	Gauge,
@@ -285,7 +285,7 @@ export function KilnStatusDisplay({
 					{/* Recovery Mode Warning */}
 					{status.is_recovering && (
 						<Alert className="border-orange-500 bg-orange-50 dark:bg-orange-950/20">
-							<AlertCircle className="h-4 w-4 text-orange-600" />
+							<CircleAlert className="h-4 w-4 text-orange-600" />
 							<AlertDescription className="text-orange-800 dark:text-orange-400">
 								<strong>Recovery Mode:</strong> Kiln is recovering from
 								temperature drop.
@@ -317,7 +317,7 @@ export function KilnStatusDisplay({
 												</>
 											) : (
 												<>
-													<AlertCircle className="w-4 h-4 mr-2" />
+													<CircleAlert className="w-4 h-4 mr-2" />
 													Clear Error
 												</>
 											)}

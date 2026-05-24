@@ -1,6 +1,6 @@
 import {
-	AlertCircle,
 	CheckCircle,
+	CircleAlert,
 	Download,
 	File,
 	Folder,
@@ -159,7 +159,7 @@ export function FileManager() {
 			<CardContent className="space-y-6">
 				{!isConfigured && (
 					<Alert>
-						<AlertCircle className="h-4 w-4" />
+						<CircleAlert className="h-4 w-4" />
 						<AlertDescription>
 							Please configure Pico connection to manage files
 						</AlertDescription>
@@ -171,7 +171,7 @@ export function FileManager() {
 						{/* Offline/Running Mode Notice */}
 						{!isFileOpsAvailable && (
 							<Alert>
-								<AlertCircle className="h-4 w-4" />
+								<CircleAlert className="h-4 w-4" />
 								<AlertDescription>
 									Kiln is currently running. Showing cached file data. File
 									operations (upload/delete) are disabled until kiln returns to
@@ -253,7 +253,7 @@ export function FileManager() {
 						<div className="space-y-2">
 							{filesError && (
 								<Alert variant="destructive">
-									<AlertCircle className="h-4 w-4" />
+									<CircleAlert className="h-4 w-4" />
 									<AlertDescription>
 										Failed to load files. Make sure the kiln is IDLE.
 									</AlertDescription>
@@ -347,7 +347,7 @@ export function FileManager() {
 					</DialogHeader>
 					{deleteMutation.isError && (
 						<Alert variant="destructive">
-							<AlertCircle className="h-4 w-4" />
+							<CircleAlert className="h-4 w-4" />
 							<AlertDescription>
 								{deleteMutation.error instanceof Error
 									? deleteMutation.error.message
@@ -402,7 +402,7 @@ export function FileManager() {
 					</DialogHeader>
 					{deleteAllLogsMutation.isError && (
 						<Alert variant="destructive">
-							<AlertCircle className="h-4 w-4" />
+							<CircleAlert className="h-4 w-4" />
 							<AlertDescription>
 								{deleteAllLogsMutation.error instanceof Error
 									? deleteAllLogsMutation.error.message
@@ -474,7 +474,7 @@ export function FileManager() {
 						</div>
 						{uploadMutation.isError && (
 							<Alert variant="destructive">
-								<AlertCircle className="h-4 w-4" />
+								<CircleAlert className="h-4 w-4" />
 								<AlertDescription>
 									{uploadMutation.error instanceof Error
 										? uploadMutation.error.message
