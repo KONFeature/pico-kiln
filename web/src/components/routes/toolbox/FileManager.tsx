@@ -85,19 +85,16 @@ export function FileManager() {
 		if (!client) return;
 
 		try {
-			const response = await client.getFile(directory, filename);
-			if (response.success && response.content) {
-				// Create a blob and download
-				const blob = new Blob([response.content], { type: "text/plain" });
-				const url = URL.createObjectURL(blob);
-				const a = document.createElement("a");
-				a.href = url;
-				a.download = filename;
-				document.body.appendChild(a);
-				a.click();
-				document.body.removeChild(a);
-				URL.revokeObjectURL(url);
-			}
+			const content = await client.getFile(directory, filename);
+			const blob = new Blob([content], { type: "text/plain" });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement("a");
+			a.href = url;
+			a.download = filename;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			URL.revokeObjectURL(url);
 		} catch (error) {
 			console.error("Failed to download file:", error);
 		}

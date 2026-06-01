@@ -226,9 +226,9 @@ export function ProfileEditor() {
 	};
 
 	const importFromPico = () => {
-		if (picoProfileContent?.success && picoProfileContent.content) {
+		if (picoProfileContent) {
 			try {
-				const imported = JSON.parse(picoProfileContent.content) as Profile;
+				const imported = JSON.parse(picoProfileContent) as Profile;
 				setProfile(imported);
 			} catch (_err) {
 				alert("Failed to import profile: Invalid JSON");
@@ -373,9 +373,7 @@ export function ProfileEditor() {
 										</Select>
 										<Button
 											onClick={importFromPico}
-											disabled={
-												!selectedPicoProfile || !picoProfileContent?.success
-											}
+											disabled={!selectedPicoProfile || !picoProfileContent}
 											size="sm"
 										>
 											Import

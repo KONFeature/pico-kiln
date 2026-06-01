@@ -85,32 +85,21 @@ export function ProfileCacheProvider({ children }: ProfileCacheProviderProps) {
 
 				try {
 					// Check if already in TanStack Query cache
-					const cachedData = queryClient.getQueryData<{ content: string }>(
+					const cachedData = queryClient.getQueryData<string>(
 						picoKeys.fileContent("profiles", filename),
 					);
 
 					let profileContent: string;
 
-					if (cachedData?.content) {
-						profileContent = cachedData.content;
+					if (cachedData) {
+						profileContent = cachedData;
 					} else {
-						// Fetch from API
-						const response = await client.getFile("profiles", filename);
-						if (response.success && response.content) {
-							profileContent = response.content;
-							// Update TanStack Query cache
-							queryClient.setQueryData(
-								picoKeys.fileContent("profiles", filename),
-								response,
-							);
-						} else {
-							loadedNamesRef.current.add(profileName);
-							setPreloadProgress({
-								loaded: i + 1,
-								total: unloadedProfiles.length,
-							});
-							continue;
-						}
+						// Fetch raw file content from API (throws on failure)
+						profileContent = await client.getFile("profiles", filename);
+						queryClient.setQueryData(
+							picoKeys.fileContent("profiles", filename),
+							profileContent,
+						);
 					}
 
 					// Parse the profile
