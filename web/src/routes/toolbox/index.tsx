@@ -13,7 +13,7 @@ function ToolboxPage() {
 	return (
 		<div className="container max-w-7xl mx-auto py-4 sm:py-8 px-4 space-y-4 sm:space-y-6">
 			<div className="flex items-center gap-3">
-				<Wrench className="w-6 sm:w-8 h-6 sm:h-8 text-green-500" />
+				<Wrench className="w-6 sm:w-8 h-6 sm:h-8 text-muted-foreground" />
 				<h1 className="text-2xl sm:text-3xl font-bold">Toolbox</h1>
 			</div>
 

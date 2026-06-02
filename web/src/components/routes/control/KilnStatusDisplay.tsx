@@ -157,16 +157,24 @@ export function KilnStatusDisplay({
 			case "IDLE":
 				return <Badge variant="outline">Idle</Badge>;
 			case "RUNNING":
-				return <Badge className="bg-blue-600 hover:bg-blue-700">Running</Badge>;
+				return (
+					<Badge className="bg-info text-info-foreground hover:bg-info/90">
+						Running
+					</Badge>
+				);
 			case "TUNING":
 				return (
-					<Badge className="bg-purple-600 hover:bg-purple-700">Tuning</Badge>
+					<Badge className="bg-tuning text-tuning-foreground hover:bg-tuning/90">
+						Tuning
+					</Badge>
 				);
 			case "ERROR":
 				return <Badge variant="destructive">Error</Badge>;
 			case "COMPLETE":
 				return (
-					<Badge className="bg-green-600 hover:bg-green-700">Complete</Badge>
+					<Badge className="bg-success text-success-foreground hover:bg-success/90">
+						Complete
+					</Badge>
 				);
 			default:
 				return <Badge variant="outline">{state}</Badge>;
@@ -178,7 +186,9 @@ export function KilnStatusDisplay({
 	};
 
 	const formatDuration = (seconds?: number) => {
-		if (!seconds) return "N/A";
+		if (seconds === undefined || seconds === null || Number.isNaN(seconds)) {
+			return "N/A";
+		}
 		const hours = Math.floor(seconds / 3600);
 		const minutes = Math.floor((seconds % 3600) / 60);
 		const secs = Math.floor(seconds % 60);
@@ -246,7 +256,7 @@ export function KilnStatusDisplay({
 						<div className="space-y-2">
 							<div className="flex items-center gap-2">
 								<Flame
-									className={`w-5 h-5 ${(status.ssr_output ?? 0) > 0 ? "text-orange-500" : "text-gray-400"}`}
+									className={`w-5 h-5 ${(status.ssr_output ?? 0) > 0 ? "text-chart-ssr" : "text-muted-foreground"}`}
 								/>
 								<span className="text-sm font-medium">SSR Output</span>
 							</div>
@@ -284,9 +294,9 @@ export function KilnStatusDisplay({
 
 					{/* Recovery Mode Warning */}
 					{status.is_recovering && (
-						<Alert className="border-orange-500 bg-orange-50 dark:bg-orange-950/20">
-							<CircleAlert className="h-4 w-4 text-orange-600" />
-							<AlertDescription className="text-orange-800 dark:text-orange-400">
+						<Alert variant="warning">
+							<CircleAlert className="h-4 w-4" />
+							<AlertDescription>
 								<strong>Recovery Mode:</strong> Kiln is recovering from
 								temperature drop.
 								{status.recovery_target_temp !== undefined && (
@@ -451,7 +461,7 @@ export function KilnStatusDisplay({
 												key={index}
 												className={`flex items-center gap-2 text-xs p-2 rounded ${
 													isCurrent
-														? "bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700"
+														? "bg-info/10 border border-info/30"
 														: isCompleted
 															? "bg-muted/30 text-muted-foreground"
 															: "bg-muted/50"
@@ -497,7 +507,7 @@ export function KilnStatusDisplay({
 							<CardTitle>Tuning Progress</CardTitle>
 							{status.step_index !== undefined &&
 								status.total_steps !== undefined && (
-									<Badge className="bg-purple-600 hover:bg-purple-700">
+									<Badge className="bg-tuning text-tuning-foreground hover:bg-tuning/90">
 										Step {status.step_index + 1} / {status.total_steps}
 									</Badge>
 								)}
@@ -514,7 +524,7 @@ export function KilnStatusDisplay({
 
 						{/* Current Phase/Step */}
 						{status.step_name && (
-							<div className="p-3 rounded-lg bg-purple-50 dark:bg-purple-950/20 border border-purple-200 dark:border-purple-800 space-y-2">
+							<div className="p-3 rounded-lg bg-tuning/10 border border-tuning/30 space-y-2">
 								<div className="flex items-center justify-between">
 									<span className="text-sm font-medium">
 										Current Phase: {status.step_name}

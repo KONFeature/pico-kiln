@@ -164,7 +164,7 @@ export function RunVisualizer() {
 										<ReferenceLine
 											key={idx}
 											x={time}
-											stroke="#999"
+											stroke="var(--muted-foreground)"
 											strokeDasharray="3 3"
 											opacity={0.4}
 										/>
@@ -197,7 +197,7 @@ export function RunVisualizer() {
 									<Line
 										type="monotone"
 										dataKey="temp"
-										stroke="#3b82f6"
+										stroke="var(--chart-cooling)"
 										strokeWidth={2}
 										dot={false}
 										name="Current Temp"
@@ -205,7 +205,7 @@ export function RunVisualizer() {
 									<Line
 										type="monotone"
 										dataKey="target_temp"
-										stroke="#ef4444"
+										stroke="var(--chart-heating)"
 										strokeWidth={1.5}
 										strokeDasharray="5 5"
 										dot={false}
@@ -230,7 +230,7 @@ export function RunVisualizer() {
 											<ReferenceLine
 												key={idx}
 												x={time}
-												stroke="#999"
+												stroke="var(--muted-foreground)"
 												strokeDasharray="3 3"
 												opacity={0.4}
 											/>
@@ -264,8 +264,8 @@ export function RunVisualizer() {
 										<Area
 											type="monotone"
 											dataKey="ssr_output"
-											stroke="#f97316"
-											fill="#f97316"
+											stroke="var(--chart-ssr)"
+											fill="var(--chart-ssr)"
 											fillOpacity={0.3}
 											name="SSR Output (%)"
 										/>
@@ -289,12 +289,16 @@ export function RunVisualizer() {
 												<ReferenceLine
 													key={idx}
 													x={time}
-													stroke="#999"
+													stroke="var(--muted-foreground)"
 													strokeDasharray="3 3"
 													opacity={0.4}
 												/>
 											))}
-											<ReferenceLine y={0} stroke="#000" strokeOpacity={0.3} />
+											<ReferenceLine
+												y={0}
+												stroke="var(--foreground)"
+												strokeOpacity={0.3}
+											/>
 											<XAxis
 												dataKey="time_hours"
 												label={{
@@ -323,7 +327,7 @@ export function RunVisualizer() {
 											<Line
 												type="monotone"
 												dataKey="measured_rate"
-												stroke="#22c55e"
+												stroke="var(--chart-rate)"
 												strokeWidth={2}
 												dot={false}
 												name="Measured Rate"

@@ -85,7 +85,7 @@ export function TuningControls({ status }: TuningControlsProps) {
 			<Card>
 				<CardHeader>
 					<CardTitle className="flex items-center gap-2">
-						<Zap className="w-5 h-5 text-purple-500" />
+						<Zap className="w-5 h-5 text-tuning" />
 						PID Auto-Tuning
 					</CardTitle>
 					<CardDescription>
@@ -168,9 +168,9 @@ export function TuningControls({ status }: TuningControlsProps) {
 						</>
 					) : (
 						<>
-							<Alert className="border-purple-600 bg-purple-50">
-								<Zap className="w-4 h-4 text-purple-600" />
-								<AlertDescription className="text-purple-800">
+							<Alert variant="tuning">
+								<Zap className="w-4 h-4" />
+								<AlertDescription>
 									<div className="space-y-2">
 										<div>
 											<strong>Tuning in progress</strong>
@@ -186,9 +186,9 @@ export function TuningControls({ status }: TuningControlsProps) {
 												<div className="text-sm">
 													Progress: {status.tuning.progress.toFixed(1)}%
 												</div>
-												<div className="w-full bg-purple-200 rounded-full h-2">
+												<div className="w-full bg-tuning/20 rounded-full h-2">
 													<div
-														className="bg-purple-600 h-2 rounded-full transition-all duration-500"
+														className="bg-tuning h-2 rounded-full transition-all duration-500"
 														style={{ width: `${status.tuning.progress}%` }}
 													/>
 												</div>

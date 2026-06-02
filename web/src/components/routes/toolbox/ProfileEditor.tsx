@@ -54,7 +54,7 @@ const DEFAULT_PROFILE: Profile = {
 	temp_units: "c",
 	description: "",
 	steps: [
-		{ type: "ramp", target_temp: 600 },
+		{ type: "ramp", target_temp: 600, desired_rate: 100 },
 		{ type: "hold", target_temp: 600, duration: 600 },
 	],
 };
@@ -400,7 +400,7 @@ export function ProfileEditor() {
 								key={index}
 								className={`p-4 rounded-lg border transition-colors ${
 									error
-										? "bg-red-50 border-red-300 dark:bg-red-950/20 dark:border-red-800"
+										? "bg-destructive/10 border-destructive/40"
 										: "bg-muted/30 hover:bg-muted/50"
 								}`}
 							>
@@ -496,7 +496,10 @@ export function ProfileEditor() {
 											{step.type === "ramp" && (
 												<>
 													<div>
-														<Label>Desired Rate (°C/h)</Label>
+														<Label>
+															Desired Rate (°{profile.temp_units.toUpperCase()}
+															/h)
+														</Label>
 														<Input
 															type="number"
 															value={step.desired_rate ?? ""}
@@ -513,7 +516,9 @@ export function ProfileEditor() {
 														/>
 													</div>
 													<div>
-														<Label>Min Rate (°C/h)</Label>
+														<Label>
+															Min Rate (°{profile.temp_units.toUpperCase()}/h)
+														</Label>
 														<Input
 															type="number"
 															value={step.min_rate ?? ""}
@@ -715,7 +720,7 @@ export function ProfileEditor() {
 						{stats && (
 							<p className="text-sm text-muted-foreground mt-1">
 								Duration: {stats.duration.toFixed(2)}h | Max Temp:{" "}
-								{stats.maxTemp.toFixed(0)}°C
+								{stats.maxTemp.toFixed(0)}°{profile.temp_units.toUpperCase()}
 							</p>
 						)}
 					</div>
@@ -723,19 +728,19 @@ export function ProfileEditor() {
 					<div className="space-y-4">
 						<div className="flex gap-4 text-sm flex-wrap">
 							<div className="flex items-center gap-2">
-								<div className="w-4 h-4 rounded bg-red-500" />
+								<div className="w-4 h-4 rounded bg-chart-heating" />
 								<span>Ramp (heating)</span>
 							</div>
 							<div className="flex items-center gap-2">
-								<div className="w-4 h-4 rounded bg-yellow-500" />
+								<div className="w-4 h-4 rounded bg-chart-hold" />
 								<span>Hold</span>
 							</div>
 							<div className="flex items-center gap-2">
-								<div className="w-4 h-4 rounded bg-blue-500" />
+								<div className="w-4 h-4 rounded bg-chart-cooling" />
 								<span>Controlled Cooling</span>
 							</div>
 							<div className="flex items-center gap-2">
-								<div className="w-4 h-4 rounded bg-cyan-500" />
+								<div className="w-4 h-4 rounded bg-chart-natural-cooling" />
 								<span>Natural Cooling</span>
 							</div>
 						</div>
@@ -780,7 +785,10 @@ export function ProfileEditor() {
 												<p className="font-semibold">
 													Time: {point.time_hours.toFixed(2)}h
 												</p>
-												<p>Temperature: {point.temp.toFixed(1)}°C</p>
+												<p>
+													Temperature: {point.temp.toFixed(1)}°
+													{profile.temp_units.toUpperCase()}
+												</p>
 												{segment && (
 													<>
 														<p className="mt-2 font-semibold capitalize">
@@ -796,12 +804,14 @@ export function ProfileEditor() {
 															<>
 																{segment.desiredRate && (
 																	<p className="text-sm">
-																		Desired rate: {segment.desiredRate}°C/h
+																		Desired rate: {segment.desiredRate}°
+																		{profile.temp_units.toUpperCase()}/h
 																	</p>
 																)}
 																{segment.minRate && (
 																	<p className="text-sm">
-																		Min rate: {segment.minRate}°C/h
+																		Min rate: {segment.minRate}°
+																		{profile.temp_units.toUpperCase()}/h
 																	</p>
 																)}
 															</>

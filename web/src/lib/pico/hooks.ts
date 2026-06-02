@@ -183,10 +183,10 @@ export function useReboot() {
 				try {
 					return await client.reboot();
 				} catch (error) {
-					// If the request times out or fails, it might be because
-					// the Pico already rebooted. Treat as success.
-					if (error instanceof PicoAPIError) {
-						// Consider timeout as success since the Pico may have rebooted
+					// Reboot drops the connection before responding, so only a timeout
+					// or network failure (no HTTP status) means the command landed. A
+					// real HTTP/parse error (statusCode set) means it did NOT.
+					if (error instanceof PicoAPIError && error.statusCode === undefined) {
 						return { success: true, message: "Reboot initiated" };
 					}
 					throw error;

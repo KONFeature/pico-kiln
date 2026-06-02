@@ -34,7 +34,7 @@ code {
   --accent: oklch(0.967 0.001 286.375);
   --accent-foreground: oklch(0.21 0.006 285.885);
   --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(0.92 0.004 286.32);
   --input: oklch(0.92 0.004 286.32);
   --ring: oklch(0.871 0.006 286.286);
@@ -52,6 +52,25 @@ code {
   --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
   --sidebar-border: oklch(0.92 0.004 286.32);
   --sidebar-ring: oklch(0.871 0.006 286.286);
+
+  /* Semantic status colors. Light values are kept dark enough (L≈0.5) to pass
+     WCAG AA both as text on a tinted bg and as a solid bg under white text. */
+  --success: oklch(0.5 0.15 150);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.5 0.15 52);
+  --warning-foreground: oklch(0.985 0 0);
+  --info: oklch(0.5 0.2 262);
+  --info-foreground: oklch(0.985 0 0);
+  --tuning: oklch(0.5 0.22 300);
+  --tuning-foreground: oklch(0.985 0 0);
+
+  /* Kiln data-visualization colors (hex for SVG/recharts compatibility) */
+  --chart-heating: #ef4444; /* ramp / heating */
+  --chart-hold: #eab308; /* hold */
+  --chart-cooling: #3b82f6; /* controlled cooling */
+  --chart-natural-cooling: #06b6d4; /* natural cooling */
+  --chart-ssr: #f97316; /* SSR output / heat */
+  --chart-rate: #22c55e; /* measured rate */
 }
 
 .dark {
@@ -70,7 +89,7 @@ code {
   --accent: oklch(0.274 0.006 286.033);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.396 0.141 25.723);
-  --destructive-foreground: oklch(0.637 0.237 25.331);
+  --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(0.274 0.006 286.033);
   --input: oklch(0.274 0.006 286.033);
   --ring: oklch(0.442 0.017 285.786);
@@ -87,6 +106,24 @@ code {
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(0.274 0.006 286.033);
   --sidebar-ring: oklch(0.442 0.017 285.786);
+
+  /* Semantic status colors (brighter for dark backgrounds) */
+  --success: oklch(0.7 0.16 150);
+  --success-foreground: oklch(0.205 0 0);
+  --warning: oklch(0.78 0.15 65);
+  --warning-foreground: oklch(0.205 0 0);
+  --info: oklch(0.7 0.16 255);
+  --info-foreground: oklch(0.205 0 0);
+  --tuning: oklch(0.72 0.18 300);
+  --tuning-foreground: oklch(0.205 0 0);
+
+  /* Kiln data-visualization colors (brighter for dark backgrounds) */
+  --chart-heating: #f87171; /* ramp / heating */
+  --chart-hold: #facc15; /* hold */
+  --chart-cooling: #60a5fa; /* controlled cooling */
+  --chart-natural-cooling: #22d3ee; /* natural cooling */
+  --chart-ssr: #fb923c; /* SSR output / heat */
+  --chart-rate: #4ade80; /* measured rate */
 }
 
 @theme inline {
@@ -126,6 +163,20 @@ code {
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-tuning: var(--tuning);
+  --color-tuning-foreground: var(--tuning-foreground);
+  --color-chart-heating: var(--chart-heating);
+  --color-chart-hold: var(--chart-hold);
+  --color-chart-cooling: var(--chart-cooling);
+  --color-chart-natural-cooling: var(--chart-natural-cooling);
+  --color-chart-ssr: var(--chart-ssr);
+  --color-chart-rate: var(--chart-rate);
 }
 
 @layer base {
@@ -142,9 +193,10 @@ code {
   padding-top: calc(1rem + env(safe-area-inset-top));
 }
 
-/* Ensure minimum touch target size for buttons on mobile (44x44px per iOS/Android guidelines) */
+/* Comfortable touch target for primary controls (44x44px per iOS/Android guidelines).
+   Applied opt-in via `.touch-target` so shadcn icon/inline button sizes are preserved. */
 @layer components {
-  button {
+  .touch-target {
     min-height: 44px;
     min-width: 44px;
   }

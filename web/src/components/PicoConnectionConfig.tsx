@@ -115,9 +115,9 @@ export function PicoConnectionConfig({
 						</div>
 
 						{testConnection.isSuccess && testConnection.data && (
-							<Alert className="border-green-600 bg-green-50">
-								<CircleCheckBig className="w-4 h-4 text-green-600" />
-								<AlertDescription className="text-green-800">
+							<Alert variant="success">
+								<CircleCheckBig className="w-4 h-4" />
+								<AlertDescription>
 									Connection successful! You can now control your kiln.
 								</AlertDescription>
 							</Alert>

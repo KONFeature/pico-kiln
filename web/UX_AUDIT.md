@@ -4,7 +4,7 @@
 > recharts, bundled to Android/desktop via Tauri). This is the primary mobile
 > experience for controlling a physical kiln over Wi-Fi/HTTP to a Raspberry Pi Pico.
 >
-> Status: **audit + plan only** (no code changes yet).
+> Status: **Phase 1 implemented** ✅ (theming foundation + correctness). Phases 2–4 still pending.
 
 ## Decisions captured (from review)
 
@@ -127,12 +127,16 @@ Grouped by severity. File:line references are approximate to the audited revisio
 
 ## Improvement plan (phased, no rewrite)
 
-### Phase 1 — Foundation: theming & correctness (high value, low risk)
-1. Add a **theme provider + toggle** (system default; apply `.dark` to `documentElement`; set `color-scheme`). Re-theme `Header` to tokens.
-2. Replace hardcoded colors with **semantic tokens** (`--chart-*` + new `--success/--warning/--info`). Fix the `--destructive-foreground` contrast bug (C2).
-3. Gate **DevTools** behind `import.meta.env.DEV` (m1). Scope the **44px** rule to real controls (m2).
-4. Fix `return {} as T` → throw a typed error (C6); fix `useReboot` to only treat `AbortError`/network as success (M4).
-5. Fix **Fahrenheit** end-to-end (M3); give `DEFAULT_PROFILE` a valid rate (M7); fix `formatDuration(0)` (m9).
+### Phase 1 — Foundation: theming & correctness (high value, low risk) — ✅ COMPLETED
+1. ✅ Added a **theme provider + toggle** (`lib/theme/theme-provider.tsx`, `components/ThemeToggle.tsx`): light/dark/system, persists to `localStorage`, applies `.dark` to `documentElement` + sets `color-scheme`, follows the system preference live, and a pre-paint script in `index.html` prevents theme flash. `Header` re-themed to tokens (C1) and the toggle is mounted in it.
+2. ✅ Replaced **all ~43 hardcoded colors** with **semantic tokens**. Added `--success/--warning/--info/--tuning` (+ `-foreground`) and kiln chart tokens `--chart-heating/hold/cooling/natural-cooling/ssr/rate` for both themes, registered via `@theme inline`; added `success/warning/info/tuning` variants to `ui/alert`. Fixed the `--destructive-foreground` contrast bug (C2). Light token lightness tuned to **pass WCAG AA** both as text-on-tint and as solid badge backgrounds.
+3. ✅ **DevTools** (m1): production builds already strip all devtools via the `@tanstack/devtools-vite` plugin — verified the prod bundle contains **zero** devtools code. (An `import.meta.env.DEV` wrapper is incompatible with that plugin's transform, so it is intentionally not used.) **44px** rule scoped (m2): the global `button{min-height/width:44px}` override (which distorted icon/inline buttons) was replaced with an opt-in `.touch-target` utility; primary CTAs use `size="lg"` (44px) and header controls use `.touch-target`.
+4. ✅ `return {} as T` → now throws a typed `PicoAPIError` on non-JSON responses (C6). `useReboot` now only treats a connection drop (`statusCode === undefined`, i.e. timeout/network) as success and rethrows real HTTP errors (M4). Verified against firmware: every endpoint returns `application/json`, so the strict path only triggers when the configured URL isn't the kiln.
+5. ✅ **Fahrenheit** made consistent across the editor/preview/visualizers — trajectory room-temp baseline and natural-cooling fallback are unit-aware (68 °F / 20 °C), and all rate/temperature labels follow the profile's unit (M3). `DEFAULT_PROFILE` step 1 now has a valid `desired_rate` (M7). `formatDuration(0)` now returns `0s` instead of `N/A` (m9).
+
+> **Notes / scope boundaries**
+> - **Dashboard live readouts stay in °C.** `current_temp` comes from the MAX31856 (Celsius) and the `/api/status` payload has no unit field; the firmware also stores raw target values. A full Fahrenheit *display* on the live dashboard needs firmware coordination (unit field or server-side conversion) and is deferred.
+> - **Charts still use recharts** (referencing the new `var(--chart-*)` tokens); the bklit migration remains Phase 4.
 
 ### Phase 2 — Error handling & trust
 6. Central `getFriendlyError(err)` mapper with recovery hints; map states/jargon to friendly copy (makers still get detail) (M2, m6).

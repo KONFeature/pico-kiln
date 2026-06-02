@@ -122,9 +122,15 @@ function detectPhases(data: LogDataPoint[]): Phase[] {
 }
 
 const PHASE_COLORS: Record<PhaseType, string> = {
-	heating: "#fca5a5",
-	cooling: "#93c5fd",
-	plateau: "#fef08a",
+	heating: "var(--chart-heating)",
+	cooling: "var(--chart-cooling)",
+	plateau: "var(--chart-hold)",
+};
+
+const PHASE_TINT: Record<PhaseType, string> = {
+	heating: "bg-chart-heating/15 border-chart-heating/40",
+	cooling: "bg-chart-cooling/15 border-chart-cooling/40",
+	plateau: "bg-chart-hold/15 border-chart-hold/40",
 };
 
 const PHASE_LABELS: Record<PhaseType, string> = {
@@ -317,7 +323,7 @@ export function TuningPhasesVisualizer() {
 									<Line
 										type="monotone"
 										dataKey="temp"
-										stroke="#3b82f6"
+										stroke="var(--chart-cooling)"
 										strokeWidth={2}
 										dot={false}
 										name="Temperature"
@@ -387,8 +393,8 @@ export function TuningPhasesVisualizer() {
 										<Area
 											type="monotone"
 											dataKey="ssr_output"
-											stroke="#f97316"
-											fill="#f97316"
+											stroke="var(--chart-ssr)"
+											fill="var(--chart-ssr)"
 											fillOpacity={0.5}
 											name="SSR Output (%)"
 										/>
@@ -419,12 +425,7 @@ export function TuningPhasesVisualizer() {
 										return (
 											<div
 												key={idx}
-												className="p-3 rounded border"
-												style={{
-													backgroundColor: PHASE_COLORS[phase.type],
-													borderColor: PHASE_COLORS[phase.type],
-													opacity: 0.9,
-												}}
+												className={`p-3 rounded border ${PHASE_TINT[phase.type]}`}
 											>
 												<div className="flex items-center justify-between">
 													<div className="font-semibold">

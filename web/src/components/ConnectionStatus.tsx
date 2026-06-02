@@ -31,7 +31,7 @@ export function ConnectionStatus() {
 		return (
 			<Badge
 				variant="default"
-				className="flex items-center gap-2 bg-green-600 hover:bg-green-700"
+				className="flex items-center gap-2 bg-success text-success-foreground hover:bg-success/90"
 			>
 				<Wifi className="w-3 h-3" />
 				<span>Connected</span>

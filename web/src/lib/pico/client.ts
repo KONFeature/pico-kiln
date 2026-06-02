@@ -92,8 +92,11 @@ export class PicoAPIClient {
 				return await response.json();
 			}
 
-			// If not JSON, return empty object as fallback
-			return {} as T;
+			// Fail loudly: a non-JSON body would otherwise become `{} as T` and crash downstream.
+			throw new PicoAPIError(
+				"Received an unexpected (non-JSON) response from the kiln.",
+				response.status,
+			);
 		} catch (error) {
 			if (error instanceof PicoAPIError) {
 				throw error;

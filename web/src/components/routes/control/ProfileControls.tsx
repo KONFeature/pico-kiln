@@ -235,9 +235,9 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 	return (
 		<div className="space-y-4">
 			{hasScheduled && status?.scheduled_profile && (
-				<Card className="border-amber-600">
+				<Card className="border-warning/50">
 					<CardHeader>
-						<CardTitle className="flex items-center gap-2 text-amber-600">
+						<CardTitle className="flex items-center gap-2 text-warning">
 							<Clock className="w-5 h-5" />
 							Scheduled Profile
 						</CardTitle>
@@ -374,8 +374,8 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 						</>
 					) : (
 						<>
-							<Alert className="border-blue-600 bg-blue-50">
-								<AlertDescription className="text-blue-800">
+							<Alert variant="info">
+								<AlertDescription>
 									Profile is currently running:{" "}
 									<strong>{status?.profile_name}</strong>
 								</AlertDescription>
@@ -414,7 +414,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 				</CardContent>
 			</Card>
 
-			<Card className="border-red-600">
+			<Card className="border-destructive/50">
 				<CardHeader>
 					<CardTitle className="text-destructive">Emergency Controls</CardTitle>
 					<CardDescription>
@@ -487,7 +487,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 								This will restart the Pico controller. The web interface will be
 								unavailable for 10-15 seconds while the device reboots.
 							</p>
-							<p className="text-orange-600 dark:text-orange-400">
+							<p className="text-warning">
 								Note: Any running profile will be stopped and the kiln will
 								enter shutdown mode.
 							</p>

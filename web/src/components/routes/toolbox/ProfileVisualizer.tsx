@@ -111,13 +111,15 @@ export function ProfileVisualizer() {
 									<div>
 										<span className="text-muted-foreground">Max Temp:</span>{" "}
 										<span className="font-semibold">
-											{stats.maxTemp.toFixed(0)}°C
+											{stats.maxTemp.toFixed(0)}°
+											{profile.temp_units.toUpperCase()}
 										</span>
 									</div>
 									<div>
 										<span className="text-muted-foreground">Min Temp:</span>{" "}
 										<span className="font-semibold">
-											{stats.minTemp.toFixed(0)}°C
+											{stats.minTemp.toFixed(0)}°
+											{profile.temp_units.toUpperCase()}
 										</span>
 									</div>
 								</div>
@@ -125,19 +127,19 @@ export function ProfileVisualizer() {
 
 							<div className="flex gap-4 text-sm flex-wrap">
 								<div className="flex items-center gap-2">
-									<div className="w-4 h-4 rounded bg-red-500" />
+									<div className="w-4 h-4 rounded bg-chart-heating" />
 									<span>Ramp (heating)</span>
 								</div>
 								<div className="flex items-center gap-2">
-									<div className="w-4 h-4 rounded bg-yellow-500" />
+									<div className="w-4 h-4 rounded bg-chart-hold" />
 									<span>Hold</span>
 								</div>
 								<div className="flex items-center gap-2">
-									<div className="w-4 h-4 rounded bg-blue-500" />
+									<div className="w-4 h-4 rounded bg-chart-cooling" />
 									<span>Controlled Cooling</span>
 								</div>
 								<div className="flex items-center gap-2">
-									<div className="w-4 h-4 rounded bg-cyan-500" />
+									<div className="w-4 h-4 rounded bg-chart-natural-cooling" />
 									<span>Natural Cooling</span>
 								</div>
 							</div>
@@ -184,7 +186,10 @@ export function ProfileVisualizer() {
 													<p className="font-semibold">
 														Time: {point.time_hours.toFixed(2)}h
 													</p>
-													<p>Temperature: {point.temp.toFixed(1)}°C</p>
+													<p>
+														Temperature: {point.temp.toFixed(1)}°
+														{profile.temp_units.toUpperCase()}
+													</p>
 													{segment && (
 														<>
 															<p className="mt-2 font-semibold capitalize">
@@ -200,12 +205,14 @@ export function ProfileVisualizer() {
 																<>
 																	{segment.desiredRate && (
 																		<p className="text-sm">
-																			Desired rate: {segment.desiredRate}°C/h
+																			Desired rate: {segment.desiredRate}°
+																			{profile.temp_units.toUpperCase()}/h
 																		</p>
 																	)}
 																	{segment.minRate && (
 																		<p className="text-sm">
-																			Min rate: {segment.minRate}°C/h
+																			Min rate: {segment.minRate}°
+																			{profile.temp_units.toUpperCase()}/h
 																		</p>
 																	)}
 																</>
@@ -247,14 +254,18 @@ export function ProfileVisualizer() {
 											<span className="font-medium">Step {idx + 1}:</span>
 											{step.type === "ramp" && (
 												<span>
-													Ramp to {step.target_temp}°C at{" "}
-													{step.desired_rate ?? 100}°C/h
-													{step.min_rate && ` (min: ${step.min_rate}°C/h)`}
+													Ramp to {step.target_temp}°
+													{profile.temp_units.toUpperCase()} at{" "}
+													{step.desired_rate ?? 100}°
+													{profile.temp_units.toUpperCase()}/h
+													{step.min_rate &&
+														` (min: ${step.min_rate}°${profile.temp_units.toUpperCase()}/h)`}
 												</span>
 											)}
 											{step.type === "hold" && (
 												<span>
-													Hold at {step.target_temp}°C for{" "}
+													Hold at {step.target_temp}°
+													{profile.temp_units.toUpperCase()} for{" "}
 													{((step.duration ?? 0) / 60).toFixed(0)} minutes
 												</span>
 											)}
@@ -262,7 +273,7 @@ export function ProfileVisualizer() {
 												<span>
 													Natural cooling
 													{step.target_temp !== undefined
-														? ` to ${step.target_temp}°C`
+														? ` to ${step.target_temp}°${profile.temp_units.toUpperCase()}`
 														: " (no target)"}
 												</span>
 											)}
