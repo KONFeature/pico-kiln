@@ -4,7 +4,7 @@
 > recharts, bundled to Android/desktop via Tauri). This is the primary mobile
 > experience for controlling a physical kiln over Wi-Fi/HTTP to a Raspberry Pi Pico.
 >
-> Status: **Phase 1 implemented** ✅ (theming foundation + correctness). Phases 2–4 still pending.
+> Status: **Phases 1–3 implemented** ✅ (theming + correctness, error-handling & trust, dashboard clarity). Phase 4 (editor for touch + bklit migration) still pending.
 
 ## Decisions captured (from review)
 
@@ -138,15 +138,20 @@ Grouped by severity. File:line references are approximate to the audited revisio
 > - **Dashboard live readouts stay in °C.** `current_temp` comes from the MAX31856 (Celsius) and the `/api/status` payload has no unit field; the firmware also stores raw target values. A full Fahrenheit *display* on the live dashboard needs firmware coordination (unit field or server-side conversion) and is deferred.
 > - **Charts still use recharts** (referencing the new `var(--chart-*)` tokens); the bklit migration remains Phase 4.
 
-### Phase 2 — Error handling & trust
-6. Central `getFriendlyError(err)` mapper with recovery hints; map states/jargon to friendly copy (makers still get detail) (M2, m6).
-7. **Surface `success:false`** results + file errors as `<Alert>`s; replace `alert()` with `<Alert>` (C4, M8).
-8. `staleTime: 0` for status + a **"last updated / stale"** indicator on the temperature readout; clear offline banner (M6).
+### Phase 2 — Error handling & trust — ✅ COMPLETED
+6. ✅ Central **`getFriendlyError(err)`** mapper (`lib/pico/errors.ts`) turns raw API/network errors into calm, recovery-oriented copy — timeout → "Kiln isn't responding…", network → "Can't reach the kiln…", non-JSON → "Unexpected response…", with distinct 404 / 5xx / 4xx handling and device `{success:false}` messages trusted verbatim — while preserving the raw string as `detail`. A reusable **`<ErrorAlert>`** renders the friendly title/message with the technical detail tucked behind a **"Technical details"** disclosure (makers still get detail → progressive disclosure). Friendly **`STATE_LABELS` / `STATE_DESCRIPTIONS`** map state jargon to plain language (a one-line state description now shows on the dashboard) (M2, m6).
+7. ✅ **All `success:false` results now surface.** A hooks-level **`unwrap()`** rethrows logical (HTTP 200 + `{success:false}`) responses as a `PicoAPIError`, so every control / tuning / file mutation reports through `isError` + `<ErrorAlert>` instead of a swallowed `console.error`. File **download/read** errors are captured into state and shown as `<Alert>`s; the shutdown **and reboot** dialogs now surface failures; `ProfileEditor`'s native **`alert()`** calls are replaced with inline `<Alert>`. `useReboot` still treats a dropped connection as success but no longer swallows a genuine HTTP/logical rejection (C4, M8).
+8. ✅ `useKilnStatus` set to **`staleTime: 0`** (a live safety readout is never "fresh"). The dashboard shows a live **"Updated Xs ago"** indicator that flips amber on disconnect, plus a clear **offline banner** — and the last reading now stays visible (the full error card only takes over when there is no data at all) (M6).
 
-### Phase 3 — Dashboard clarity (makers-tuned)
-9. **Hero temperature** + progress-to-target ring/gauge; live mini temp-vs-time chart (M5).
-10. De-duplicate `KilnStatusDisplay`'s four near-identical state blocks; move PID/SSR detail into an **"Advanced"** disclosure (open-by-default optional).
-11. Clarify the running-state control cluster (Stop vs Emergency vs Reboot) (m4).
+### Phase 3 — Dashboard clarity (makers-tuned) — ✅ COMPLETED
+9. ✅ **Hero temperature.** A themed 270° **progress-to-target gauge** (`TemperatureGauge`, SVG with `stroke-dashoffset` fill, accent color tracks heating/cooling/holding) shows the current temp at its center, alongside a live **temp-vs-time mini chart** (`LiveTempChart` + `useTemperatureHistory` rolling buffer; recharts, animations off, `var(--chart-*)` token colors) (M5).
+10. ✅ De-duplicated the four near-identical status blocks behind a shared **`StatusHeader`**; **PID detail moved into an "Advanced" `Collapsible`** disclosure (closed by default), and "SSR Output" surfaced as a friendlier **"Heat Output"** glance stat (m6).
+11. ✅ Clarified the running-state controls with a clear hierarchy + inline copy: **Stop Firing** (outline / controlled-stop styling, "cools naturally" hint), **Emergency Shutdown** (solid red, "cuts power" hint), **Reboot Controller** (secondary, "if unresponsive" hint, now surfaces errors) (m4).
+
+> **Notes / scope boundaries**
+> - The dashboard mini-chart accumulates readings **in memory while mounted** (a live glance, not a log). **LTTB downsampling** for long historical logs remains Phase 4.
+> - Charts still use **recharts** with the `var(--chart-*)` tokens; the bklit migration remains Phase 4.
+> - Dashboard live readouts remain in **°C** (firmware constraint, per the Phase 1 notes above).
 
 ### Phase 4 — Editor for touch + bklit migration
 12. Persist editor draft (context/localStorage) + **unsaved-changes guard**; confirm destructive actions (delete/import-overwrite); schema-validate imports; overwrite warning on upload (C3, m10).

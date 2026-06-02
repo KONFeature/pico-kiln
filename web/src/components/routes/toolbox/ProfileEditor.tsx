@@ -67,6 +67,7 @@ export function ProfileEditor() {
 	);
 	const [selectedPicoProfile, setSelectedPicoProfile] = useState<string>("");
 	const [uploadFilename, setUploadFilename] = useState<string>("");
+	const [importError, setImportError] = useState<string | null>(null);
 	const { client, isConfigured } = usePico();
 	const queryClient = useQueryClient();
 
@@ -220,8 +221,11 @@ export function ProfileEditor() {
 			const json = await readFileAsText(file);
 			const imported = JSON.parse(json) as Profile;
 			setProfile(imported);
+			setImportError(null);
 		} catch (_err) {
-			alert("Failed to import profile: Invalid JSON");
+			setImportError(
+				`Couldn't import "${file.name}" — it isn't valid profile JSON.`,
+			);
 		}
 	};
 
@@ -230,8 +234,11 @@ export function ProfileEditor() {
 			try {
 				const imported = JSON.parse(picoProfileContent.content) as Profile;
 				setProfile(imported);
+				setImportError(null);
 			} catch (_err) {
-				alert("Failed to import profile: Invalid JSON");
+				setImportError(
+					"Couldn't import this profile — its contents aren't valid JSON.",
+				);
 			}
 		}
 	};
@@ -312,6 +319,13 @@ export function ProfileEditor() {
 							From Pico
 						</Button>
 					</div>
+
+					{importError && (
+						<Alert variant="destructive">
+							<CircleAlert className="h-4 w-4" />
+							<AlertDescription>{importError}</AlertDescription>
+						</Alert>
+					)}
 
 					{importMode === "file" && (
 						<label>

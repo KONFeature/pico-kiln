@@ -1,5 +1,6 @@
-import { AlertTriangle, Loader2, Play, Square, Zap } from "lucide-react";
+import { Loader2, Play, Square, Zap } from "lucide-react";
 import { useState } from "react";
+import { ErrorAlert } from "@/components/ErrorAlert";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -54,30 +55,13 @@ export function TuningControls({ status }: TuningControlsProps) {
 
 	const isTuning = status?.state === "TUNING";
 
-	const handleStart = async () => {
-		try {
-			const maxTempNum = maxTemp ? Number.parseInt(maxTemp, 10) : undefined;
-			const result = await startTuning.mutateAsync({
-				mode: selectedMode,
-				maxTemp: maxTempNum,
-			});
-			if (!result.success) {
-				console.error("Failed to start tuning:", result.error);
-			}
-		} catch (error) {
-			console.error("Error starting tuning:", error);
-		}
+	const handleStart = () => {
+		const maxTempNum = maxTemp ? Number.parseInt(maxTemp, 10) : undefined;
+		startTuning.mutate({ mode: selectedMode, maxTemp: maxTempNum });
 	};
 
-	const handleStop = async () => {
-		try {
-			const result = await stopTuning.mutateAsync();
-			if (!result.success) {
-				console.error("Failed to stop tuning:", result.error);
-			}
-		} catch (error) {
-			console.error("Error stopping tuning:", error);
-		}
+	const handleStop = () => {
+		stopTuning.mutate();
 	};
 
 	return (
@@ -157,14 +141,7 @@ export function TuningControls({ status }: TuningControlsProps) {
 								)}
 							</Button>
 
-							{startTuning.isError && (
-								<Alert variant="destructive">
-									<AlertTriangle className="w-4 h-4" />
-									<AlertDescription>
-										{startTuning.error?.message || "Failed to start tuning"}
-									</AlertDescription>
-								</Alert>
-							)}
+							{startTuning.isError && <ErrorAlert error={startTuning.error} />}
 						</>
 					) : (
 						<>
@@ -230,14 +207,7 @@ export function TuningControls({ status }: TuningControlsProps) {
 								)}
 							</Button>
 
-							{stopTuning.isError && (
-								<Alert variant="destructive">
-									<AlertTriangle className="w-4 h-4" />
-									<AlertDescription>
-										{stopTuning.error?.message || "Failed to stop tuning"}
-									</AlertDescription>
-								</Alert>
-							)}
+							{stopTuning.isError && <ErrorAlert error={stopTuning.error} />}
 						</>
 					)}
 				</CardContent>
