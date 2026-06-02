@@ -5,10 +5,10 @@ import {
 	useRef,
 } from "react";
 import type { RunChartPoint } from "@/lib/run-series";
+import { MIN_SPAN_S } from "./types";
 
 const VB_W = 1000;
 const VB_H = 100;
-const MIN_SPAN_S = 30;
 
 type DragMode = "create" | "move" | "resize-left" | "resize-right";
 

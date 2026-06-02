@@ -25,10 +25,17 @@ export interface RunSeriesModel {
  * Projects every series onto a single temperature-valued plot axis so the
  * bklit chart can overlay them on one shared `yScale`. SSR (0–100 %) and the
  * heating rate (°C/h) are linearly mapped into `[0, plotMax]`; the matching
- * `KilnRightAxis` inverts these maps to label the right gutter in real units.
+ * `KilnProjectedAxis` inverts these maps to label the gutter in real units.
  * Domains are computed from the whole run so the axes stay fixed while zooming.
+ *
+ * `ssrHeightFraction` shrinks the SSR projection into the lower band of the
+ * plot (e.g. `1 / 3`) so it doesn't swamp the temperature trace when they share
+ * the chart; pass `1` to use the full height when SSR is shown on its own.
  */
-export function buildRunSeriesModel(data: LogDataPoint[]): RunSeriesModel {
+export function buildRunSeriesModel(
+	data: LogDataPoint[],
+	ssrHeightFraction = 1,
+): RunSeriesModel {
 	let tempMax = 0;
 	let rateMin = Number.POSITIVE_INFINITY;
 	let rateMax = Number.NEGATIVE_INFINITY;
@@ -62,7 +69,7 @@ export function buildRunSeriesModel(data: LogDataPoint[]): RunSeriesModel {
 		plotMax,
 		rateDomain: [rateMin, rateMax],
 		hasRate,
-		ssrToPlot: (percent) => (percent / 100) * plotMax,
+		ssrToPlot: (percent) => (percent / 100) * plotMax * ssrHeightFraction,
 		rateToPlot: (rate) => ((rate - rateMin) / rateSpan) * plotMax,
 	};
 }
@@ -88,14 +95,15 @@ export function toRunChartPoint(
 /**
  * Windows the raw log to `[start, end]` elapsed seconds (or the whole run when
  * omitted), then LTTB-downsamples the slice. Downsampling the window instead of
- * the full run means zooming in reveals progressively finer detail.
+ * the full run means zooming in reveals progressively finer detail. This is the
+ * expensive step (filter + LTTB over the full log) and is deliberately kept
+ * apart from the cheap projection so callers can throttle it independently.
  */
-export function buildRunChartData(
+export function sampleRunWindow(
 	data: LogDataPoint[],
-	model: RunSeriesModel,
 	maxPoints: number,
 	window?: readonly [number, number] | null,
-): RunChartPoint[] {
+): LogDataPoint[] {
 	let slice = data;
 	if (window) {
 		const [s0, s1] = window;
@@ -104,12 +112,18 @@ export function buildRunChartData(
 		);
 		if (filtered.length >= 2) slice = filtered;
 	}
-	const sampled = lttbDownsample(
+	return lttbDownsample(
 		slice,
 		maxPoints,
 		(p) => p.elapsed_seconds,
 		(p) => p.current_temp_c,
 	);
+}
+
+export function projectRunPoints(
+	sampled: LogDataPoint[],
+	model: RunSeriesModel,
+): RunChartPoint[] {
 	return sampled.map((p) => toRunChartPoint(p, model));
 }
 

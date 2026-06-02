@@ -168,7 +168,7 @@ export function KilnTooltipContent({
 	return <TooltipContent rows={rows} title={title} />;
 }
 
-export interface KilnRightAxisProps {
+export interface KilnProjectedAxisProps {
 	domain: [number, number];
 	/**
 	 * Maps a real-unit axis value (e.g. an SSR percentage or a °C/h rate) into
@@ -180,9 +180,13 @@ export interface KilnRightAxisProps {
 	format: (value: number) => string;
 	numTicks?: number;
 	color?: string;
+	side?: "left" | "right";
+	/** Offset in px from `side`'s edge so two axes can stack in one gutter. */
+	inset?: number;
+	width?: number;
 }
 
-export function KilnRightAxis(props: KilnRightAxisProps) {
+export function KilnProjectedAxis(props: KilnProjectedAxisProps) {
 	const { containerRef } = useChartStable();
 	const [mounted, setMounted] = useState(false);
 
@@ -195,19 +199,24 @@ export function KilnRightAxis(props: KilnRightAxisProps) {
 		return null;
 	}
 
-	return <KilnRightAxisInner {...props} container={container} />;
+	return <KilnProjectedAxisInner {...props} container={container} />;
 }
 
-function KilnRightAxisInner({
+function KilnProjectedAxisInner({
 	domain,
 	mapToPlot,
 	format,
 	numTicks = 5,
 	color,
+	side = "right",
+	inset = 0,
+	width,
 	container,
-}: KilnRightAxisProps & { container: HTMLDivElement }) {
+}: KilnProjectedAxisProps & { container: HTMLDivElement }) {
 	const { yScale, margin } = useChartStable();
 	const [lo, hi] = domain;
+	const isRight = side === "right";
+	const boxWidth = width ?? (isRight ? margin.right : margin.left);
 
 	const ticks = useMemo(() => {
 		const n = Math.max(2, numTicks);
@@ -224,11 +233,15 @@ function KilnRightAxisInner({
 	return createPortal(
 		<div
 			className="pointer-events-none absolute top-0 bottom-0"
-			style={{ right: 0, width: margin.right }}
+			style={{ [isRight ? "right" : "left"]: inset, width: boxWidth }}
 		>
 			{ticks.map((tick) => (
 				<div
-					className="absolute left-0 flex items-center justify-start pl-2"
+					className={
+						isRight
+							? "absolute left-0 flex items-center justify-start pl-2"
+							: "absolute right-0 flex items-center justify-end pr-2"
+					}
 					key={tick.key}
 					style={{ top: tick.y, transform: "translateY(-50%)" }}
 				>
@@ -286,19 +299,22 @@ export function KilnSelectionOverlay() {
 	);
 }
 
-export interface KilnErrorBandProps {
+export interface KilnTrackingBandProps {
 	tempKey: string;
 	targetKey: string;
 	fill?: string;
 	opacity?: number;
+	/** Targets at or below this collapse the band, so inactive stretches stay flat. */
+	targetEps?: number;
 }
 
-export function KilnErrorBand({
+export function KilnTrackingBand({
 	tempKey,
 	targetKey,
 	fill = "var(--chart-rate)",
 	opacity = 0.14,
-}: KilnErrorBandProps) {
+	targetEps = 0,
+}: KilnTrackingBandProps) {
 	const { renderData, xScale, yScale, xAccessor } = useChartStable();
 
 	const d = useMemo(() => {
@@ -312,9 +328,7 @@ export function KilnErrorBand({
 			}
 			const x = xScale(xAccessor(p)) ?? 0;
 			const tempY = yScale(temp) ?? 0;
-			// Collapse the band to zero height where no target is active (e.g.
-			// natural cooldown logs 0), so it doesn't fill the whole plot.
-			const targetY = target > 0 ? (yScale(target) ?? 0) : tempY;
+			const targetY = target > targetEps ? (yScale(target) ?? 0) : tempY;
 			top.push(`${x},${tempY}`);
 			bottom.push(`${x},${targetY}`);
 		}
@@ -322,13 +336,13 @@ export function KilnErrorBand({
 			return "";
 		}
 		return `M${top.join("L")}L${bottom.reverse().join("L")}Z`;
-	}, [renderData, xScale, yScale, xAccessor, tempKey, targetKey]);
+	}, [renderData, xScale, yScale, xAccessor, tempKey, targetKey, targetEps]);
 
 	if (!d) {
 		return null;
 	}
 
 	return (
-		<path className="kiln-error-band" d={d} fill={fill} opacity={opacity} />
+		<path className="kiln-tracking-band" d={d} fill={fill} opacity={opacity} />
 	);
 }

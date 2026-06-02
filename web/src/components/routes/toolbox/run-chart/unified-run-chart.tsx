@@ -3,13 +3,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Area } from "@/components/charts/area";
 import { Grid } from "@/components/charts/grid";
 import {
-	KilnErrorBand,
 	type KilnMarker,
 	KilnMarkers,
-	KilnRightAxis,
+	KilnProjectedAxis,
 	KilnSelectionOverlay,
 	KilnTimeAxis,
 	KilnTooltipContent,
+	KilnTrackingBand,
 } from "@/components/charts/kiln/parts";
 import { Line } from "@/components/charts/line";
 import { LineChart } from "@/components/charts/line-chart";
@@ -19,21 +19,26 @@ import type { ChartSelection } from "@/components/charts/use-chart-interaction";
 import { YAxis } from "@/components/charts/y-axis";
 import type { LogDataPoint } from "@/lib/csv-parser";
 import {
-	buildRunChartData,
 	buildRunSeriesModel,
 	elapsedExtent,
+	projectRunPoints,
 	type RunChartPoint,
+	sampleRunWindow,
 } from "@/lib/run-series";
+import { TARGET_EPS_C } from "@/lib/run-stats";
 import { cn } from "@/lib/utils";
 import { RunChartMinimap } from "./run-chart-minimap";
 import { RunChartToolbar } from "./run-chart-toolbar";
-import { SERIES_META, type SeriesKey } from "./types";
+import { MIN_SPAN_S, SERIES_META, type SeriesKey } from "./types";
 import { useFullscreenLandscape } from "./use-fullscreen-landscape";
+import { useThrottledValue } from "./use-throttled-value";
 
 const MAX_POINTS = 800;
 const MINIMAP_POINTS = 240;
-const MIN_SPAN_S = 30;
 const CHART_MARGIN_LEFT = 50;
+const RIGHT_AXIS_WIDTH = 46;
+const SSR_BAND_FRACTION = 1 / 3;
+const VIEW_THROTTLE_MS = 90;
 
 function buildStepMarkers(data: LogDataPoint[]): KilnMarker[] {
 	const markers: KilnMarker[] = [];
@@ -62,48 +67,71 @@ function defaultActive(hasTarget: boolean): Set<SeriesKey> {
 	);
 }
 
+interface ProjectedAxisSpec {
+	key: SeriesKey;
+	domain: [number, number];
+	mapToPlot: (value: number) => number;
+	format: (value: number) => string;
+	color: string;
+}
+
 export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const chartWrapRef = useRef<HTMLDivElement>(null);
 	const fullscreen = useFullscreenLandscape(containerRef);
 
-	const model = useMemo(() => buildRunSeriesModel(logData), [logData]);
 	const fullExtent = useMemo(() => elapsedExtent(logData), [logData]);
 	const hasTarget = useMemo(
-		() => logData.some((p) => p.target_temp_c > 0.5),
+		() => logData.some((p) => p.target_temp_c > TARGET_EPS_C),
 		[logData],
 	);
 
 	const [active, setActive] = useState<Set<SeriesKey>>(() =>
 		defaultActive(hasTarget),
 	);
-	const [window, setWindow] = useState<[number, number] | null>(null);
+	const [zoomWindow, setZoomWindow] = useState<[number, number] | null>(null);
 
-	useEffect(() => {
-		setWindow(null);
-		setActive(defaultActive(hasTarget));
-	}, [hasTarget]);
+	const zoomWindowRef = useRef(zoomWindow);
+	zoomWindowRef.current = zoomWindow;
 
-	const windowRef = useRef(window);
-	windowRef.current = window;
+	// The minimap handle tracks `zoomWindow` immediately; the chart view follows
+	// a throttled copy so dragging doesn't re-run filter + LTTB every frame.
+	const viewWindow = useThrottledValue(zoomWindow, VIEW_THROTTLE_MS);
 
+	// SSR rides the shared temperature axis, so squash it into the lower band
+	// whenever a temperature trace is present and would otherwise be swamped.
+	const showsTemperature = active.has("temp") || active.has("target");
+	const model = useMemo(
+		() =>
+			buildRunSeriesModel(logData, showsTemperature ? SSR_BAND_FRACTION : 1),
+		[logData, showsTemperature],
+	);
+
+	const sampled = useMemo(
+		() => sampleRunWindow(logData, MAX_POINTS, viewWindow),
+		[logData, viewWindow],
+	);
 	const chartData = useMemo(
-		() => buildRunChartData(logData, model, MAX_POINTS, window),
-		[logData, model, window],
+		() => projectRunPoints(sampled, model),
+		[sampled, model],
 	);
 	const chartDataRef = useRef<RunChartPoint[]>(chartData);
 	chartDataRef.current = chartData;
 
+	const minimapSampled = useMemo(
+		() => sampleRunWindow(logData, MINIMAP_POINTS, null),
+		[logData],
+	);
 	const minimapData = useMemo(
-		() => buildRunChartData(logData, model, MINIMAP_POINTS, null),
-		[logData, model],
+		() => projectRunPoints(minimapSampled, model),
+		[minimapSampled, model],
 	);
 
 	const allMarkers = useMemo(() => buildStepMarkers(logData), [logData]);
 	const visibleMarkers = useMemo(() => {
-		const [w0, w1] = window ?? fullExtent;
+		const [w0, w1] = viewWindow ?? fullExtent;
 		return allMarkers.filter((m) => m.atSeconds >= w0 && m.atSeconds <= w1);
-	}, [allMarkers, window, fullExtent]);
+	}, [allMarkers, viewWindow, fullExtent]);
 
 	const available = useMemo<SeriesKey[]>(() => {
 		const keys: SeriesKey[] = ["temp"];
@@ -114,27 +142,36 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 		return keys;
 	}, [hasTarget, model.hasRate]);
 
-	const rightAxis = useMemo(() => {
+	// Each projected (non-temperature) series needs its own real-unit axis. A
+	// temperature trace claims the left axis, pushing projected axes to the
+	// right (stacked when both show); otherwise the first takes the free left.
+	const { leftAxis, rightAxes } = useMemo(() => {
+		const specs: ProjectedAxisSpec[] = [];
 		if (active.has("ssr")) {
-			return {
-				domain: [0, 100] as [number, number],
+			specs.push({
+				key: "ssr",
+				domain: [0, 100],
 				mapToPlot: model.ssrToPlot,
-				format: (v: number) => `${Math.round(v)}%`,
+				format: (v) => `${Math.round(v)}%`,
 				color: SERIES_META.ssr.color,
-			};
+			});
 		}
 		if (active.has("rate")) {
-			return {
+			specs.push({
+				key: "rate",
 				domain: model.rateDomain,
 				mapToPlot: model.rateToPlot,
-				format: (v: number) => `${Math.round(v)}`,
+				format: (v) => `${Math.round(v)}`,
 				color: SERIES_META.rate.color,
-			};
+			});
 		}
-		return null;
-	}, [active, model]);
+		return {
+			leftAxis: showsTemperature ? null : (specs[0] ?? null),
+			rightAxes: showsTemperature ? specs : specs.slice(1),
+		};
+	}, [active, model, showsTemperature]);
 
-	const setZoomWindow = useCallback(
+	const zoomToRange = useCallback(
 		(s0: number, s1: number) => {
 			const [f0, f1] = fullExtent;
 			const fullSpan = Math.max(1, f1 - f0);
@@ -147,9 +184,9 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 				hi = Math.min(f1, lo + minSpan);
 			}
 			if (lo <= f0 + fullSpan * 0.001 && hi >= f1 - fullSpan * 0.001) {
-				setWindow(null);
+				setZoomWindow(null);
 			} else {
-				setWindow([lo, hi]);
+				setZoomWindow([lo, hi]);
 			}
 		},
 		[fullExtent],
@@ -159,7 +196,7 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 		(frac: number, factor: number) => {
 			const [f0, f1] = fullExtent;
 			const fullSpan = Math.max(1, f1 - f0);
-			const [w0, w1] = windowRef.current ?? fullExtent;
+			const [w0, w1] = zoomWindowRef.current ?? fullExtent;
 			const span = w1 - w0;
 			const cursorTime = w0 + frac * span;
 			const minSpan = Math.max(MIN_SPAN_S, fullSpan * 0.002);
@@ -174,9 +211,9 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 				n1 = f1;
 				n0 = f1 - newSpan;
 			}
-			setZoomWindow(n0, n1);
+			zoomToRange(n0, n1);
 		},
-		[fullExtent, setZoomWindow],
+		[fullExtent, zoomToRange],
 	);
 
 	const handleSelectionCommit = useCallback(
@@ -185,15 +222,20 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 			const a = data[sel.startIndex]?.elapsed;
 			const b = data[sel.endIndex]?.elapsed;
 			if (a == null || b == null) return;
-			setZoomWindow(a, b);
+			zoomToRange(a, b);
 		},
-		[setZoomWindow],
+		[zoomToRange],
 	);
 
+	const isFullscreen = fullscreen.isFullscreen;
 	useEffect(() => {
 		const el = chartWrapRef.current;
 		if (!el) return;
 		const onWheel = (e: WheelEvent) => {
+			// Only hijack the wheel for zoom on an explicit gesture (ctrl/⌘, which
+			// also covers trackpad pinch) or in fullscreen where there's no page
+			// to scroll — otherwise let the wheel scroll the page past the chart.
+			if (!(e.ctrlKey || e.metaKey || isFullscreen)) return;
 			e.preventDefault();
 			const rect = el.getBoundingClientRect();
 			const frac = Math.min(
@@ -204,7 +246,7 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 		};
 		el.addEventListener("wheel", onWheel, { passive: false });
 		return () => el.removeEventListener("wheel", onWheel);
-	}, [zoomAtFrac]);
+	}, [zoomAtFrac, isFullscreen]);
 
 	const toggle = useCallback((key: SeriesKey) => {
 		setActive((prev) => {
@@ -254,14 +296,14 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 	const margin = useMemo(
 		() => ({
 			top: 18,
-			right: rightAxis ? 48 : 16,
+			right: rightAxes.length > 0 ? rightAxes.length * RIGHT_AXIS_WIDTH : 16,
 			bottom: 28,
 			left: CHART_MARGIN_LEFT,
 		}),
-		[rightAxis],
+		[rightAxes.length],
 	);
 
-	const isZoomed = window != null;
+	const isZoomed = zoomWindow != null;
 
 	return (
 		<div
@@ -276,7 +318,7 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 				available={available}
 				fullscreen={fullscreen}
 				isZoomed={isZoomed}
-				onReset={() => setWindow(null)}
+				onReset={() => setZoomWindow(null)}
 				onToggle={toggle}
 				onZoomIn={() => zoomAtFrac(0.5, 1 / 1.6)}
 				onZoomOut={() => zoomAtFrac(0.5, 1.6)}
@@ -309,9 +351,10 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 						horizontal
 					/>
 					{active.has("error") ? (
-						<KilnErrorBand
+						<KilnTrackingBand
 							fill="var(--destructive)"
 							opacity={0.12}
+							targetEps={TARGET_EPS_C}
 							targetKey="target"
 							tempKey="temp"
 						/>
@@ -359,15 +402,30 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 					) : null}
 					<KilnMarkers items={visibleMarkers} />
 					<KilnSelectionOverlay />
-					<YAxis formatValue={(v) => `${Math.round(v)}°`} />
-					{rightAxis ? (
-						<KilnRightAxis
-							color={rightAxis.color}
-							domain={rightAxis.domain}
-							format={rightAxis.format}
-							mapToPlot={rightAxis.mapToPlot}
+					{showsTemperature ? (
+						<YAxis formatValue={(v) => `${Math.round(v)}°`} />
+					) : null}
+					{leftAxis ? (
+						<KilnProjectedAxis
+							color={leftAxis.color}
+							domain={leftAxis.domain}
+							format={leftAxis.format}
+							mapToPlot={leftAxis.mapToPlot}
+							side="left"
 						/>
 					) : null}
+					{rightAxes.map((axis, i) => (
+						<KilnProjectedAxis
+							color={axis.color}
+							domain={axis.domain}
+							format={axis.format}
+							inset={(rightAxes.length - 1 - i) * RIGHT_AXIS_WIDTH}
+							key={axis.key}
+							mapToPlot={axis.mapToPlot}
+							side="right"
+							width={RIGHT_AXIS_WIDTH}
+						/>
+					))}
 					<KilnTimeAxis />
 					<ChartTooltip
 						content={({ point }) => (
@@ -381,9 +439,9 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 			<RunChartMinimap
 				data={minimapData}
 				fullExtent={fullExtent}
-				onWindowChange={setWindow}
+				onWindowChange={setZoomWindow}
 				plotMax={model.plotMax}
-				window={window}
+				window={zoomWindow}
 			/>
 		</div>
 	);

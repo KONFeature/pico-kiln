@@ -29,7 +29,7 @@ export interface RunStats {
 const SSR_HIGH_PERCENT = 99;
 const SSR_LOW_PERCENT = 1;
 const SETTLE_BAND_C = 5;
-const TARGET_EPS_C = 0.5;
+export const TARGET_EPS_C = 0.5;
 const MIN_HOLD_S = 60;
 
 /**

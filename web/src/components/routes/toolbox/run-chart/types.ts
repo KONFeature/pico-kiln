@@ -1,5 +1,7 @@
 export type SeriesKey = "temp" | "target" | "ssr" | "rate" | "error";
 
+export const MIN_SPAN_S = 30;
+
 export interface SeriesMeta {
 	key: SeriesKey;
 	label: string;
