@@ -184,6 +184,8 @@ export interface KilnProjectedAxisProps {
 	/** Offset in px from `side`'s edge so two axes can stack in one gutter. */
 	inset?: number;
 	width?: number;
+	/** Short unit caption shown above the topmost tick (e.g. "SSR %"). */
+	label?: string;
 }
 
 export function KilnProjectedAxis(props: KilnProjectedAxisProps) {
@@ -211,12 +213,14 @@ function KilnProjectedAxisInner({
 	side = "right",
 	inset = 0,
 	width,
+	label,
 	container,
 }: KilnProjectedAxisProps & { container: HTMLDivElement }) {
 	const { yScale, margin } = useChartStable();
 	const [lo, hi] = domain;
 	const isRight = side === "right";
 	const boxWidth = width ?? (isRight ? margin.right : margin.left);
+	const topTickY = (yScale(mapToPlot(hi)) ?? 0) + margin.top;
 
 	const ticks = useMemo(() => {
 		const n = Math.max(2, numTicks);
@@ -253,6 +257,22 @@ function KilnProjectedAxisInner({
 					</span>
 				</div>
 			))}
+			{label ? (
+				<div
+					className={
+						isRight
+							? "absolute left-0 pl-2 font-medium text-[10px] leading-none"
+							: "absolute right-0 pr-2 font-medium text-[10px] leading-none"
+					}
+					style={{
+						top: topTickY - 8,
+						transform: "translateY(-100%)",
+						color: color ?? "var(--chart-label)",
+					}}
+				>
+					{label}
+				</div>
+			) : null}
 		</div>,
 		container,
 	);

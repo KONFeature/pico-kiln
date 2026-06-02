@@ -69,6 +69,7 @@ function defaultActive(hasTarget: boolean): Set<SeriesKey> {
 
 interface ProjectedAxisSpec {
 	key: SeriesKey;
+	label: string;
 	domain: [number, number];
 	mapToPlot: (value: number) => number;
 	format: (value: number) => string;
@@ -98,13 +99,12 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 	// a throttled copy so dragging doesn't re-run filter + LTTB every frame.
 	const viewWindow = useThrottledValue(zoomWindow, VIEW_THROTTLE_MS);
 
-	// SSR rides the shared temperature axis, so squash it into the lower band
-	// whenever a temperature trace is present and would otherwise be swamped.
 	const showsTemperature = active.has("temp") || active.has("target");
+	// SSR rides the shared temperature axis; always clamp it to the lower third
+	// so the relay trace can never swamp the temperature curve.
 	const model = useMemo(
-		() =>
-			buildRunSeriesModel(logData, showsTemperature ? SSR_BAND_FRACTION : 1),
-		[logData, showsTemperature],
+		() => buildRunSeriesModel(logData, SSR_BAND_FRACTION),
+		[logData],
 	);
 
 	const sampled = useMemo(
@@ -150,6 +150,7 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 		if (active.has("ssr")) {
 			specs.push({
 				key: "ssr",
+				label: "SSR %",
 				domain: [0, 100],
 				mapToPlot: model.ssrToPlot,
 				format: (v) => `${Math.round(v)}%`,
@@ -159,6 +160,7 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 		if (active.has("rate")) {
 			specs.push({
 				key: "rate",
+				label: "°C/h",
 				domain: model.rateDomain,
 				mapToPlot: model.rateToPlot,
 				format: (v) => `${Math.round(v)}`,
@@ -403,13 +405,14 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 					<KilnMarkers items={visibleMarkers} />
 					<KilnSelectionOverlay />
 					{showsTemperature ? (
-						<YAxis formatValue={(v) => `${Math.round(v)}°`} />
+						<YAxis formatValue={(v) => `${Math.round(v)}°`} label="°C" />
 					) : null}
 					{leftAxis ? (
 						<KilnProjectedAxis
 							color={leftAxis.color}
 							domain={leftAxis.domain}
 							format={leftAxis.format}
+							label={leftAxis.label}
 							mapToPlot={leftAxis.mapToPlot}
 							side="left"
 						/>
@@ -421,6 +424,7 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 							format={axis.format}
 							inset={(rightAxes.length - 1 - i) * RIGHT_AXIS_WIDTH}
 							key={axis.key}
+							label={axis.label}
 							mapToPlot={axis.mapToPlot}
 							side="right"
 							width={RIGHT_AXIS_WIDTH}
