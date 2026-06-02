@@ -46,6 +46,7 @@ import {
 	isStepControlledCooldown,
 	StepIcon,
 } from "@/lib/step-utils";
+import { formatDuration } from "@/lib/utils";
 
 interface ProfileControlsProps {
 	status?: KilnStatus;
@@ -186,20 +187,6 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 		cancelScheduled.mutate();
 	};
 
-	const formatCountdown = (seconds: number) => {
-		const hours = Math.floor(seconds / 3600);
-		const minutes = Math.floor((seconds % 3600) / 60);
-		const secs = Math.floor(seconds % 60);
-
-		if (hours > 0) {
-			return `${hours}h ${minutes}m`;
-		}
-		if (minutes > 0) {
-			return `${minutes}m ${secs}s`;
-		}
-		return `${secs}s`;
-	};
-
 	return (
 		<div className="space-y-4">
 			{hasScheduled && status?.scheduled_profile && (
@@ -226,7 +213,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 							</div>
 							<div className="text-sm">
 								<strong>Countdown:</strong>{" "}
-								{formatCountdown(status.scheduled_profile.seconds_until_start)}
+								{formatDuration(status.scheduled_profile.seconds_until_start)}
 							</div>
 						</div>
 

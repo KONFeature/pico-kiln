@@ -3,8 +3,6 @@ import {
 	ChevronDown,
 	CircleAlert,
 	Clock,
-	Flame,
-	Gauge,
 	Loader2,
 	RefreshCw,
 	TrendingUp,
@@ -33,9 +31,9 @@ import {
 	isStepControlledCooldown,
 	StepIcon,
 } from "@/lib/step-utils";
-import { cn } from "@/lib/utils";
+import { cn, formatDuration } from "@/lib/utils";
+import { HeatOutputGauge } from "./HeatOutputGauge";
 import { LiveTempChart, useTemperatureHistory } from "./LiveTempChart";
-import { TemperatureGauge } from "./TemperatureGauge";
 
 interface KilnStatusDisplayProps {
 	status?: KilnStatus;
@@ -43,6 +41,28 @@ interface KilnStatusDisplayProps {
 	error: PicoAPIError | null;
 	dataUpdatedAt?: number;
 	onRefresh?: () => void;
+}
+
+const STATE_BADGE: Record<
+	KilnStatus["state"],
+	{ variant?: "outline" | "destructive"; className?: string }
+> = {
+	IDLE: { variant: "outline" },
+	RUNNING: { className: "bg-info text-info-foreground hover:bg-info/90" },
+	TUNING: { className: "bg-tuning text-tuning-foreground hover:bg-tuning/90" },
+	COMPLETE: {
+		className: "bg-success text-success-foreground hover:bg-success/90",
+	},
+	ERROR: { variant: "destructive" },
+};
+
+function getStateBadge(state: KilnStatus["state"]) {
+	const cfg = STATE_BADGE[state];
+	return (
+		<Badge variant={cfg.variant} className={cfg.className}>
+			{STATE_LABELS[state]}
+		</Badge>
+	);
 }
 
 function StatusHeader({
@@ -198,53 +218,7 @@ export function KilnStatusDisplay({
 		);
 	}
 
-	const getStateBadge = (state: KilnStatus["state"]) => {
-		switch (state) {
-			case "IDLE":
-				return <Badge variant="outline">{STATE_LABELS.IDLE}</Badge>;
-			case "RUNNING":
-				return (
-					<Badge className="bg-info text-info-foreground hover:bg-info/90">
-						{STATE_LABELS.RUNNING}
-					</Badge>
-				);
-			case "TUNING":
-				return (
-					<Badge className="bg-tuning text-tuning-foreground hover:bg-tuning/90">
-						{STATE_LABELS.TUNING}
-					</Badge>
-				);
-			case "ERROR":
-				return <Badge variant="destructive">{STATE_LABELS.ERROR}</Badge>;
-			case "COMPLETE":
-				return (
-					<Badge className="bg-success text-success-foreground hover:bg-success/90">
-						{STATE_LABELS.COMPLETE}
-					</Badge>
-				);
-			default:
-				return <Badge variant="outline">{state}</Badge>;
-		}
-	};
-
 	const formatTemp = (temp: number) => `${temp.toFixed(1)}°C`;
-
-	const formatDuration = (seconds?: number) => {
-		if (seconds === undefined || Number.isNaN(seconds)) {
-			return "N/A";
-		}
-		const hours = Math.floor(seconds / 3600);
-		const minutes = Math.floor((seconds % 3600) / 60);
-		const secs = Math.floor(seconds % 60);
-
-		if (hours > 0) {
-			return `${hours}h ${minutes}m`;
-		}
-		if (minutes > 0) {
-			return `${minutes}m ${secs}s`;
-		}
-		return `${secs}s`;
-	};
 
 	const heating = (status.ssr_output ?? 0) > 0;
 	const cooling =
@@ -310,77 +284,72 @@ export function KilnStatusDisplay({
 						</Alert>
 					)}
 
-					{/* Hero temperature + live trend */}
-					<div className="grid gap-4 sm:grid-cols-[auto_1fr] sm:items-center">
-						<TemperatureGauge
-							current={status.current_temp}
-							target={status.target_temp}
-							accentClassName={accentClassName}
-							caption={caption}
-						/>
-						<div className="space-y-2">
-							<LiveTempChart data={tempHistory} />
-							<div className="flex items-center justify-between px-1">
-								<LastUpdated updatedAt={dataUpdatedAt} stale={Boolean(error)} />
-								<span className="inline-flex items-center gap-3 text-xs text-muted-foreground">
+					{/* Hero: current temperature + heat-output gauge */}
+					<div className="flex items-center justify-between gap-4">
+						<div className="min-w-0">
+							<div
+								className={cn(
+									"font-bold leading-none tabular-nums",
+									accentClassName,
+								)}
+							>
+								<span className="text-5xl sm:text-6xl">
+									{status.current_temp.toFixed(2)}
+								</span>
+								<span className="align-top text-2xl">°C</span>
+							</div>
+							{status.target_temp !== undefined && status.target_temp > 0 && (
+								<div className="mt-1 text-sm text-muted-foreground tabular-nums">
+									Target {status.target_temp.toFixed(2)}°C
+								</div>
+							)}
+							{caption && (
+								<div className="mt-0.5 text-sm font-medium text-muted-foreground">
+									{caption}
+								</div>
+							)}
+						</div>
+						<HeatOutputGauge value={status.ssr_output} />
+					</div>
+
+					{/* Live temp-vs-target trend */}
+					<div className="space-y-2">
+						<LiveTempChart data={tempHistory} />
+						<div className="flex items-center justify-between px-1">
+							<LastUpdated updatedAt={dataUpdatedAt} stale={Boolean(error)} />
+							<span className="inline-flex items-center gap-3 text-xs text-muted-foreground">
+								<span className="inline-flex items-center gap-1">
+									<span className="h-0.5 w-3 rounded bg-chart-heating" />
+									Current
+								</span>
+								{status.target_temp !== undefined && status.target_temp > 0 && (
 									<span className="inline-flex items-center gap-1">
-										<span className="h-0.5 w-3 rounded bg-chart-heating" />
-										Current
+										<span className="h-0 w-3 border-t border-dashed border-muted-foreground" />
+										Target
 									</span>
-									{status.target_temp !== undefined && (
-										<span className="inline-flex items-center gap-1">
-											<span className="h-0 w-3 border-t border-dashed border-muted-foreground" />
-											Target
-										</span>
-									)}
-								</span>
-							</div>
+								)}
+							</span>
 						</div>
 					</div>
 
-					{/* SSR and Heating Rates */}
-					<div className="grid grid-cols-2 gap-4 pt-2 border-t">
-						<div className="space-y-2">
+					{/* Heating rate (heat output now lives in the gauge above) */}
+					{status.measured_rate !== undefined && (
+						<div className="space-y-2 pt-2 border-t">
 							<div className="flex items-center gap-2">
-								<Flame
-									className={cn(
-										"w-5 h-5",
-										heating ? "text-chart-ssr" : "text-muted-foreground",
-									)}
-								/>
-								<span className="text-sm font-medium">Heat Output</span>
+								<TrendingUp className="w-5 h-5 text-muted-foreground" />
+								<span className="text-sm font-medium">Heating Rate</span>
 							</div>
-							<div className="flex items-center gap-2">
-								<Gauge className="w-4 h-4 text-muted-foreground" />
-								<span className="text-sm font-bold">
-									{status.ssr_output !== undefined
-										? status.ssr_output > 0
-											? `${status.ssr_output.toFixed(1)}%`
-											: "Off"
-										: "N/A"}
-								</span>
+							<div className="text-sm">
+								Measured: <strong>{status.measured_rate.toFixed(1)}°C/h</strong>
 							</div>
+							{status.desired_rate !== undefined &&
+								status.state === "RUNNING" && (
+									<div className="text-sm text-muted-foreground">
+										Target: {status.desired_rate.toFixed(1)}°C/h
+									</div>
+								)}
 						</div>
-
-						{status.measured_rate !== undefined && (
-							<div className="space-y-2">
-								<div className="flex items-center gap-2">
-									<TrendingUp className="w-5 h-5 text-muted-foreground" />
-									<span className="text-sm font-medium">Heating Rate</span>
-								</div>
-								<div className="text-sm">
-									Measured:{" "}
-									<strong>{status.measured_rate.toFixed(1)}°C/h</strong>
-								</div>
-								{status.desired_rate !== undefined &&
-									status.state === "RUNNING" && (
-										<div className="text-sm text-muted-foreground">
-											Target: {status.desired_rate.toFixed(1)}°C/h
-										</div>
-									)}
-							</div>
-						)}
-					</div>
+					)}
 
 					{/* Recovery Mode Warning */}
 					{status.is_recovering && (

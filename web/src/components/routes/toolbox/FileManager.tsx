@@ -256,14 +256,7 @@ export function FileManager() {
 
 						{/* File List */}
 						<div className="space-y-2">
-							{filesError && (
-								<Alert variant="destructive">
-									<CircleAlert className="h-4 w-4" />
-									<AlertDescription>
-										Failed to load files. Make sure the kiln is IDLE.
-									</AlertDescription>
-								</Alert>
-							)}
+							{filesError && <ErrorAlert error={filesError} />}
 
 							{downloadError != null && <ErrorAlert error={downloadError} />}
 

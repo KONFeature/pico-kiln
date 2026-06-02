@@ -20,6 +20,7 @@ import {
 	XAxis,
 	YAxis,
 } from "recharts";
+import { ErrorAlert } from "@/components/ErrorAlert";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -704,22 +705,7 @@ export function ProfileEditor() {
 									</Alert>
 								)}
 								{uploadMutation.isError && (
-									<Alert variant="destructive">
-										<CircleAlert className="h-4 w-4" />
-										<AlertDescription>
-											{uploadMutation.error instanceof Error
-												? uploadMutation.error.message
-												: "Upload failed"}
-										</AlertDescription>
-									</Alert>
-								)}
-								{uploadMutation.isSuccess && !uploadMutation.data?.success && (
-									<Alert variant="destructive">
-										<CircleAlert className="h-4 w-4" />
-										<AlertDescription>
-											{uploadMutation.data?.error || "Upload failed"}
-										</AlertDescription>
-									</Alert>
+									<ErrorAlert error={uploadMutation.error} />
 								)}
 							</>
 						)}

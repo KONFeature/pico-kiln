@@ -37,7 +37,11 @@ export function useTemperatureHistory(
 				{
 					t: updatedAt,
 					temp: status.current_temp,
-					target: status.target_temp ?? null,
+					// 0 = idle / natural cooling (SSR off), not a real setpoint to plot.
+					target:
+						status.target_temp && status.target_temp > 0
+							? status.target_temp
+							: null,
 				},
 			];
 			return next.length > max ? next.slice(next.length - max) : next;
