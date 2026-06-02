@@ -33,7 +33,9 @@ command_queue = None
 
 # Module-level constants for connection and request limits
 MAX_CONCURRENT_CONNECTIONS = const(2)      # Limit to 2 concurrent connections on Pico
-MAX_PROFILE_SIZE = const(10240)            # 10KB max for profile uploads
+MAX_UPLOAD_SIZE = const(512000)            # 500KB max upload (long profiles / tuning logs)
+FILE_CHUNK_SIZE = const(1024)              # 1 KiB streaming chunk (Microdot-validated)
+FILE_TRANSFER_TIMEOUT = const(60)          # Max seconds for one file transfer before its slot is reclaimed
 
 # Performance: const() declarations for server loop timing
 SERVER_LOOP_INTERVAL = 0.1  # 100ms between accept() calls
@@ -140,6 +142,7 @@ def handle_api_run(conn, body):
 
         if QueueHelper.put_nowait(command_queue, command):
             print(f"[Web Server] Started profile: {profile_name}")
+            cancel_file_transfers()
             send_json_response(conn, {
                 'success': True,
                 'message': f'Started profile: {profile_name}'
@@ -341,6 +344,33 @@ def safe_filename(filename):
     
     return True
 
+
+def _remove_quietly(filepath):
+    try:
+        import os
+        os.remove(filepath)
+    except OSError:
+        pass
+
+# Active downloads/uploads, tracked so a starting firing can abort them mid-flight.
+_transfer_tasks = set()
+
+async def _supervised_transfer(coro):
+    task = asyncio.create_task(coro)
+    _transfer_tasks.add(task)
+    try:
+        await asyncio.wait_for(task, FILE_TRANSFER_TIMEOUT)
+    except asyncio.TimeoutError:
+        print(f"[Web Server] File transfer exceeded {FILE_TRANSFER_TIMEOUT}s; slot reclaimed")
+    except asyncio.CancelledError:
+        print("[Web Server] File transfer aborted: kiln started firing")
+    finally:
+        _transfer_tasks.discard(task)
+
+def cancel_file_transfers():
+    for task in list(_transfer_tasks):
+        task.cancel()
+
 # === File Management Handlers ===
 
 def handle_api_files_list(conn, directory):
@@ -391,44 +421,30 @@ def handle_api_files_list(conn, directory):
         print(f"[Web Server] Error listing files: {e}")
         send_json_response(conn, {'success': False, 'error': str(e)}, 500)
 
-def handle_api_files_get(conn, directory, filename):
-    """GET /api/files/<directory>/<filename> - Stream raw file content
-
-    MEMORY OPTIMIZED: streams the file in 1KB chunks. The previous
-    implementation read the whole file with f.read(), wrapped it in JSON,
-    encoded to bytes, and concatenated with headers - holding ~4x the file
-    size in RAM and crashing on multi-hundred-KB log CSVs (Pico ~200KB free heap).
-    """
-    # Check if IDLE
+async def handle_api_files_get(conn, directory, filename):
+    """GET /api/files/<directory>/<filename> - stream raw file content in 1KB chunks."""
     is_idle, error = check_idle_state()
     if not is_idle:
         send_json_response(conn, error, 403)
         return
 
-    # Validate directory
     is_valid, dir_path, error = validate_directory(directory)
     if not is_valid:
         send_json_response(conn, error, 400)
         return
 
-    # Validate filename
     if not safe_filename(filename):
-        send_json_response(conn, {
-            'success': False,
-            'error': 'Invalid filename'
-        }, 400)
+        send_json_response(conn, {'success': False, 'error': 'Invalid filename'}, 400)
         return
 
-    # Stat for Content-Length (no in-RAM size measurement)
     import os
     filepath = f"{dir_path}/{filename}"
     try:
-        size = os.stat(filepath)[6]  # st_size
+        size = os.stat(filepath)[6]
     except OSError:
         send_response(conn, 404, b'File not found', 'text/plain')
         return
 
-    # Content type from extension - keeps headers small
     if filename.endswith('.csv'):
         content_type = b'text/csv'
     elif filename.endswith('.json'):
@@ -445,24 +461,25 @@ def handle_api_files_get(conn, directory, filename):
         HEADER_CONNECTION_CLOSE
     )
 
-    # Switch to blocking mode for the transfer. Safe because file ops are
-    # gated by IDLE state (kiln not running, no time-critical updates).
+    # Non-blocking so drain() suspends on the event loop instead of freezing Core 2.
+    gc.collect()
+    conn.setblocking(False)
+    swriter = asyncio.StreamWriter(conn, {})
+    buf = bytearray(FILE_CHUNK_SIZE)
+    mv = memoryview(buf)
     try:
-        conn.setblocking(True)
-        conn.sendall(header)
-
-        gc.collect()
-        buf = bytearray(1024)
-        mv = memoryview(buf)
+        swriter.write(header)
+        await swriter.drain()
         with open(filepath, 'rb') as f:
             while True:
                 n = f.readinto(buf)
                 if not n:
                     break
-                conn.sendall(mv[:n])
+                swriter.write(mv[:n])
+                await swriter.drain()
     except Exception as e:
-        # Connection likely closed mid-stream; nothing we can do, just log.
-        print(f"[Web Server] Error streaming file {filename}: {e}")
+        # Real disconnect only; CancelledError (timeout/firing) is a BaseException and must reach the supervisor.
+        print(f"[Web Server] Download {filename} interrupted: {e}")
     finally:
         gc.collect()
 
@@ -509,93 +526,90 @@ def handle_api_files_delete(conn, directory, filename):
         print(f"[Web Server] Error deleting file: {e}")
         send_json_response(conn, {'success': False, 'error': str(e)}, 500)
 
-def handle_api_files_upload(conn, directory, filename, body):
-    """PUT /api/files/<directory>/<filename> - Upload/create a file"""
+async def handle_api_files_upload(conn, directory, filename, partial_body, content_length):
+    """PUT /api/files/<directory>/<filename> - stream the raw request body to disk in 1KB chunks."""
+    is_idle, error = check_idle_state()
+    if not is_idle:
+        send_json_response(conn, error, 403)
+        return
+
+    is_valid, dir_path, error = validate_directory(directory)
+    if not is_valid:
+        send_json_response(conn, error, 400)
+        return
+
+    if not safe_filename(filename):
+        send_json_response(conn, {'success': False, 'error': 'Invalid filename'}, 400)
+        return
+
+    if content_length <= 0:
+        send_json_response(conn, {'success': False, 'error': 'Missing or invalid Content-Length'}, 400)
+        return
+    if content_length > MAX_UPLOAD_SIZE:
+        send_json_response(conn, {
+            'success': False,
+            'error': f'File too large: {content_length} bytes (max {MAX_UPLOAD_SIZE})'
+        }, 413)
+        return
+
+    filepath = f"{dir_path}/{filename}"
+    gc.collect()
+    conn.setblocking(False)
+    sreader = asyncio.StreamReader(conn)
+    buf = bytearray(FILE_CHUNK_SIZE)
+    mv = memoryview(buf)
+
+    written = 0
     try:
-        # Check if IDLE
-        is_idle, error = check_idle_state()
-        if not is_idle:
-            send_json_response(conn, error, 403)
-            return
-        
-        # Validate directory
-        is_valid, dir_path, error = validate_directory(directory)
-        if not is_valid:
-            send_json_response(conn, error, 400)
-            return
-        
-        # Validate filename
-        if not safe_filename(filename):
-            send_json_response(conn, {
-                'success': False,
-                'error': 'Invalid filename'
-            }, 400)
-            return
-        
-        # Parse JSON body to get content
-        try:
-            print(f"[Web Server] Upload body length: {len(body)} bytes")
-            body_str = body.decode('utf-8')
-            data = json.loads(body_str)
-            content = data.get('content')
-            
-            if content is None:
-                send_json_response(conn, {
-                    'success': False,
-                    'error': 'Missing content field in request body'
-                }, 400)
-                return
-        except UnicodeDecodeError as e:
-            print(f"[Web Server] UTF-8 decode error: {e}")
-            send_json_response(conn, {
-                'success': False,
-                'error': f'Invalid UTF-8 encoding: {e}'
-            }, 400)
-            return
-        except ValueError as e:
-            print(f"[Web Server] JSON parse error: {e}")
-            print(f"[Web Server] Body preview: {body[:200]}")
-            send_json_response(conn, {
-                'success': False,
-                'error': f'Invalid JSON body: {e}'
-            }, 400)
-            return
-        except Exception as e:
-            print(f"[Web Server] Unexpected error parsing body: {e}")
-            send_json_response(conn, {
-                'success': False,
-                'error': f'Error parsing request: {e}'
-            }, 400)
-            return
-        
-        # Write file
-        filepath = f"{dir_path}/{filename}"
-        try:
-            with open(filepath, 'w') as f:
-                f.write(content)
-            
-            print(f"[Web Server] Uploaded file: {filepath} ({len(content)} bytes)")
-            
-            # Update profile cache if it's a profile
-            if directory == 'profiles':
-                from server.profile_cache import get_profile_cache
-                get_profile_cache().refresh()
-            
-            send_json_response(conn, {
-                'success': True,
-                'message': f'Uploaded {filename}',
-                'filename': filename,
-                'size': len(content)
-            })
-        except OSError as e:
-            send_json_response(conn, {
-                'success': False,
-                'error': f'Failed to write file: {e}'
-            }, 500)
-    
+        with open(filepath, 'wb') as f:
+            # The first body bytes arrived with the headers; write them before reading more.
+            if partial_body:
+                first = partial_body if len(partial_body) <= content_length else partial_body[:content_length]
+                f.write(first)
+                written = len(first)
+            while written < content_length:
+                to_read = min(content_length - written, FILE_CHUNK_SIZE)
+                n = await sreader.readinto(mv[:to_read])
+                if not n:
+                    break
+                f.write(mv[:n])
+                written += n
+    except asyncio.CancelledError:
+        # Timeout or firing: drop the partial file, let the supervisor see the cancel.
+        _remove_quietly(filepath)
+        raise
     except Exception as e:
-        print(f"[Web Server] Error uploading file: {e}")
-        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+        _remove_quietly(filepath)
+        conn.settimeout(5.0)
+        try:
+            send_json_response(conn, {'success': False, 'error': f'Failed to write file: {e}'}, 500)
+        except Exception:
+            pass
+        return
+
+    # sendall() is undefined on a non-blocking socket; restore blocking before replying.
+    conn.settimeout(5.0)
+    gc.collect()
+
+    if written < content_length:
+        _remove_quietly(filepath)
+        try:
+            send_json_response(conn, {'success': False, 'error': 'Upload incomplete: client stopped sending'}, 408)
+        except Exception:
+            pass
+        return
+
+    if directory == 'profiles':
+        from server.profile_cache import get_profile_cache
+        get_profile_cache().refresh()
+
+    print(f"[Web Server] Uploaded file: {filepath} ({written} bytes)")
+    send_json_response(conn, {
+        'success': True,
+        'message': f'Uploaded {filename}',
+        'filename': filename,
+        'size': written
+    })
 
 def handle_api_files_delete_all(conn, directory):
     """DELETE /api/files/<directory>/all - Delete all files in directory"""
@@ -691,6 +705,7 @@ def handle_api_tuning_start(conn, body):
 
         if QueueHelper.put_nowait(command_queue, command):
             print(f"[Web Server] Started tuning (mode: {mode}, max_temp: {max_temp}°C)")
+            cancel_file_transfers()
             send_json_response(conn, {
                 'success': True,
                 'message': f'Tuning started in {mode} mode'
@@ -784,23 +799,9 @@ async def handle_client(conn, addr):
         method, path, headers, body = parse_request(req)
         print(f"{method} {path}")
         
-        # For PUT requests with Content-Length, read full body if needed
-        if method == 'PUT' and 'content-length' in headers:
-            content_length = int(headers['content-length'])
-            # Check if we need to read more data
-            header_end = req.find(b'\r\n\r\n')
-            if header_end != -1:
-                received_body_length = len(req) - (header_end + 4)
-                if received_body_length < content_length:
-                    # Need to read more data
-                    remaining = content_length - received_body_length
-                    try:
-                        additional_data = conn.recv(remaining)
-                        body += additional_data
-                    except OSError as e:
-                        print(f"[Web Server] Error reading full body: {e}")
-                        send_response(conn, 400, b'Failed to read request body', 'text/plain')
-                        return
+        # PUT (file upload) bodies are NOT buffered here: handle_api_files_upload
+        # streams them straight to disk to keep peak RAM ~1KB. Only the partial
+        # body already pulled off the socket with the headers is passed along.
 
         # Handle CORS preflight requests
         if method == 'OPTIONS':
@@ -910,9 +911,13 @@ async def handle_client(conn, addr):
                 else:
                     # GET, PUT, or DELETE /api/files/<directory>/<filename>
                     if method == 'GET':
-                        handle_api_files_get(conn, directory, filename)
+                        await _supervised_transfer(handle_api_files_get(conn, directory, filename))
                     elif method == 'PUT':
-                        handle_api_files_upload(conn, directory, filename, body)
+                        try:
+                            content_length = int(headers.get('content-length', 0))
+                        except (ValueError, TypeError):
+                            content_length = 0
+                        await _supervised_transfer(handle_api_files_upload(conn, directory, filename, body, content_length))
                     elif method == 'DELETE':
                         handle_api_files_delete(conn, directory, filename)
                     else:
