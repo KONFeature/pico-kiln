@@ -2,6 +2,7 @@
  * Profile utility functions for trajectory calculation and formatting
  */
 
+import { elapsedSecondsToDate } from "./chart-time";
 import type { Profile, ProfileStep } from "./pico/types";
 
 export interface TrajectoryPoint {
@@ -107,4 +108,59 @@ export function calculateTrajectory(profile: Profile): Segment[] {
 	}
 
 	return segments;
+}
+
+export interface ProfileChartPoint {
+	t: Date;
+	temp: number;
+	[key: string]: unknown;
+}
+
+export interface ProfileChartSeries {
+	data: ProfileChartPoint[];
+	color: string;
+	type: Segment["type"];
+}
+
+export interface ProfileChartData {
+	/** Flattened trajectory for shared x/y domain + tooltip resolution. */
+	chartData: ProfileChartPoint[];
+	/** One colored polyline per step segment. */
+	series: ProfileChartSeries[];
+	/** Step-boundary markers (start of each step after the first). */
+	markers: { atSeconds: number; label: string }[];
+}
+
+/**
+ * Adapt `calculateTrajectory` segments to bklit's time-series shape: elapsed
+ * hours become epoch-offset Dates (`t`), each segment keeps its own colored
+ * polyline, and inter-step boundaries become numbered markers.
+ */
+export function buildProfileChart(segments: Segment[]): ProfileChartData {
+	const series: ProfileChartSeries[] = segments.map((segment) => ({
+		data: segment.data.map((p) => ({
+			t: elapsedSecondsToDate(p.time_hours * 3600),
+			temp: p.temp,
+		})),
+		color: segment.color,
+		type: segment.type,
+	}));
+
+	const chartData: ProfileChartPoint[] = [];
+	for (const s of series) {
+		for (const point of s.data) {
+			const prev = chartData.at(-1);
+			if (prev && prev.t.getTime() === point.t.getTime()) {
+				continue;
+			}
+			chartData.push(point);
+		}
+	}
+
+	const markers = segments.slice(1).map((segment, i) => ({
+		atSeconds: segment.data[0].time_hours * 3600,
+		label: String(i + 2),
+	}));
+
+	return { chartData, series, markers };
 }

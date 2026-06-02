@@ -1,18 +1,19 @@
+import { curveMonotoneX } from "@visx/curve";
 import { CircleAlert } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
+import { Area } from "@/components/charts/area";
+import { AreaChart } from "@/components/charts/area-chart";
+import { Grid } from "@/components/charts/grid";
 import {
-	Area,
-	AreaChart,
-	CartesianGrid,
-	Legend,
-	Line,
-	LineChart,
-	ReferenceArea,
-	ResponsiveContainer,
-	Tooltip,
-	XAxis,
-	YAxis,
-} from "recharts";
+	type KilnRegion,
+	KilnRegions,
+	KilnTimeAxis,
+	KilnTooltipContent,
+} from "@/components/charts/kiln/parts";
+import { Line } from "@/components/charts/line";
+import { LineChart } from "@/components/charts/line-chart";
+import { ChartTooltip } from "@/components/charts/tooltip";
+import { YAxis } from "@/components/charts/y-axis";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
 	Card,
@@ -21,8 +22,10 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import { elapsedSecondsToDate } from "@/lib/chart-time";
 import {
 	type LogDataPoint,
+	lttbDownsample,
 	parseLogCSV,
 	secondsToMinutes,
 } from "@/lib/csv-parser";
@@ -40,12 +43,15 @@ interface Phase {
 	stepName?: string;
 }
 
-interface ChartDataPoint {
-	time_minutes: number;
+interface TuningChartPoint {
+	t: Date;
 	temp: number;
-	ssr_output: number;
-	phase?: string;
+	ssr: number;
+	[key: string]: unknown;
 }
+
+const MAX_CHART_POINTS = 800;
+const CHART_MARGIN = { top: 14, right: 16, bottom: 28, left: 44 };
 
 /**
  * Detect tuning phases using physics-based detection:
@@ -55,9 +61,9 @@ interface ChartDataPoint {
  */
 function detectPhases(data: LogDataPoint[]): Phase[] {
 	const phases: Phase[] = [];
-	const SSR_THRESHOLD = 5; // SSR threshold for heating vs cooling
-	const RATE_THRESHOLD = 0.5; // °C/min threshold for stable vs rising
-	const WINDOW_SIZE = 10; // Number of points to average for rate calculation
+	const SSR_THRESHOLD = 5;
+	const RATE_THRESHOLD = 0.5;
+	const WINDOW_SIZE = 10;
 
 	let currentPhase: Phase | null = null;
 
@@ -65,17 +71,15 @@ function detectPhases(data: LogDataPoint[]): Phase[] {
 		const point = data[i];
 		const ssr = point.ssr_output_percent;
 
-		// Calculate temperature rate over window
 		let rate = 0;
 		if (i >= WINDOW_SIZE) {
 			const timeDiff =
-				(data[i].elapsed_seconds - data[i - WINDOW_SIZE].elapsed_seconds) / 60; // minutes
+				(data[i].elapsed_seconds - data[i - WINDOW_SIZE].elapsed_seconds) / 60;
 			const tempDiff =
 				data[i].current_temp_c - data[i - WINDOW_SIZE].current_temp_c;
 			rate = timeDiff > 0 ? tempDiff / timeDiff : 0;
 		}
 
-		// Determine phase type
 		let phaseType: PhaseType;
 		if (ssr < SSR_THRESHOLD) {
 			phaseType = "cooling";
@@ -85,16 +89,13 @@ function detectPhases(data: LogDataPoint[]): Phase[] {
 			phaseType = "plateau";
 		}
 
-		// Check if we need to start a new phase
 		if (!currentPhase || currentPhase.type !== phaseType) {
-			// Close previous phase
 			if (currentPhase) {
 				currentPhase.endIdx = i - 1;
 				currentPhase.tempEnd = data[i - 1].current_temp_c;
 				phases.push(currentPhase);
 			}
 
-			// Start new phase
 			currentPhase = {
 				startIdx: i,
 				endIdx: i,
@@ -105,13 +106,11 @@ function detectPhases(data: LogDataPoint[]): Phase[] {
 				stepName: point.step_name,
 			};
 		} else {
-			// Update running average for SSR
 			const count = i - currentPhase.startIdx + 1;
 			currentPhase.avgSsr = (currentPhase.avgSsr * (count - 1) + ssr) / count;
 		}
 	}
 
-	// Close final phase
 	if (currentPhase) {
 		currentPhase.endIdx = data.length - 1;
 		currentPhase.tempEnd = data[data.length - 1].current_temp_c;
@@ -121,15 +120,16 @@ function detectPhases(data: LogDataPoint[]): Phase[] {
 	return phases;
 }
 
+// Natural cooling is cyan everywhere (matches the profile editor / visualizer).
 const PHASE_COLORS: Record<PhaseType, string> = {
 	heating: "var(--chart-heating)",
-	cooling: "var(--chart-cooling)",
+	cooling: "var(--chart-natural-cooling)",
 	plateau: "var(--chart-hold)",
 };
 
 const PHASE_TINT: Record<PhaseType, string> = {
 	heating: "bg-chart-heating/15 border-chart-heating/40",
-	cooling: "bg-chart-cooling/15 border-chart-cooling/40",
+	cooling: "bg-chart-natural-cooling/15 border-chart-natural-cooling/40",
 	plateau: "bg-chart-hold/15 border-chart-hold/40",
 };
 
@@ -151,7 +151,6 @@ export function TuningPhasesVisualizer() {
 				throw new Error("No valid data points in log file");
 			}
 
-			// Verify this is tuning data
 			const isTuning = data.some((d) => d.state === "TUNING");
 			if (!isTuning) {
 				console.warn("This log file may not be from a tuning run");
@@ -170,31 +169,42 @@ export function TuningPhasesVisualizer() {
 		return detectPhases(logData);
 	}, [logData]);
 
-	const chartData = useMemo<ChartDataPoint[]>(() => {
+	const chartData = useMemo<TuningChartPoint[]>(() => {
 		if (!logData) return [];
+		const sampled = lttbDownsample(
+			logData,
+			MAX_CHART_POINTS,
+			(p) => p.elapsed_seconds,
+			(p) => p.current_temp_c,
+		);
+		return sampled.map((point) => ({
+			t: elapsedSecondsToDate(point.elapsed_seconds),
+			temp: point.current_temp_c,
+			ssr: point.ssr_output_percent,
+		}));
+	}, [logData]);
 
-		return logData.map((point, idx) => {
-			const phase = phases.find((p) => idx >= p.startIdx && idx <= p.endIdx);
-			return {
-				time_minutes: secondsToMinutes(point.elapsed_seconds),
-				temp: point.current_temp_c,
-				ssr_output: point.ssr_output_percent,
-				phase: phase ? phase.type : undefined,
-			};
-		});
+	const phaseRegions = useMemo<KilnRegion[]>(() => {
+		if (!logData) return [];
+		return phases.map((phase) => ({
+			startSeconds: logData[phase.startIdx].elapsed_seconds,
+			endSeconds: logData[phase.endIdx].elapsed_seconds,
+			color: PHASE_COLORS[phase.type],
+			opacity: 0.18,
+		}));
 	}, [logData, phases]);
 
 	const stats = useMemo(() => {
-		if (chartData.length === 0) return null;
-
-		const temps = chartData.map((p) => p.temp);
+		if (!logData || logData.length === 0) return null;
+		const temps = logData.map((p) => p.current_temp_c);
 		const maxTemp = Math.max(...temps);
 		const minTemp = Math.min(...temps);
-		const duration = chartData[chartData.length - 1].time_minutes;
-		const startTime = logData?.[0]?.timestamp || "";
-
+		const duration = secondsToMinutes(
+			logData[logData.length - 1].elapsed_seconds,
+		);
+		const startTime = logData[0]?.timestamp || "";
 		return { maxTemp, minTemp, duration, startTime };
-	}, [chartData, logData]);
+	}, [logData]);
 
 	return (
 		<Card>
@@ -235,174 +245,111 @@ export function TuningPhasesVisualizer() {
 							)}
 						</div>
 
-						<div className="space-y-6">
-							<div className="flex gap-4 text-sm">
+						<div className="space-y-8">
+							<div className="flex gap-4 text-sm flex-wrap">
 								<div className="flex items-center gap-2">
-									<div
-										className="w-4 h-4 rounded"
-										style={{
-											backgroundColor: PHASE_COLORS.heating,
-											opacity: 0.3,
-										}}
-									/>
+									<div className="w-4 h-4 rounded bg-chart-heating/40" />
 									<span>Heating (SSR on, temp rising)</span>
 								</div>
 								<div className="flex items-center gap-2">
-									<div
-										className="w-4 h-4 rounded"
-										style={{
-											backgroundColor: PHASE_COLORS.cooling,
-											opacity: 0.3,
-										}}
-									/>
+									<div className="w-4 h-4 rounded bg-chart-natural-cooling/40" />
 									<span>Cooling (SSR off)</span>
 								</div>
 								<div className="flex items-center gap-2">
-									<div
-										className="w-4 h-4 rounded"
-										style={{
-											backgroundColor: PHASE_COLORS.plateau,
-											opacity: 0.3,
-										}}
-									/>
+									<div className="w-4 h-4 rounded bg-chart-hold/40" />
 									<span>Plateau (SSR on, temp stable)</span>
 								</div>
 							</div>
 
-							<ResponsiveContainer width="100%" height={400}>
+							<div>
+								<h4 className="text-base font-semibold mb-2">
+									Temperature (°C)
+								</h4>
 								<LineChart
 									data={chartData}
-									margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
+									xDataKey="t"
+									aspectRatio="auto"
+									className="h-72"
+									margin={CHART_MARGIN}
+									animationDuration={0}
 								>
-									<CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-
-									{/* Draw phase backgrounds */}
-									{phases.map((phase, idx) => {
-										const startTime = secondsToMinutes(
-											logData[phase.startIdx].elapsed_seconds,
-										);
-										const endTime = secondsToMinutes(
-											logData[phase.endIdx].elapsed_seconds,
-										);
-										return (
-											<ReferenceArea
-												key={idx}
-												x1={startTime}
-												x2={endTime}
-												fill={PHASE_COLORS[phase.type]}
-												fillOpacity={0.3}
-											/>
-										);
-									})}
-
-									<XAxis
-										dataKey="time_minutes"
-										label={{
-											value: "Time (minutes)",
-											position: "insideBottom",
-											offset: -5,
-										}}
-									/>
-									<YAxis
-										label={{
-											value: "Temperature (°C)",
-											angle: -90,
-											position: "insideLeft",
-										}}
-									/>
-									<Tooltip
-										formatter={(value: number) => [
-											`${value.toFixed(1)}°C`,
-											"Temperature",
-										]}
-										labelFormatter={(label: number) =>
-											`Time: ${label.toFixed(1)}min`
-										}
-									/>
-									<Legend />
+									<KilnRegions items={phaseRegions} />
+									<Grid horizontal />
+									<YAxis formatValue={(v) => `${Math.round(v)}°`} />
 									<Line
-										type="monotone"
 										dataKey="temp"
-										stroke="var(--chart-cooling)"
+										stroke="var(--foreground)"
 										strokeWidth={2}
-										dot={false}
-										name="Temperature"
+										curve={curveMonotoneX}
+										fadeEdges={false}
+										showHighlight={false}
+									/>
+									<KilnTimeAxis />
+									<ChartTooltip
+										showDatePill={false}
+										content={({ point }) => (
+											<KilnTooltipContent
+												point={point}
+												rows={[
+													{
+														color: "var(--foreground)",
+														label: "Temp",
+														value: `${(point.temp as number).toFixed(1)}°C`,
+													},
+												]}
+											/>
+										)}
 									/>
 								</LineChart>
-							</ResponsiveContainer>
-
-							<div className="pt-6 border-t">
-								<h4 className="text-base font-semibold mb-1">
-									SSR Output with Phase Detection
-								</h4>
-								<p className="text-sm text-muted-foreground mb-4">
-									Solid State Relay duty cycle colored by detected phase
-								</p>
-								<ResponsiveContainer width="100%" height={250}>
-									<AreaChart
-										data={chartData}
-										margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
-									>
-										<CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-
-										{/* Draw phase backgrounds */}
-										{phases.map((phase, idx) => {
-											const startTime = secondsToMinutes(
-												logData[phase.startIdx].elapsed_seconds,
-											);
-											const endTime = secondsToMinutes(
-												logData[phase.endIdx].elapsed_seconds,
-											);
-											return (
-												<ReferenceArea
-													key={idx}
-													x1={startTime}
-													x2={endTime}
-													fill={PHASE_COLORS[phase.type]}
-													fillOpacity={0.3}
-												/>
-											);
-										})}
-
-										<XAxis
-											dataKey="time_minutes"
-											label={{
-												value: "Time (minutes)",
-												position: "insideBottom",
-												offset: -5,
-											}}
-										/>
-										<YAxis
-											domain={[0, 100]}
-											label={{
-												value: "SSR Output (%)",
-												angle: -90,
-												position: "insideLeft",
-											}}
-										/>
-										<Tooltip
-											formatter={(value: number) => [
-												`${value.toFixed(1)}%`,
-												"SSR Output",
-											]}
-											labelFormatter={(label: number) =>
-												`Time: ${label.toFixed(1)}min`
-											}
-										/>
-										<Legend />
-										<Area
-											type="monotone"
-											dataKey="ssr_output"
-											stroke="var(--chart-ssr)"
-											fill="var(--chart-ssr)"
-											fillOpacity={0.5}
-											name="SSR Output (%)"
-										/>
-									</AreaChart>
-								</ResponsiveContainer>
 							</div>
 
-							<div className="pt-6 border-t">
+							<div>
+								<h4 className="text-base font-semibold mb-1">
+									Heat Output (%)
+								</h4>
+								<p className="text-sm text-muted-foreground mb-2">
+									Duty cycle, shaded by detected phase
+								</p>
+								<AreaChart
+									data={chartData}
+									xDataKey="t"
+									aspectRatio="auto"
+									className="h-44"
+									margin={CHART_MARGIN}
+									animationDuration={0}
+								>
+									<KilnRegions items={phaseRegions} />
+									<Grid horizontal />
+									<YAxis formatValue={(v) => `${Math.round(v)}%`} />
+									<Area
+										dataKey="ssr"
+										fill="var(--chart-ssr)"
+										fillOpacity={0.3}
+										stroke="var(--chart-ssr)"
+										strokeWidth={2}
+										curve={curveMonotoneX}
+										showHighlight={false}
+									/>
+									<KilnTimeAxis />
+									<ChartTooltip
+										showDatePill={false}
+										content={({ point }) => (
+											<KilnTooltipContent
+												point={point}
+												rows={[
+													{
+														color: "var(--chart-ssr)",
+														label: "Heat",
+														value: `${(point.ssr as number).toFixed(0)}%`,
+													},
+												]}
+											/>
+										)}
+									/>
+								</AreaChart>
+							</div>
+
+							<div className="pt-2 border-t">
 								<h4 className="text-base font-semibold mb-1">
 									Detected Phases Summary
 								</h4>
@@ -420,7 +367,7 @@ export function TuningPhasesVisualizer() {
 										const duration = endTime - startTime;
 										const tempChange = phase.tempEnd - phase.tempStart;
 										const rate =
-											duration > 0 ? (tempChange / duration) * 60 : 0; // °C/h
+											duration > 0 ? (tempChange / duration) * 60 : 0;
 
 										return (
 											<div

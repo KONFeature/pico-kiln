@@ -1,12 +1,9 @@
+import { curveMonotoneX } from "@visx/curve";
 import { useEffect, useState } from "react";
-import {
-	Line,
-	LineChart,
-	ResponsiveContainer,
-	Tooltip,
-	XAxis,
-	YAxis,
-} from "recharts";
+import { Line } from "@/components/charts/line";
+import { LineChart } from "@/components/charts/line-chart";
+import { ChartTooltip } from "@/components/charts/tooltip";
+import { TooltipContent } from "@/components/charts/tooltip/tooltip-content";
 import type { KilnStatus } from "@/lib/pico/types";
 
 export interface TempSample {
@@ -56,6 +53,13 @@ interface LiveTempChartProps {
 	unit?: string;
 }
 
+interface LiveChartRow {
+	t: Date;
+	temp: number;
+	target?: number;
+	[key: string]: unknown;
+}
+
 export function LiveTempChart({ data, unit = "°C" }: LiveTempChartProps) {
 	if (data.length < 2) {
 		return (
@@ -65,54 +69,65 @@ export function LiveTempChart({ data, unit = "°C" }: LiveTempChartProps) {
 		);
 	}
 
-	const hasTarget = data.some((d) => d.target !== null);
+	const rows: LiveChartRow[] = data.map((d) => ({
+		t: new Date(d.t),
+		temp: d.temp,
+		...(d.target !== null ? { target: d.target } : {}),
+	}));
+	const targetRows = rows.filter((r) => typeof r.target === "number");
+	const hasTarget = targetRows.length > 1;
 
 	return (
-		<ResponsiveContainer width="100%" height={112}>
-			<LineChart data={data} margin={{ top: 6, right: 6, left: 6, bottom: 0 }}>
-				<XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} hide />
-				<YAxis
-					domain={["dataMin - 10", "dataMax + 10"]}
-					hide
-					allowDecimals={false}
-				/>
-				<Tooltip
-					contentStyle={{
-						background: "var(--popover)",
-						border: "1px solid var(--border)",
-						borderRadius: "var(--radius-md)",
-						fontSize: "0.75rem",
-						color: "var(--popover-foreground)",
-					}}
-					labelFormatter={(label) =>
-						new Date(Number(label)).toLocaleTimeString()
-					}
-					formatter={(value, name) => [
-						`${Number(value).toFixed(1)}${unit}`,
-						name === "temp" ? "Current" : "Target",
-					]}
-				/>
-				{hasTarget && (
-					<Line
-						type="monotone"
-						dataKey="target"
-						stroke="var(--muted-foreground)"
-						strokeWidth={1.5}
-						strokeDasharray="4 4"
-						dot={false}
-						isAnimationActive={false}
-						connectNulls
-					/>
-				)}
+		<LineChart
+			data={rows}
+			xDataKey="t"
+			aspectRatio="auto"
+			className="h-28"
+			style={{ touchAction: "pan-y" }}
+			margin={{ top: 8, right: 8, bottom: 8, left: 8 }}
+			animationDuration={0}
+		>
+			{hasTarget && (
 				<Line
-					type="monotone"
-					dataKey="temp"
-					stroke="var(--chart-heating)"
-					strokeWidth={2}
-					dot={false}
-					isAnimationActive={false}
+					data={targetRows}
+					dataKey="target"
+					stroke="var(--muted-foreground)"
+					strokeWidth={1.5}
+					curve={curveMonotoneX}
+					fadeEdges={false}
+					showHighlight={false}
 				/>
-			</LineChart>
-		</ResponsiveContainer>
+			)}
+			<Line
+				dataKey="temp"
+				stroke="var(--chart-heating)"
+				strokeWidth={2}
+				curve={curveMonotoneX}
+				fadeEdges={false}
+				showHighlight={false}
+			/>
+			<ChartTooltip
+				showDatePill={false}
+				content={({ point }) => {
+					const t = point.t;
+					const title = t instanceof Date ? t.toLocaleTimeString() : undefined;
+					const rowsOut = [
+						{
+							color: "var(--chart-heating)",
+							label: "Current",
+							value: `${(point.temp as number).toFixed(1)}${unit}`,
+						},
+					];
+					if (typeof point.target === "number") {
+						rowsOut.push({
+							color: "var(--muted-foreground)",
+							label: "Target",
+							value: `${point.target.toFixed(1)}${unit}`,
+						});
+					}
+					return <TooltipContent rows={rowsOut} title={title} />;
+				}}
+			/>
+		</LineChart>
 	);
 }

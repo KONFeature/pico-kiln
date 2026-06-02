@@ -1,25 +1,28 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useBlocker } from "@tanstack/react-router";
+import { curveLinear } from "@visx/curve";
 import {
 	CheckCircle,
+	ChevronDown,
+	ChevronUp,
 	CircleAlert,
 	Download,
 	FileUp,
-	HardDrive,
 	Plus,
+	RotateCcw,
 	Trash2,
-	Upload,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { Grid } from "@/components/charts/grid";
 import {
-	CartesianGrid,
-	Legend,
-	Line,
-	LineChart,
-	ResponsiveContainer,
-	Tooltip,
-	XAxis,
-	YAxis,
-} from "recharts";
+	KilnMarkers,
+	KilnTimeAxis,
+	KilnTooltipContent,
+} from "@/components/charts/kiln/parts";
+import { Line } from "@/components/charts/line";
+import { LineChart } from "@/components/charts/line-chart";
+import { ChartTooltip } from "@/components/charts/tooltip";
+import { YAxis } from "@/components/charts/y-axis";
 import { ErrorAlert } from "@/components/ErrorAlert";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -30,6 +33,19 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import {
+	Collapsible,
+	CollapsibleContent,
+	CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -47,8 +63,10 @@ import type {
 	ProfileStepType,
 	TempUnits,
 } from "@/lib/pico/types";
-import { calculateTrajectory, type TrajectoryPoint } from "@/lib/profile-utils";
-import { readFileAsText } from "@/lib/utils";
+import { parseProfileText } from "@/lib/profile-schema";
+import { buildProfileChart, calculateTrajectory } from "@/lib/profile-utils";
+import { useProfileDraft } from "@/lib/use-profile-draft";
+import { FileSourceSelector } from "./FileSourceSelector";
 
 const DEFAULT_PROFILE: Profile = {
 	name: "New Profile",
@@ -60,36 +78,61 @@ const DEFAULT_PROFILE: Profile = {
 	],
 };
 
+/** Minutes display for a duration stored in seconds, preserving fractional minutes. */
+function minutesValue(seconds?: number): string {
+	if (seconds === undefined || seconds === null) {
+		return "";
+	}
+	return String(Math.round((seconds / 60) * 100) / 100);
+}
+
+function defaultFilename(profile: Profile): string {
+	return `${profile.name.replace(/\s+/g, "_").toLowerCase()}.json`;
+}
+
 export function ProfileEditor() {
-	const [profile, setProfile] = useState<Profile>(DEFAULT_PROFILE);
-	const [importMode, setImportMode] = useState<"file" | "pico">("file");
+	const { profile, setProfile, clearDraft } = useProfileDraft(DEFAULT_PROFILE);
+	const [savedSnapshot, setSavedSnapshot] = useState<string>(() =>
+		JSON.stringify(profile),
+	);
 	const [exportMode, setExportMode] = useState<"download" | "upload">(
 		"download",
 	);
-	const [selectedPicoProfile, setSelectedPicoProfile] = useState<string>("");
 	const [uploadFilename, setUploadFilename] = useState<string>("");
 	const [importError, setImportError] = useState<string | null>(null);
+	const [stepToDelete, setStepToDelete] = useState<number | null>(null);
+	const [pendingImport, setPendingImport] = useState<string | null>(null);
+	const [pendingUpload, setPendingUpload] = useState<string | null>(null);
+	const [showReset, setShowReset] = useState(false);
 	const { client, isConfigured } = usePico();
 	const queryClient = useQueryClient();
 
-	// Query to list profiles from Pico
-	const { data: profilesData, isLoading: isLoadingProfiles } = useQuery({
+	const isDirty = JSON.stringify(profile) !== savedSnapshot;
+	const isDirtyRef = useRef(isDirty);
+	isDirtyRef.current = isDirty;
+
+	// Warn before navigating away or reloading with unsaved (un-exported) work.
+	const blocker = useBlocker({
+		shouldBlockFn: () => isDirtyRef.current,
+		enableBeforeUnload: () => isDirtyRef.current,
+		withResolver: true,
+	});
+
+	// Existing profile filenames on the Pico, used to warn before overwriting.
+	const { data: profilesData } = useQuery({
 		queryKey: ["files", "profiles"],
 		queryFn: () => client?.listFiles("profiles"),
-		enabled: importMode === "pico" && isConfigured && client !== null,
+		enabled: isConfigured && client !== null,
 		retry: 1,
 	});
+	const existingNames = useMemo(
+		() =>
+			new Set(
+				profilesData?.success ? profilesData.files.map((f) => f.name) : [],
+			),
+		[profilesData],
+	);
 
-	// Query to get profile content from Pico
-	const { data: picoProfileContent } = useQuery({
-		queryKey: ["file-content", "profiles", selectedPicoProfile],
-		queryFn: () => client?.getFile("profiles", selectedPicoProfile),
-		enabled:
-			importMode === "pico" && selectedPicoProfile !== "" && client !== null,
-		retry: 1,
-	});
-
-	// Mutation for uploading profile to Pico
 	const uploadMutation = useMutation({
 		mutationFn: async ({
 			filename,
@@ -103,15 +146,14 @@ export function ProfileEditor() {
 		},
 		onSuccess: (data) => {
 			if (data.success) {
-				// Invalidate profiles list to refresh
+				setSavedSnapshot(JSON.stringify(profile));
 				queryClient.invalidateQueries({ queryKey: ["files", "profiles"] });
 			}
 		},
 	});
 
-	const segments = useMemo(() => {
-		return calculateTrajectory(profile);
-	}, [profile]);
+	const segments = useMemo(() => calculateTrajectory(profile), [profile]);
+	const chart = useMemo(() => buildProfileChart(segments), [segments]);
 
 	const stats = useMemo(() => {
 		if (segments.length === 0) return null;
@@ -122,7 +164,6 @@ export function ProfileEditor() {
 		return { maxTemp, duration };
 	}, [segments]);
 
-	// Validation logic
 	const validateStep = (step: ProfileStep): string | null => {
 		if (step.type === "ramp") {
 			if (step.target_temp === undefined || step.target_temp === null) {
@@ -140,9 +181,10 @@ export function ProfileEditor() {
 		return null;
 	};
 
-	// Simple validation - no need for useMemo as validation is cheap
 	const stepErrors = profile.steps.map((step) => validateStep(step));
 	const hasValidationErrors = stepErrors.some((error) => error !== null);
+
+	const unit = profile.temp_units.toUpperCase();
 
 	const updateProfile = (updates: Partial<Profile>) => {
 		setProfile((prev) => ({ ...prev, ...updates }));
@@ -160,12 +202,14 @@ export function ProfileEditor() {
 	const addStep = () => {
 		setProfile((prev) => ({
 			...prev,
-			steps: [...prev.steps, { type: "ramp" }],
+			steps: [
+				...prev.steps,
+				{ type: "ramp", target_temp: 0, desired_rate: 100 },
+			],
 		}));
 	};
 
 	const removeStep = (index: number) => {
-		if (profile.steps.length <= 1) return; // Keep at least one step
 		setProfile((prev) => ({
 			...prev,
 			steps: prev.steps.filter((_, i) => i !== index),
@@ -190,6 +234,31 @@ export function ProfileEditor() {
 		});
 	};
 
+	const applyImport = (content: string) => {
+		const result = parseProfileText(content);
+		if (!result.ok) {
+			setImportError(result.error);
+			return;
+		}
+		setProfile(result.profile);
+		setSavedSnapshot(JSON.stringify(result.profile));
+		setImportError(null);
+	};
+
+	// Paste ("manual-input") is treated as live editing; a file/Pico load is a
+	// discrete overwrite, so guard it behind a confirm when the draft is dirty.
+	const handleFileSelected = (content: string, filename: string) => {
+		if (filename === "manual-input") {
+			applyImport(content);
+			return;
+		}
+		if (isDirtyRef.current) {
+			setPendingImport(content);
+		} else {
+			applyImport(content);
+		}
+	};
+
 	const downloadProfile = () => {
 		if (hasValidationErrors) return;
 		const json = JSON.stringify(profile, null, 2);
@@ -197,61 +266,65 @@ export function ProfileEditor() {
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement("a");
 		a.href = url;
-		a.download = `${profile.name.replace(/\s+/g, "_").toLowerCase()}.json`;
+		a.download = defaultFilename(profile);
 		document.body.appendChild(a);
 		a.click();
 		document.body.removeChild(a);
 		URL.revokeObjectURL(url);
+		setSavedSnapshot(JSON.stringify(profile));
 	};
 
-	const uploadToPico = () => {
-		if (hasValidationErrors) return;
-		const filename =
-			uploadFilename ||
-			`${profile.name.replace(/\s+/g, "_").toLowerCase()}.json`;
-		// Minify JSON for upload to save space on Pico
+	const doUpload = (filename: string) => {
 		const json = JSON.stringify(profile);
 		uploadMutation.mutate({ filename, content: json });
 	};
 
-	const importFromFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-		const file = e.target.files?.[0];
-		if (!file) return;
-
-		try {
-			const json = await readFileAsText(file);
-			const imported = JSON.parse(json) as Profile;
-			setProfile(imported);
-			setImportError(null);
-		} catch (_err) {
-			setImportError(
-				`Couldn't import "${file.name}" — it isn't valid profile JSON.`,
-			);
+	const uploadToPico = () => {
+		if (hasValidationErrors) return;
+		const filename = uploadFilename || defaultFilename(profile);
+		if (existingNames.has(filename)) {
+			setPendingUpload(filename);
+		} else {
+			doUpload(filename);
 		}
 	};
 
-	const importFromPico = () => {
-		if (picoProfileContent?.success && picoProfileContent.content) {
-			try {
-				const imported = JSON.parse(picoProfileContent.content) as Profile;
-				setProfile(imported);
-				setImportError(null);
-			} catch (_err) {
-				setImportError(
-					"Couldn't import this profile — its contents aren't valid JSON.",
-				);
-			}
-		}
+	const resetDraft = () => {
+		clearDraft();
+		setProfile(DEFAULT_PROFILE);
+		setSavedSnapshot(JSON.stringify(DEFAULT_PROFILE));
+		setImportError(null);
+		setShowReset(false);
 	};
 
 	return (
 		<Card>
 			<CardHeader>
-				<CardTitle>Profile Editor</CardTitle>
-				<CardDescription>
-					Create and edit kiln firing profiles with live visualization
-				</CardDescription>
+				<div className="flex items-start justify-between gap-2">
+					<div>
+						<CardTitle>Profile Editor</CardTitle>
+						<CardDescription>
+							Create and edit kiln firing profiles with live visualization
+						</CardDescription>
+					</div>
+					<div className="flex items-center gap-2">
+						{isDirty && (
+							<span className="text-xs text-muted-foreground whitespace-nowrap">
+								Unsaved
+							</span>
+						)}
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => setShowReset(true)}
+							aria-label="Start a new profile"
+						>
+							<RotateCcw className="w-4 h-4" />
+						</Button>
+					</div>
+				</div>
 			</CardHeader>
+
 			<CardContent className="space-y-6">
 				<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
 					<div>
@@ -292,120 +365,105 @@ export function ProfileEditor() {
 					/>
 				</div>
 
-				{/* Import Section */}
-				<div className="space-y-3">
-					<div>
-						<Label className="text-base font-semibold">Import Profile</Label>
-						<p className="text-sm text-muted-foreground">
-							Load an existing profile to edit
-						</p>
-					</div>
-
-					<div className="flex gap-2">
+				<Collapsible>
+					<CollapsibleTrigger asChild>
 						<Button
-							variant={importMode === "file" ? "default" : "outline"}
+							variant="outline"
 							size="sm"
-							onClick={() => setImportMode("file")}
+							className="w-full justify-between"
 						>
-							<Upload className="w-4 h-4 mr-2" />
-							From File
+							<span>Import an existing profile</span>
+							<ChevronDown className="w-4 h-4" />
 						</Button>
-						<Button
-							variant={importMode === "pico" ? "default" : "outline"}
-							size="sm"
-							onClick={() => setImportMode("pico")}
-							disabled={!isConfigured}
-						>
-							<HardDrive className="w-4 h-4 mr-2" />
-							From Pico
-						</Button>
-					</div>
-
-					{importError && (
-						<Alert variant="destructive">
-							<CircleAlert className="h-4 w-4" />
-							<AlertDescription>{importError}</AlertDescription>
-						</Alert>
-					)}
-
-					{importMode === "file" && (
-						<label>
-							<Button variant="outline" size="sm" className="w-full" asChild>
-								<span>
-									<Upload className="w-4 h-4 mr-2" />
-									Choose File to Import
-								</span>
-							</Button>
-							<input
-								type="file"
-								accept=".json"
-								onChange={importFromFile}
-								className="hidden"
-							/>
-						</label>
-					)}
-
-					{importMode === "pico" && (
-						<div className="space-y-2">
-							{!isConfigured && (
-								<Alert>
-									<CircleAlert className="h-4 w-4" />
-									<AlertDescription>
-										Please configure Pico connection to import profiles
-									</AlertDescription>
-								</Alert>
-							)}
-							{isConfigured && isLoadingProfiles && (
-								<p className="text-sm text-muted-foreground">
-									Loading profiles from Pico...
-								</p>
-							)}
-							{isConfigured &&
-								profilesData?.success &&
-								profilesData.files.length === 0 && (
-									<p className="text-sm text-muted-foreground">
-										No profiles found on Pico
-									</p>
-								)}
-							{isConfigured &&
-								profilesData?.success &&
-								profilesData.files.length > 0 && (
-									<div className="flex gap-2">
-										<Select
-											value={selectedPicoProfile}
-											onValueChange={setSelectedPicoProfile}
-										>
-											<SelectTrigger className="flex-1">
-												<SelectValue placeholder="Choose a profile..." />
-											</SelectTrigger>
-											<SelectContent>
-												{profilesData.files.map((file) => (
-													<SelectItem key={file.name} value={file.name}>
-														{file.name}
-													</SelectItem>
-												))}
-											</SelectContent>
-										</Select>
-										<Button
-											onClick={importFromPico}
-											disabled={
-												!selectedPicoProfile || !picoProfileContent?.success
-											}
-											size="sm"
-										>
-											Import
-										</Button>
-									</div>
-								)}
-						</div>
-					)}
-				</div>
+					</CollapsibleTrigger>
+					<CollapsibleContent className="pt-3">
+						<FileSourceSelector
+							directory="profiles"
+							accept=".json"
+							onFileSelected={handleFileSelected}
+							label="Import Profile"
+							description="Load a profile to edit (replaces the current draft)"
+						/>
+						{importError && (
+							<Alert variant="destructive" className="mt-3">
+								<CircleAlert className="h-4 w-4" />
+								<AlertDescription>{importError}</AlertDescription>
+							</Alert>
+						)}
+					</CollapsibleContent>
+				</Collapsible>
 			</CardContent>
 
-			<div className="px-6 pb-6 space-y-6 border-t pt-6">
-				<div>
-					<h3 className="text-lg font-semibold">Profile Steps</h3>
+			{chart.chartData.length > 0 && (
+				<div className="sticky top-0 z-20 -mx-px border-y bg-background/95 px-6 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+					<div className="flex items-center justify-between">
+						<h3 className="text-sm font-semibold">Live Preview</h3>
+						{stats && (
+							<p className="text-xs text-muted-foreground">
+								{stats.duration.toFixed(1)}h · max {stats.maxTemp.toFixed(0)}°
+								{unit}
+							</p>
+						)}
+					</div>
+					<LineChart
+						data={chart.chartData}
+						xDataKey="t"
+						aspectRatio="auto"
+						className="h-44 mt-2"
+						margin={{ top: 14, right: 12, bottom: 24, left: 40 }}
+						animationDuration={0}
+					>
+						<Grid horizontal />
+						<YAxis formatValue={(v) => `${Math.round(v)}°`} />
+						{chart.series.map((s, i) => (
+							<Line
+								key={`${s.type}-${i}`}
+								data={s.data}
+								dataKey="temp"
+								stroke={s.color}
+								strokeWidth={2.5}
+								curve={curveLinear}
+								fadeEdges={false}
+								showHighlight={false}
+								animate={false}
+							/>
+						))}
+						<KilnMarkers items={chart.markers} />
+						<KilnTimeAxis />
+						<ChartTooltip
+							showDatePill={false}
+							showDots={false}
+							content={({ point }) => (
+								<KilnTooltipContent
+									point={point}
+									rows={[
+										{
+											color: "var(--chart-line-primary)",
+											label: "Temp",
+											value: `${(point.temp as number).toFixed(0)}°${unit}`,
+										},
+									]}
+								/>
+							)}
+						/>
+					</LineChart>
+					<div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+						<LegendDot className="bg-chart-heating" label="Ramp" />
+						<LegendDot className="bg-chart-hold" label="Hold" />
+						<LegendDot
+							className="bg-chart-cooling"
+							label="Controlled cooling"
+						/>
+						<LegendDot
+							className="bg-chart-natural-cooling"
+							label="Natural cooling"
+						/>
+					</div>
 				</div>
+			)}
+
+			<div className="px-6 pb-6 space-y-6 pt-6">
+				<h3 className="text-lg font-semibold">Profile Steps</h3>
 
 				<div className="space-y-3">
 					{profile.steps.map((step, index) => {
@@ -416,28 +474,30 @@ export function ProfileEditor() {
 								className={`p-4 rounded-lg border transition-colors ${
 									error
 										? "bg-destructive/10 border-destructive/40"
-										: "bg-muted/30 hover:bg-muted/50"
+										: "bg-muted/30"
 								}`}
 							>
-								<div className="flex items-start gap-4">
+								<div className="flex items-start gap-3">
 									<div className="flex flex-col gap-1">
 										<Button
 											variant="ghost"
-											size="sm"
+											size="icon"
 											onClick={() => moveStepUp(index)}
 											disabled={index === 0}
-											className="h-8 w-8 p-0"
+											aria-label="Move step up"
+											className="h-8 w-8"
 										>
-											↑
+											<ChevronUp className="w-4 h-4" />
 										</Button>
 										<Button
 											variant="ghost"
-											size="sm"
+											size="icon"
 											onClick={() => moveStepDown(index)}
 											disabled={index === profile.steps.length - 1}
-											className="h-8 w-8 p-0"
+											aria-label="Move step down"
+											className="h-8 w-8"
 										>
-											↓
+											<ChevronDown className="w-4 h-4" />
 										</Button>
 									</div>
 
@@ -464,9 +524,7 @@ export function ProfileEditor() {
 										<div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
 											{step.type !== "cooling" && (
 												<div>
-													<Label>
-														Target Temp (°{profile.temp_units.toUpperCase()})
-													</Label>
+													<Label>Target Temp (°{unit})</Label>
 													<Input
 														type="number"
 														value={step.target_temp ?? ""}
@@ -484,10 +542,7 @@ export function ProfileEditor() {
 
 											{step.type === "cooling" && (
 												<div>
-													<Label>
-														Target Temp (°{profile.temp_units.toUpperCase()}) -
-														Optional
-													</Label>
+													<Label>Target Temp (°{unit}) - Optional</Label>
 													<Input
 														type="number"
 														value={step.target_temp ?? ""}
@@ -511,10 +566,7 @@ export function ProfileEditor() {
 											{step.type === "ramp" && (
 												<>
 													<div>
-														<Label>
-															Desired Rate (°{profile.temp_units.toUpperCase()}
-															/h)
-														</Label>
+														<Label>Desired Rate (°{unit}/h)</Label>
 														<Input
 															type="number"
 															value={step.desired_rate ?? ""}
@@ -531,9 +583,7 @@ export function ProfileEditor() {
 														/>
 													</div>
 													<div>
-														<Label>
-															Min Rate (°{profile.temp_units.toUpperCase()}/h)
-														</Label>
+														<Label>Min Rate (°{unit}/h)</Label>
 														<Input
 															type="number"
 															value={step.min_rate ?? ""}
@@ -557,11 +607,8 @@ export function ProfileEditor() {
 													<Label>Duration (minutes)</Label>
 													<Input
 														type="number"
-														value={
-															step.duration
-																? (step.duration / 60).toFixed(0)
-																: ""
-														}
+														step="any"
+														value={minutesValue(step.duration)}
 														onChange={(e) => {
 															const value = e.target.value;
 															updateStep(index, {
@@ -587,10 +634,11 @@ export function ProfileEditor() {
 
 									<Button
 										variant="ghost"
-										size="sm"
-										onClick={() => removeStep(index)}
+										size="icon"
+										onClick={() => setStepToDelete(index)}
 										disabled={profile.steps.length <= 1}
-										className="h-8 w-8 p-0"
+										aria-label="Delete step"
+										className="h-8 w-8"
 									>
 										<Trash2 className="w-4 h-4 text-destructive" />
 									</Button>
@@ -606,7 +654,6 @@ export function ProfileEditor() {
 				</Button>
 			</div>
 
-			{/* Export Section */}
 			<div className="px-6 pb-6 space-y-3 border-t pt-6">
 				<div>
 					<Label className="text-base font-semibold">Export Profile</Label>
@@ -673,7 +720,7 @@ export function ProfileEditor() {
 										id="upload-filename"
 										value={uploadFilename}
 										onChange={(e) => setUploadFilename(e.target.value)}
-										placeholder={`${profile.name.replace(/\s+/g, "_").toLowerCase()}.json`}
+										placeholder={defaultFilename(profile)}
 										className="mt-1"
 									/>
 									<p className="text-xs text-muted-foreground mt-1">
@@ -713,137 +760,162 @@ export function ProfileEditor() {
 				)}
 			</div>
 
-			{segments.length > 0 && (
-				<div className="px-6 pb-6 space-y-6 border-t pt-6">
-					<div>
-						<h3 className="text-lg font-semibold">Live Preview</h3>
-						{stats && (
-							<p className="text-sm text-muted-foreground mt-1">
-								Duration: {stats.duration.toFixed(2)}h | Max Temp:{" "}
-								{stats.maxTemp.toFixed(0)}°{profile.temp_units.toUpperCase()}
-							</p>
-						)}
-					</div>
+			{/* Delete-step confirmation */}
+			<Dialog
+				open={stepToDelete !== null}
+				onOpenChange={(open) => !open && setStepToDelete(null)}
+			>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>Delete step?</DialogTitle>
+						<DialogDescription>
+							{stepToDelete !== null &&
+								`Step ${stepToDelete + 1} will be removed from the profile. This can't be undone.`}
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button variant="outline" onClick={() => setStepToDelete(null)}>
+							Cancel
+						</Button>
+						<Button
+							variant="destructive"
+							onClick={() => {
+								if (stepToDelete !== null) removeStep(stepToDelete);
+								setStepToDelete(null);
+							}}
+						>
+							<Trash2 className="w-4 h-4 mr-2" />
+							Delete
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 
-					<div className="space-y-4">
-						<div className="flex gap-4 text-sm flex-wrap">
-							<div className="flex items-center gap-2">
-								<div className="w-4 h-4 rounded bg-chart-heating" />
-								<span>Ramp (heating)</span>
-							</div>
-							<div className="flex items-center gap-2">
-								<div className="w-4 h-4 rounded bg-chart-hold" />
-								<span>Hold</span>
-							</div>
-							<div className="flex items-center gap-2">
-								<div className="w-4 h-4 rounded bg-chart-cooling" />
-								<span>Controlled Cooling</span>
-							</div>
-							<div className="flex items-center gap-2">
-								<div className="w-4 h-4 rounded bg-chart-natural-cooling" />
-								<span>Natural Cooling</span>
-							</div>
-						</div>
+			{/* Import-overwrite confirmation */}
+			<Dialog
+				open={pendingImport !== null}
+				onOpenChange={(open) => !open && setPendingImport(null)}
+			>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>Replace current draft?</DialogTitle>
+						<DialogDescription>
+							You have unsaved changes. Importing will replace the profile
+							you're editing.
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button variant="outline" onClick={() => setPendingImport(null)}>
+							Keep editing
+						</Button>
+						<Button
+							onClick={() => {
+								if (pendingImport !== null) applyImport(pendingImport);
+								setPendingImport(null);
+							}}
+						>
+							Replace
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 
-						<ResponsiveContainer width="100%" height={400}>
-							<LineChart margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-								<CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+			{/* Upload-overwrite confirmation */}
+			<Dialog
+				open={pendingUpload !== null}
+				onOpenChange={(open) => !open && setPendingUpload(null)}
+			>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>Overwrite file on Pico?</DialogTitle>
+						<DialogDescription>
+							{pendingUpload &&
+								`A profile named "${pendingUpload}" already exists on the Pico. Uploading will overwrite it.`}
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button variant="outline" onClick={() => setPendingUpload(null)}>
+							Cancel
+						</Button>
+						<Button
+							onClick={() => {
+								if (pendingUpload) doUpload(pendingUpload);
+								setPendingUpload(null);
+							}}
+						>
+							<FileUp className="w-4 h-4 mr-2" />
+							Overwrite
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 
-								<XAxis
-									dataKey="time_hours"
-									type="number"
-									domain={[0, "dataMax"]}
-									label={{
-										value: "Time (hours)",
-										position: "insideBottom",
-										offset: -5,
-									}}
-								/>
-								<YAxis
-									label={{
-										value: `Temperature (°${profile.temp_units.toUpperCase()})`,
-										angle: -90,
-										position: "insideLeft",
-									}}
-								/>
-								<Tooltip
-									content={({ active, payload }) => {
-										if (!active || !payload || payload.length === 0)
-											return null;
+			{/* Reset / new profile confirmation */}
+			<Dialog open={showReset} onOpenChange={setShowReset}>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>Start a new profile?</DialogTitle>
+						<DialogDescription>
+							This clears the current draft and starts from a fresh default
+							profile.
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button variant="outline" onClick={() => setShowReset(false)}>
+							Cancel
+						</Button>
+						<Button variant="destructive" onClick={resetDraft}>
+							<RotateCcw className="w-4 h-4 mr-2" />
+							New profile
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 
-										const point = payload[0].payload as TrajectoryPoint;
-										const segment = segments.find((s) =>
-											s.data.some(
-												(d) =>
-													d.time_hours === point.time_hours &&
-													d.temp === point.temp,
-											),
-										);
-
-										return (
-											<div className="bg-background border rounded-lg p-3 shadow-lg">
-												<p className="font-semibold">
-													Time: {point.time_hours.toFixed(2)}h
-												</p>
-												<p>
-													Temperature: {point.temp.toFixed(1)}°
-													{profile.temp_units.toUpperCase()}
-												</p>
-												{segment && (
-													<>
-														<p className="mt-2 font-semibold capitalize">
-															{segment.type}
-														</p>
-														{segment.type === "hold" && (
-															<p className="text-sm">
-																Duration: {segment.duration?.toFixed(0)} min
-															</p>
-														)}
-														{(segment.type === "ramp" ||
-															segment.type === "cooling") && (
-															<>
-																{segment.desiredRate && (
-																	<p className="text-sm">
-																		Desired rate: {segment.desiredRate}°
-																		{profile.temp_units.toUpperCase()}/h
-																	</p>
-																)}
-																{segment.minRate && (
-																	<p className="text-sm">
-																		Min rate: {segment.minRate}°
-																		{profile.temp_units.toUpperCase()}/h
-																	</p>
-																)}
-															</>
-														)}
-													</>
-												)}
-											</div>
-										);
-									}}
-								/>
-								<Legend />
-
-								{/* Draw a separate line for each segment with its own color */}
-								{segments.map((segment, idx) => (
-									<Line
-										key={idx}
-										data={segment.data}
-										type="linear"
-										dataKey="temp"
-										stroke={segment.color}
-										strokeWidth={3}
-										dot={{ r: 5, fill: segment.color }}
-										name={idx === 0 ? "Temperature" : undefined}
-										legendType={idx === 0 ? "line" : "none"}
-										isAnimationActive={false}
-									/>
-								))}
-							</LineChart>
-						</ResponsiveContainer>
-					</div>
-				</div>
-			)}
+			{/* Unsaved-changes navigation guard */}
+			<Dialog
+				open={blocker.status === "blocked"}
+				onOpenChange={(open) => {
+					if (!open && blocker.status === "blocked") blocker.reset();
+				}}
+			>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>Leave the editor?</DialogTitle>
+						<DialogDescription>
+							You have unsaved changes. Your draft is kept on this device, but
+							it hasn't been downloaded or uploaded to the kiln.
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button
+							variant="outline"
+							onClick={() => {
+								if (blocker.status === "blocked") blocker.reset();
+							}}
+						>
+							Stay
+						</Button>
+						<Button
+							variant="destructive"
+							onClick={() => {
+								if (blocker.status === "blocked") blocker.proceed();
+							}}
+						>
+							Leave
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</Card>
+	);
+}
+
+function LegendDot({ className, label }: { className: string; label: string }) {
+	return (
+		<div className="flex items-center gap-1.5">
+			<div className={`w-3 h-3 rounded ${className}`} />
+			<span>{label}</span>
+		</div>
 	);
 }

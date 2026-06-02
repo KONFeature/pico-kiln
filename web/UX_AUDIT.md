@@ -4,7 +4,7 @@
 > recharts, bundled to Android/desktop via Tauri). This is the primary mobile
 > experience for controlling a physical kiln over Wi-Fi/HTTP to a Raspberry Pi Pico.
 >
-> Status: **Phases 1–3 implemented** ✅ (theming + correctness, error-handling & trust, dashboard clarity). Phase 4 (editor for touch + bklit migration) still pending.
+> Status: **Phases 1–4 implemented** ✅ (theming + correctness, error-handling & trust, dashboard clarity, editor-for-touch + full bklit chart migration).
 
 ## Decisions captured (from review)
 
@@ -153,11 +153,17 @@ Grouped by severity. File:line references are approximate to the audited revisio
 > - Charts still use **recharts** with the `var(--chart-*)` tokens; the bklit migration remains Phase 4.
 > - Dashboard live readouts remain in **°C** (firmware constraint, per the Phase 1 notes above).
 
-### Phase 4 — Editor for touch + bklit migration
-12. Persist editor draft (context/localStorage) + **unsaved-changes guard**; confirm destructive actions (delete/import-overwrite); schema-validate imports; overwrite warning on upload (C3, m10).
-13. Split editor into collapsible sections / **sticky live preview**; icon reorder buttons; fix duration rounding (M9, m3).
-14. Reuse `FileSourceSelector` in the editor (m5); unify cooling color semantics (m8); remove dead code (m11).
-15. **Migrate all charts to bklit**, add **LTTB downsampling**, token colors, mobile axis fixes, shared crosshair, markers, `isAnimationActive` off for large sets (C5, M1, M10).
+### Phase 4 — Editor for touch + bklit migration — ✅ COMPLETED
+12. ✅ **Editor no longer loses work.** The draft persists to `localStorage` (`lib/use-profile-draft.ts`) so it survives Toolbox-tab switches (Radix unmounts inactive tabs), reloads, back-nav and pull-to-refresh. An **unsaved-changes guard** (TanStack Router `useBlocker` + `enableBeforeUnload`) warns before navigating away/closing with un-exported edits. Destructive actions now **confirm** via dialogs: step delete, import-overwrite (when the draft is dirty), and **upload-overwrite** (when the filename already exists on the Pico). Imports are **schema-validated** through `parseProfileText`/`validateProfile` (`lib/profile-schema.ts`, with tests) returning a typed `Profile` or a clear reason — replacing `JSON.parse(...) as Profile` (C3, m10).
+13. ✅ Editor restructured for touch: the **Import** section is a `Collapsible`, the **live preview is sticky** (pins to the top while editing steps, so inputs are never "miles" from the chart), reorder buttons use **`ChevronUp`/`ChevronDown` icons** (`size="icon"`, no longer distorted), and the hold **duration input preserves fractional minutes** (`minutesValue`, 2-decimal round-trip) instead of `(/60).toFixed(0)` (M9, m3).
+14. ✅ The editor now **reuses `FileSourceSelector`** for import (gaining its "paste content" feature) (m5); **cooling color semantics are unified** — natural cooling is cyan (`--chart-natural-cooling`), controlled cooling is blue (`--chart-cooling`) everywhere, including the tuning phase bands (m8); dead `_Icon`/`VISUALIZER_INFO` in `Visualizer.tsx` removed (m11).
+15. ✅ **All charts migrated to bklit** (installed via the shadcn registry into `src/components/charts/`; **recharts removed** — the bundle actually shrank). **LTTB downsampling** added (`lttbDownsample` in `csv-parser.ts`, with tests; applied to Run/Tuning logs at ~800 pts, and bklit also decimates to render width) so a 12 h log no longer freezes a phone (C5). Entrance **animations are off** (`animationDuration={0}`) on the data charts. Charts inherit theme via bklit CSS vars **aliased to the kiln tokens**, so dark mode works (M1). **Mobile axis fixes**: a custom elapsed-time X axis + numeric Y axis replace the overlapping `insideLeft`/`insideBottom` labels (M10). Per-chart **crosshair + touch tooltips** come from bklit; **step-boundary markers** and **tuning phase regions** are custom overlays (`charts/kiln/parts.tsx`) reading bklit's chart context (M10).
+
+> **Notes / scope boundaries**
+> - **bklit license:** the registry ships with **no license file** (all-rights-reserved under default copyright). The shadcn model copies its source into the repo, so the project owner **explicitly accepted that risk** to proceed; revisit before any distribution.
+> - **bklit is date/time-series–oriented.** Kiln elapsed-time series are mapped to epoch-offset `Date`s (`lib/chart-time.ts`, with tests), and bklit's date-only axis/markers/tooltip are replaced by kiln overlays. bklit's `Line` was given an optional per-series `data` override to keep the profile's multi-colored segments.
+> - **Synchronized crosshair across the stacked Run charts** (one cursor over temp/SSR/rate at once) is **not** implemented — bklit owns tooltip state per chart and cross-chart sync would require invasive engine changes. Each chart has its own crosshair + touch tooltip (already an improvement over the prior un-synced recharts charts).
+> - Dashboard live readouts remain **°C**, and Run/Tuning logs are **°C** (firmware), consistent with the earlier phases.
 
 ---
 

@@ -14,32 +14,9 @@ import { TuningPhasesVisualizer } from "./TuningPhasesVisualizer";
 
 type VisualizerType = "profile" | "run" | "tuning";
 
-const VISUALIZER_INFO = {
-	profile: {
-		title: "Profile Visualizer",
-		description:
-			"Visualize kiln firing profiles - see temperature trajectory over time",
-		icon: LineChart,
-	},
-	run: {
-		title: "Run Visualizer",
-		description:
-			"Visualize kiln firing or tuning runs - see temperature, SSR output, and rate data",
-		icon: Activity,
-	},
-	tuning: {
-		title: "Tuning Phases Visualizer",
-		description: "Visualize PID tuning runs with physics-based phase detection",
-		icon: Zap,
-	},
-};
-
 export function Visualizer() {
 	const [visualizerType, setVisualizerType] =
 		useState<VisualizerType>("profile");
-
-	const currentInfo = VISUALIZER_INFO[visualizerType];
-	const _Icon = currentInfo.icon;
 
 	return (
 		<div className="space-y-6">

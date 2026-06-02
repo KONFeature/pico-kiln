@@ -64,13 +64,31 @@ code {
   --tuning: oklch(0.5 0.22 300);
   --tuning-foreground: oklch(0.985 0 0);
 
-  /* Kiln data-visualization colors (hex for SVG/recharts compatibility) */
+  /* Kiln data-visualization colors (hex for SVG stroke/fill in charts) */
   --chart-heating: #ef4444; /* ramp / heating */
   --chart-hold: #eab308; /* hold */
   --chart-cooling: #3b82f6; /* controlled cooling */
   --chart-natural-cooling: #06b6d4; /* natural cooling */
   --chart-ssr: #f97316; /* SSR output / heat */
   --chart-rate: #22c55e; /* measured rate */
+
+  /* bklit chart structural tokens, aliased to kiln theme tokens so charts
+     follow light/dark for free. Series stroke/fill are passed per-chart. */
+  --chart-background: var(--card);
+  --chart-foreground: var(--muted-foreground);
+  --chart-foreground-muted: var(--muted-foreground);
+  --chart-line-primary: var(--chart-heating);
+  --chart-line-secondary: var(--chart-cooling);
+  --chart-crosshair: var(--muted-foreground);
+  --chart-grid: var(--border);
+  --chart-tooltip-background: var(--popover);
+  --chart-tooltip-foreground: var(--popover-foreground);
+  --chart-tooltip-muted: var(--muted-foreground);
+  --chart-marker-background: var(--popover);
+  --chart-marker-border: var(--border);
+  --chart-marker-foreground: var(--foreground);
+  --chart-ring-background: color-mix(in oklab, var(--muted-foreground) 25%, transparent);
+  --chart-label: var(--muted-foreground);
 }
 
 .dark {
@@ -177,6 +195,21 @@ code {
   --color-chart-natural-cooling: var(--chart-natural-cooling);
   --color-chart-ssr: var(--chart-ssr);
   --color-chart-rate: var(--chart-rate);
+  --color-chart-background: var(--chart-background);
+  --color-chart-foreground: var(--chart-foreground);
+  --color-chart-foreground-muted: var(--chart-foreground-muted);
+  --color-chart-line-primary: var(--chart-line-primary);
+  --color-chart-line-secondary: var(--chart-line-secondary);
+  --color-chart-crosshair: var(--chart-crosshair);
+  --color-chart-grid: var(--chart-grid);
+  --color-chart-tooltip-background: var(--chart-tooltip-background);
+  --color-chart-tooltip-foreground: var(--chart-tooltip-foreground);
+  --color-chart-tooltip-muted: var(--chart-tooltip-muted);
+  --color-chart-marker-background: var(--chart-marker-background);
+  --color-chart-marker-border: var(--chart-marker-border);
+  --color-chart-marker-foreground: var(--chart-marker-foreground);
+  --color-chart-ring-background: var(--chart-ring-background);
+  --color-chart-label: var(--chart-label);
 }
 
 @layer base {
