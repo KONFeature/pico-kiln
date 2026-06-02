@@ -30,7 +30,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { PicoAPIError } from "@/lib/pico/client";
 import { usePico } from "@/lib/pico/context";
 import {
 	useDeleteAllLogs,
@@ -85,15 +84,8 @@ export function FileManager() {
 		setDownloadError(null);
 
 		try {
-			const response = await client.getFile(directory, filename);
-			if (!response.success || !response.content) {
-				throw new PicoAPIError(
-					response.error ?? "The kiln couldn't read this file.",
-					undefined,
-					response,
-				);
-			}
-			const blob = new Blob([response.content], { type: "text/plain" });
+			const content = await client.getFile(directory, filename);
+			const blob = new Blob([content], { type: "text/plain" });
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement("a");
 			a.href = url;

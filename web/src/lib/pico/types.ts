@@ -181,13 +181,6 @@ export interface ListFilesResponse {
 	error?: string;
 }
 
-export interface GetFileResponse {
-	success: boolean;
-	filename: string;
-	content: string;
-	error?: string;
-}
-
 export interface DeleteFileResponse {
 	success: boolean;
 	message?: string;

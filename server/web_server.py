@@ -392,48 +392,79 @@ def handle_api_files_list(conn, directory):
         send_json_response(conn, {'success': False, 'error': str(e)}, 500)
 
 def handle_api_files_get(conn, directory, filename):
-    """GET /api/files/<directory>/<filename> - Get file content"""
+    """GET /api/files/<directory>/<filename> - Stream raw file content
+
+    MEMORY OPTIMIZED: streams the file in 1KB chunks. The previous
+    implementation read the whole file with f.read(), wrapped it in JSON,
+    encoded to bytes, and concatenated with headers - holding ~4x the file
+    size in RAM and crashing on multi-hundred-KB log CSVs (Pico ~200KB free heap).
+    """
+    # Check if IDLE
+    is_idle, error = check_idle_state()
+    if not is_idle:
+        send_json_response(conn, error, 403)
+        return
+
+    # Validate directory
+    is_valid, dir_path, error = validate_directory(directory)
+    if not is_valid:
+        send_json_response(conn, error, 400)
+        return
+
+    # Validate filename
+    if not safe_filename(filename):
+        send_json_response(conn, {
+            'success': False,
+            'error': 'Invalid filename'
+        }, 400)
+        return
+
+    # Stat for Content-Length (no in-RAM size measurement)
+    import os
+    filepath = f"{dir_path}/{filename}"
     try:
-        # Check if IDLE
-        is_idle, error = check_idle_state()
-        if not is_idle:
-            send_json_response(conn, error, 403)
-            return
-        
-        # Validate directory
-        is_valid, dir_path, error = validate_directory(directory)
-        if not is_valid:
-            send_json_response(conn, error, 400)
-            return
-        
-        # Validate filename
-        if not safe_filename(filename):
-            send_json_response(conn, {
-                'success': False,
-                'error': 'Invalid filename'
-            }, 400)
-            return
-        
-        # Read file
-        filepath = f"{dir_path}/{filename}"
-        try:
-            with open(filepath, 'r') as f:
-                content = f.read()
-            
-            send_json_response(conn, {
-                'success': True,
-                'filename': filename,
-                'content': content
-            })
-        except OSError as e:
-            send_json_response(conn, {
-                'success': False,
-                'error': f'File not found: {filename}'
-            }, 404)
-    
+        size = os.stat(filepath)[6]  # st_size
+    except OSError:
+        send_response(conn, 404, b'File not found', 'text/plain')
+        return
+
+    # Content type from extension - keeps headers small
+    if filename.endswith('.csv'):
+        content_type = b'text/csv'
+    elif filename.endswith('.json'):
+        content_type = b'application/json'
+    else:
+        content_type = b'text/plain'
+
+    header = (
+        HTTP_200 +
+        b'Content-Type: ' + content_type + b'\r\n' +
+        b'Content-Length: ' + str(size).encode() + b'\r\n' +
+        b'Content-Disposition: attachment; filename="' + filename.encode() + b'"\r\n' +
+        HEADER_CORS +
+        HEADER_CONNECTION_CLOSE
+    )
+
+    # Switch to blocking mode for the transfer. Safe because file ops are
+    # gated by IDLE state (kiln not running, no time-critical updates).
+    try:
+        conn.setblocking(True)
+        conn.sendall(header)
+
+        gc.collect()
+        buf = bytearray(1024)
+        mv = memoryview(buf)
+        with open(filepath, 'rb') as f:
+            while True:
+                n = f.readinto(buf)
+                if not n:
+                    break
+                conn.sendall(mv[:n])
     except Exception as e:
-        print(f"[Web Server] Error reading file: {e}")
-        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+        # Connection likely closed mid-stream; nothing we can do, just log.
+        print(f"[Web Server] Error streaming file {filename}: {e}")
+    finally:
+        gc.collect()
 
 def handle_api_files_delete(conn, directory, filename):
     """DELETE /api/files/<directory>/<filename> - Delete a file"""

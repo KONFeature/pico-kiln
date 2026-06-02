@@ -14,7 +14,6 @@ import type {
 	DeleteAllFilesResponse,
 	DeleteFileResponse,
 	FileDirectory,
-	GetFileResponse,
 	KilnStatus,
 	ListFilesResponse,
 	RunProfileResponse,
@@ -423,43 +422,6 @@ export function useListFiles(
 			// If kiln is running, don't retry - just use cached data
 			if (!isFileOpsAvailable) return false;
 			// Otherwise retry up to 2 times
-			return failureCount < 2;
-		},
-		...options,
-	});
-}
-
-/**
- * Hook to get file content
- * Persisted across sessions for offline access
- */
-export function useGetFile(
-	directory: FileDirectory,
-	filename: string,
-	enabled = true,
-	options?: Partial<UseQueryOptions<GetFileResponse, PicoAPIError>>,
-) {
-	const { client, isConfigured } = usePico();
-	const { data: status } = useKilnStatus();
-	const isFileOpsAvailable = status?.state === "IDLE";
-
-	return useQuery<GetFileResponse, PicoAPIError>({
-		queryKey: picoKeys.fileContent(directory, filename),
-		queryFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
-			return await client.getFile(directory, filename);
-		},
-		enabled: enabled && isConfigured && Boolean(client),
-		// If file operations not available, use cached data
-		refetchInterval: false, // Don't auto-refetch file content
-		refetchOnWindowFocus: isFileOpsAvailable, // Only refetch on focus when IDLE
-		staleTime: isFileOpsAvailable ? 1000 * 60 * 10 : Number.POSITIVE_INFINITY, // 10 min when IDLE, never stale when running
-		gcTime: 1000 * 60 * 60 * 24 * 7, // Keep in cache for 7 days
-		placeholderData: (previousData) => previousData,
-		retry: (failureCount, _error) => {
-			if (!isFileOpsAvailable) return false;
 			return failureCount < 2;
 		},
 		...options,

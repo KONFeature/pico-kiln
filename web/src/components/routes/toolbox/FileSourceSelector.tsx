@@ -58,7 +58,11 @@ export function FileSourceSelector({
 	});
 
 	// Query to get file content from Pico
-	const { data: fileContent, isFetching: isFetchingContent } = useQuery({
+	const {
+		data: fileContent,
+		isFetching: isFetchingContent,
+		error: fileContentError,
+	} = useQuery({
 		queryKey: ["file-content", directory, selectedFile],
 		queryFn: () => client?.getFile(directory, selectedFile),
 		enabled: sourceMode === "pico" && selectedFile !== "" && client !== null,
@@ -87,8 +91,8 @@ export function FileSourceSelector({
 
 	// Handle loading file from Pico
 	const handleLoadFromPico = () => {
-		if (fileContent?.success && fileContent.content) {
-			onFileSelected(fileContent.content, fileContent.filename);
+		if (fileContent) {
+			onFileSelected(fileContent, selectedFile);
 		}
 	};
 
@@ -207,17 +211,17 @@ export function FileSourceSelector({
 							</Select>
 							<Button
 								onClick={handleLoadFromPico}
-								disabled={
-									!selectedFile || isFetchingContent || !fileContent?.success
-								}
+								disabled={!selectedFile || isFetchingContent || !fileContent}
 								size="sm"
 								className="w-full"
 							>
 								{isFetchingContent ? "Loading..." : "Load File"}
 							</Button>
-							{fileContent && !fileContent.success && (
+							{fileContentError && (
 								<div className="text-sm text-destructive">
-									{fileContent.error || "Failed to load file content"}
+									{fileContentError instanceof Error
+										? fileContentError.message
+										: "Failed to load file content"}
 								</div>
 							)}
 						</div>

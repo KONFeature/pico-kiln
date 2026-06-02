@@ -5,7 +5,6 @@ import type {
 	DeleteAllFilesResponse,
 	DeleteFileResponse,
 	FileDirectory,
-	GetFileResponse,
 	KilnStatus,
 	ListFilesResponse,
 	RunProfileRequest,
@@ -245,11 +244,31 @@ export class PicoAPIClient {
 	 * Get file content from a directory
 	 * Only works when kiln is IDLE
 	 */
-	async getFile(
-		directory: FileDirectory,
-		filename: string,
-	): Promise<GetFileResponse> {
-		return this.request<GetFileResponse>(`/api/files/${directory}/${filename}`);
+	async getFile(directory: FileDirectory, filename: string): Promise<string> {
+		// Streaming download from /api/files/<dir>/<file>. The server returns
+		// the raw file body (text/csv or application/json) with no JSON wrapper,
+		// avoiding ~4x RAM amplification on the Pico for large log files.
+		// No AbortController timeout: multi-hundred-KB logs over Pico WiFi can
+		// take much longer than the 10s default used elsewhere.
+		const url = `${this.baseURL}/api/files/${directory}/${filename}`;
+		try {
+			const response = await fetch(url);
+			if (!response.ok) {
+				const errorText = await response.text().catch(() => "Unknown error");
+				throw new PicoAPIError(
+					`HTTP ${response.status}: ${errorText}`,
+					response.status,
+				);
+			}
+			return await response.text();
+		} catch (error) {
+			if (error instanceof PicoAPIError) throw error;
+			throw new PicoAPIError(
+				error instanceof Error ? error.message : "Unknown error",
+				undefined,
+				error,
+			);
+		}
 	}
 
 	/**
