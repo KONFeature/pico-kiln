@@ -16,18 +16,18 @@
 		<script>
 			// Apply the saved theme before first paint to avoid a flash of the
 			// wrong theme. Must stay in sync with src/lib/theme/theme-provider.tsx.
-			(function () {
+			(() => {
 				try {
-					var stored = localStorage.getItem("pico-kiln-theme");
-					var theme =
+					const stored = localStorage.getItem("pico-kiln-theme");
+					const theme =
 						stored === "light" || stored === "dark" || stored === "system"
 							? stored
 							: "system";
-					var isDark =
+					const isDark =
 						theme === "dark" ||
 						(theme === "system" &&
 							window.matchMedia("(prefers-color-scheme: dark)").matches);
-					var root = document.documentElement;
+					const root = document.documentElement;
 					root.classList.toggle("dark", isDark);
 					root.style.colorScheme = isDark ? "dark" : "light";
 				} catch (e) {}

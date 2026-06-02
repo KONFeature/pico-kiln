@@ -186,7 +186,7 @@ export function KilnStatusDisplay({
 	};
 
 	const formatDuration = (seconds?: number) => {
-		if (seconds === undefined || seconds === null || Number.isNaN(seconds)) {
+		if (seconds === undefined || Number.isNaN(seconds)) {
 			return "N/A";
 		}
 		const hours = Math.floor(seconds / 3600);
