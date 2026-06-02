@@ -65,6 +65,12 @@ import type {
 } from "@/lib/pico/types";
 import { parseProfileText } from "@/lib/profile-schema";
 import { buildProfileChart, calculateTrajectory } from "@/lib/profile-utils";
+import {
+	formatETA,
+	formatStepInfo,
+	isStepControlledCooldown,
+	StepIcon,
+} from "@/lib/step-utils";
 import { useProfileDraft } from "@/lib/use-profile-draft";
 import { FileSourceSelector } from "./FileSourceSelector";
 
@@ -154,6 +160,18 @@ export function ProfileEditor() {
 
 	const segments = useMemo(() => calculateTrajectory(profile), [profile]);
 	const chart = useMemo(() => buildProfileChart(segments), [segments]);
+
+	// calculateTrajectory emits one segment per step in order, so index aligns.
+	const stepDurations = useMemo(
+		() =>
+			segments.map((s) => {
+				const points = s.data;
+				return (
+					(points[points.length - 1].time_hours - points[0].time_hours) * 3600
+				);
+			}),
+		[segments],
+	);
 
 	const stats = useMemo(() => {
 		if (segments.length === 0) return null;
@@ -468,6 +486,13 @@ export function ProfileEditor() {
 				<div className="space-y-3">
 					{profile.steps.map((step, index) => {
 						const error = stepErrors[index];
+						const prevTargetTemp =
+							index > 0 ? profile.steps[index - 1].target_temp : undefined;
+						const controlledCooldown = isStepControlledCooldown(
+							step,
+							prevTargetTemp,
+						);
+						const durationSeconds = stepDurations[index] ?? 0;
 						return (
 							<div
 								key={index}
@@ -503,7 +528,13 @@ export function ProfileEditor() {
 
 									<div className="flex-1 space-y-3">
 										<div className="flex items-center gap-4">
-											<div className="font-semibold">Step {index + 1}</div>
+											<div className="flex items-center gap-2">
+												<StepIcon
+													type={step.type}
+													isControlledCooldown={controlledCooldown}
+												/>
+												<span className="font-semibold">Step {index + 1}</span>
+											</div>
 											<Select
 												value={step.type}
 												onValueChange={(value) =>
@@ -520,6 +551,19 @@ export function ProfileEditor() {
 												</SelectContent>
 											</Select>
 										</div>
+
+										{!error && (
+											<p className="text-xs text-muted-foreground">
+												{formatStepInfo(
+													step,
+													profile.temp_units,
+													prevTargetTemp,
+												)}
+												{step.type !== "hold" && durationSeconds >= 60
+													? ` · ≈ ${formatETA(durationSeconds)}`
+													: ""}
+											</p>
+										)}
 
 										<div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
 											{step.type !== "cooling" && (
