@@ -31,6 +31,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
+import {
 	useCancelScheduled,
 	useListFiles,
 	useReboot,
@@ -252,20 +259,23 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 					{!isRunning && !hasScheduled ? (
 						<>
 							<div className="space-y-2">
-								<label className="text-sm font-medium">Select Profile</label>
-								<select
-									className="w-full px-3 py-2 border rounded-md bg-background"
+								<Label htmlFor="profile-select">Select Profile</Label>
+								<Select
 									value={selectedProfile}
-									onChange={(e) => setSelectedProfile(e.target.value)}
+									onValueChange={setSelectedProfile}
 									disabled={status?.state === "TUNING"}
 								>
-									<option value="">-- Choose a profile --</option>
-									{availableProfiles.map((profile) => (
-										<option key={profile} value={profile}>
-											{profile.replace(/_/g, " ")}
-										</option>
-									))}
-								</select>
+									<SelectTrigger id="profile-select" className="w-full">
+										<SelectValue placeholder="Choose a profile..." />
+									</SelectTrigger>
+									<SelectContent>
+										{availableProfiles.map((profile) => (
+											<SelectItem key={profile} value={profile}>
+												{profile.replace(/_/g, " ")}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
 							</div>
 
 							<div className="grid grid-cols-2 gap-2">
