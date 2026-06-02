@@ -60,6 +60,10 @@ export function parseLogCSV(content: string): ParsedLogData {
 			timestamp: row.timestamp || "",
 		};
 
+		// Remove any point with fcked up elapsed seconds
+		const last = data[data.length - 1];
+		if (last && dataPoint.elapsed_seconds < last.elapsed_seconds) continue;
+
 		// Add optional fields if present
 		if (row.step_name) dataPoint.step_name = row.step_name;
 		if (row.step_index) dataPoint.step_index = parseInt(row.step_index, 10);
