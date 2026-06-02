@@ -2,6 +2,7 @@
  * Profile utility functions for trajectory calculation and formatting
  */
 
+import { elapsedSecondsToDate } from "./chart-time";
 import type { Profile, ProfileStep } from "./pico/types";
 
 export interface TrajectoryPoint {
@@ -26,7 +27,8 @@ export interface Segment {
 export function calculateTrajectory(profile: Profile): Segment[] {
 	const segments: Segment[] = [];
 	let currentTime = 0;
-	let currentTemp = 20; // Start at room temperature
+	// Room temperature in the profile's own units (20°C ≈ 68°F)
+	let currentTemp = profile.temp_units === "f" ? 68 : 20;
 
 	for (const step of profile.steps) {
 		const targetTemp = step.target_temp ?? currentTemp;
@@ -42,7 +44,7 @@ export function calculateTrajectory(profile: Profile): Segment[] {
 			segments.push({
 				data,
 				type: "hold",
-				color: "#eab308", // yellow-500
+				color: "var(--chart-hold)",
 				step,
 				duration: duration / 60, // convert to minutes
 			});
@@ -68,7 +70,7 @@ export function calculateTrajectory(profile: Profile): Segment[] {
 			segments.push({
 				data,
 				type: isHeating ? "ramp" : "cooling",
-				color: isHeating ? "#ef4444" : "#3b82f6", // red-500 for heating, blue-500 for cooling
+				color: isHeating ? "var(--chart-heating)" : "var(--chart-cooling)",
 				step,
 				desiredRate: step.desired_rate,
 				minRate: step.min_rate,
@@ -77,8 +79,9 @@ export function calculateTrajectory(profile: Profile): Segment[] {
 			currentTime += durationSeconds;
 			currentTemp = targetTemp;
 		} else if (step.type === "cooling") {
-			// Natural cooling: estimate at 100°C/h if target specified
-			const coolingTarget = step.target_temp ?? 20; // Default to room temp
+			// Natural cooling: fall back to room temp in the profile's units
+			const coolingTarget =
+				step.target_temp ?? (profile.temp_units === "f" ? 68 : 20);
 			const tempChange = Math.abs(currentTemp - coolingTarget);
 			const naturalCoolingRate = 100; // Estimated natural cooling rate
 			const durationHours = tempChange / naturalCoolingRate;
@@ -95,7 +98,7 @@ export function calculateTrajectory(profile: Profile): Segment[] {
 			segments.push({
 				data,
 				type: "cooling",
-				color: "#06b6d4", // cyan-500 for natural cooling
+				color: "var(--chart-natural-cooling)",
 				step,
 			});
 
@@ -105,4 +108,59 @@ export function calculateTrajectory(profile: Profile): Segment[] {
 	}
 
 	return segments;
+}
+
+export interface ProfileChartPoint {
+	t: Date;
+	temp: number;
+	[key: string]: unknown;
+}
+
+export interface ProfileChartSeries {
+	data: ProfileChartPoint[];
+	color: string;
+	type: Segment["type"];
+}
+
+export interface ProfileChartData {
+	/** Flattened trajectory for shared x/y domain + tooltip resolution. */
+	chartData: ProfileChartPoint[];
+	/** One colored polyline per step segment. */
+	series: ProfileChartSeries[];
+	/** Step-boundary markers (start of each step after the first). */
+	markers: { atSeconds: number; label: string }[];
+}
+
+/**
+ * Adapt `calculateTrajectory` segments to bklit's time-series shape: elapsed
+ * hours become epoch-offset Dates (`t`), each segment keeps its own colored
+ * polyline, and inter-step boundaries become numbered markers.
+ */
+export function buildProfileChart(segments: Segment[]): ProfileChartData {
+	const series: ProfileChartSeries[] = segments.map((segment) => ({
+		data: segment.data.map((p) => ({
+			t: elapsedSecondsToDate(p.time_hours * 3600),
+			temp: p.temp,
+		})),
+		color: segment.color,
+		type: segment.type,
+	}));
+
+	const chartData: ProfileChartPoint[] = [];
+	for (const s of series) {
+		for (const point of s.data) {
+			const prev = chartData.at(-1);
+			if (prev && prev.t.getTime() === point.t.getTime()) {
+				continue;
+			}
+			chartData.push(point);
+		}
+	}
+
+	const markers = segments.slice(1).map((segment, i) => ({
+		atSeconds: segment.data[0].time_hours * 3600,
+		label: String(i + 2),
+	}));
+
+	return { chartData, series, markers };
 }

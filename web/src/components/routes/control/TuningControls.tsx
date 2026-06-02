@@ -1,5 +1,6 @@
-import { AlertTriangle, Loader2, Play, Square, Zap } from "lucide-react";
+import { Loader2, Play, Square, Zap } from "lucide-react";
 import { useState } from "react";
+import { ErrorAlert } from "@/components/ErrorAlert";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -54,30 +55,13 @@ export function TuningControls({ status }: TuningControlsProps) {
 
 	const isTuning = status?.state === "TUNING";
 
-	const handleStart = async () => {
-		try {
-			const maxTempNum = maxTemp ? Number.parseInt(maxTemp, 10) : undefined;
-			const result = await startTuning.mutateAsync({
-				mode: selectedMode,
-				maxTemp: maxTempNum,
-			});
-			if (!result.success) {
-				console.error("Failed to start tuning:", result.error);
-			}
-		} catch (error) {
-			console.error("Error starting tuning:", error);
-		}
+	const handleStart = () => {
+		const maxTempNum = maxTemp ? Number.parseInt(maxTemp, 10) : undefined;
+		startTuning.mutate({ mode: selectedMode, maxTemp: maxTempNum });
 	};
 
-	const handleStop = async () => {
-		try {
-			const result = await stopTuning.mutateAsync();
-			if (!result.success) {
-				console.error("Failed to stop tuning:", result.error);
-			}
-		} catch (error) {
-			console.error("Error stopping tuning:", error);
-		}
+	const handleStop = () => {
+		stopTuning.mutate();
 	};
 
 	return (
@@ -85,7 +69,7 @@ export function TuningControls({ status }: TuningControlsProps) {
 			<Card>
 				<CardHeader>
 					<CardTitle className="flex items-center gap-2">
-						<Zap className="w-5 h-5 text-purple-500" />
+						<Zap className="w-5 h-5 text-tuning" />
 						PID Auto-Tuning
 					</CardTitle>
 					<CardDescription>
@@ -157,20 +141,13 @@ export function TuningControls({ status }: TuningControlsProps) {
 								)}
 							</Button>
 
-							{startTuning.isError && (
-								<Alert variant="destructive">
-									<AlertTriangle className="w-4 h-4" />
-									<AlertDescription>
-										{startTuning.error?.message || "Failed to start tuning"}
-									</AlertDescription>
-								</Alert>
-							)}
+							{startTuning.isError && <ErrorAlert error={startTuning.error} />}
 						</>
 					) : (
 						<>
-							<Alert className="border-purple-600 bg-purple-50">
-								<Zap className="w-4 h-4 text-purple-600" />
-								<AlertDescription className="text-purple-800">
+							<Alert variant="tuning">
+								<Zap className="w-4 h-4" />
+								<AlertDescription>
 									<div className="space-y-2">
 										<div>
 											<strong>Tuning in progress</strong>
@@ -186,9 +163,9 @@ export function TuningControls({ status }: TuningControlsProps) {
 												<div className="text-sm">
 													Progress: {status.tuning.progress.toFixed(1)}%
 												</div>
-												<div className="w-full bg-purple-200 rounded-full h-2">
+												<div className="w-full bg-tuning/20 rounded-full h-2">
 													<div
-														className="bg-purple-600 h-2 rounded-full transition-all duration-500"
+														className="bg-tuning h-2 rounded-full transition-all duration-500"
 														style={{ width: `${status.tuning.progress}%` }}
 													/>
 												</div>
@@ -230,14 +207,7 @@ export function TuningControls({ status }: TuningControlsProps) {
 								)}
 							</Button>
 
-							{stopTuning.isError && (
-								<Alert variant="destructive">
-									<AlertTriangle className="w-4 h-4" />
-									<AlertDescription>
-										{stopTuning.error?.message || "Failed to stop tuning"}
-									</AlertDescription>
-								</Alert>
-							)}
+							{stopTuning.isError && <ErrorAlert error={stopTuning.error} />}
 						</>
 					)}
 				</CardContent>

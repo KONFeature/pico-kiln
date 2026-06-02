@@ -1,20 +1,26 @@
 import {
 	AlertTriangle,
+	ChevronDown,
 	CircleAlert,
 	Clock,
-	Flame,
-	Gauge,
 	Loader2,
 	RefreshCw,
-	Thermometer,
 	TrendingUp,
+	WifiOff,
 } from "lucide-react";
-import { useMemo } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { ErrorAlert } from "@/components/ErrorAlert";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+	Collapsible,
+	CollapsibleContent,
+	CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import type { PicoAPIError } from "@/lib/pico/client";
+import { STATE_DESCRIPTIONS, STATE_LABELS } from "@/lib/pico/errors";
 import { useClearError } from "@/lib/pico/hooks";
 import { useProfileCache } from "@/lib/pico/profile-cache";
 import type { KilnStatus } from "@/lib/pico/types";
@@ -25,18 +31,117 @@ import {
 	isStepControlledCooldown,
 	StepIcon,
 } from "@/lib/step-utils";
+import { cn, formatDuration } from "@/lib/utils";
+import { HeatOutputGauge } from "./HeatOutputGauge";
+import { LiveTempChart, useTemperatureHistory } from "./LiveTempChart";
 
 interface KilnStatusDisplayProps {
 	status?: KilnStatus;
 	isLoading: boolean;
 	error: PicoAPIError | null;
+	dataUpdatedAt?: number;
 	onRefresh?: () => void;
+}
+
+const STATE_BADGE: Record<
+	KilnStatus["state"],
+	{ variant?: "outline" | "destructive"; className?: string }
+> = {
+	IDLE: { variant: "outline" },
+	RUNNING: { className: "bg-info text-info-foreground hover:bg-info/90" },
+	TUNING: { className: "bg-tuning text-tuning-foreground hover:bg-tuning/90" },
+	COMPLETE: {
+		className: "bg-success text-success-foreground hover:bg-success/90",
+	},
+	ERROR: { variant: "destructive" },
+};
+
+function getStateBadge(state: KilnStatus["state"]) {
+	const cfg = STATE_BADGE[state];
+	return (
+		<Badge variant={cfg.variant} className={cfg.className}>
+			{STATE_LABELS[state]}
+		</Badge>
+	);
+}
+
+function StatusHeader({
+	onRefresh,
+	isLoading,
+	badge,
+}: {
+	onRefresh?: () => void;
+	isLoading: boolean;
+	badge?: ReactNode;
+}) {
+	return (
+		<CardHeader>
+			<div className="flex items-center justify-between">
+				<div className="flex items-center gap-3">
+					<CardTitle>Kiln Status</CardTitle>
+					{badge}
+				</div>
+				{onRefresh && (
+					<Button
+						variant="ghost"
+						size="sm"
+						onClick={onRefresh}
+						disabled={isLoading}
+						title="Refresh status"
+					>
+						<RefreshCw className={cn("w-4 h-4", isLoading && "animate-spin")} />
+					</Button>
+				)}
+			</div>
+		</CardHeader>
+	);
+}
+
+function LastUpdated({
+	updatedAt,
+	stale,
+}: {
+	updatedAt?: number;
+	stale: boolean;
+}) {
+	const [, force] = useState(0);
+	useEffect(() => {
+		const id = setInterval(() => force((n) => n + 1), 1000);
+		return () => clearInterval(id);
+	}, []);
+
+	if (!updatedAt) return null;
+	const secs = Math.max(0, Math.round((Date.now() - updatedAt) / 1000));
+	const ago =
+		secs < 1
+			? "just now"
+			: secs < 60
+				? `${secs}s ago`
+				: `${Math.floor(secs / 60)}m ago`;
+
+	return (
+		<span
+			className={cn(
+				"inline-flex items-center gap-1.5 text-xs",
+				stale ? "text-warning" : "text-muted-foreground",
+			)}
+		>
+			<span
+				className={cn(
+					"inline-block h-1.5 w-1.5 rounded-full",
+					stale ? "bg-warning animate-pulse" : "bg-success",
+				)}
+			/>
+			Updated {ago}
+		</span>
+	);
 }
 
 export function KilnStatusDisplay({
 	status,
 	isLoading,
 	error,
+	dataUpdatedAt,
 	onRefresh,
 }: KilnStatusDisplayProps) {
 	const {
@@ -46,8 +151,8 @@ export function KilnStatusDisplay({
 		error: clearingError,
 	} = useClearError();
 	const { getProfile } = useProfileCache();
+	const tempHistory = useTemperatureHistory(status, dataUpdatedAt);
 
-	// Get the running profile data from cache if available
 	const runningProfile = status?.profile_name
 		? getProfile(status.profile_name)
 		: undefined;
@@ -68,33 +173,22 @@ export function KilnStatusDisplay({
 		return calculateETAs(status, runningProfile);
 	}, [status, runningProfile]);
 
-	if (error) {
+	if (error && !status) {
 		return (
 			<Card>
-				<CardHeader>
-					<div className="flex items-center justify-between">
-						<CardTitle>Kiln Status</CardTitle>
-						{onRefresh && (
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={onRefresh}
-								disabled={isLoading}
-							>
-								<RefreshCw
-									className={`w-4 h-4 ${isLoading ? "animate-spin" : ""}`}
-								/>
-							</Button>
-						)}
-					</div>
-				</CardHeader>
+				<StatusHeader onRefresh={onRefresh} isLoading={isLoading} />
 				<CardContent>
-					<Alert variant="destructive">
-						<AlertTriangle className="w-4 h-4" />
-						<AlertDescription>
-							Failed to load kiln status: {error.message}
-						</AlertDescription>
-					</Alert>
+					<ErrorAlert
+						error={error}
+						action={
+							onRefresh && (
+								<Button variant="outline" size="sm" onClick={onRefresh}>
+									<RefreshCw className="w-4 h-4 mr-2" />
+									Try again
+								</Button>
+							)
+						}
+					/>
 				</CardContent>
 			</Card>
 		);
@@ -103,21 +197,7 @@ export function KilnStatusDisplay({
 	if (isLoading && !status) {
 		return (
 			<Card>
-				<CardHeader>
-					<div className="flex items-center justify-between">
-						<CardTitle>Kiln Status</CardTitle>
-						{onRefresh && (
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={onRefresh}
-								disabled={isLoading}
-							>
-								<RefreshCw className="w-4 h-4 animate-spin" />
-							</Button>
-						)}
-					</div>
-				</CardHeader>
+				<StatusHeader onRefresh={onRefresh} isLoading={isLoading} />
 				<CardContent>
 					<div className="flex items-center justify-center py-8">
 						<Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
@@ -130,21 +210,7 @@ export function KilnStatusDisplay({
 	if (!status) {
 		return (
 			<Card>
-				<CardHeader>
-					<div className="flex items-center justify-between">
-						<CardTitle>Kiln Status</CardTitle>
-						{onRefresh && (
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={onRefresh}
-								disabled={isLoading}
-							>
-								<RefreshCw className="w-4 h-4" />
-							</Button>
-						)}
-					</div>
-				</CardHeader>
+				<StatusHeader onRefresh={onRefresh} isLoading={isLoading} />
 				<CardContent>
 					<p className="text-muted-foreground">No status data available</p>
 				</CardContent>
@@ -152,141 +218,144 @@ export function KilnStatusDisplay({
 		);
 	}
 
-	const getStateBadge = (state: KilnStatus["state"]) => {
-		switch (state) {
-			case "IDLE":
-				return <Badge variant="outline">Idle</Badge>;
-			case "RUNNING":
-				return <Badge className="bg-blue-600 hover:bg-blue-700">Running</Badge>;
-			case "TUNING":
-				return (
-					<Badge className="bg-purple-600 hover:bg-purple-700">Tuning</Badge>
-				);
-			case "ERROR":
-				return <Badge variant="destructive">Error</Badge>;
-			case "COMPLETE":
-				return (
-					<Badge className="bg-green-600 hover:bg-green-700">Complete</Badge>
-				);
-			default:
-				return <Badge variant="outline">{state}</Badge>;
-		}
-	};
+	const formatTemp = (temp: number) => `${temp.toFixed(1)}°C`;
 
-	const formatTemp = (temp: number) => {
-		return `${temp.toFixed(1)}°C`;
-	};
+	const heating = (status.ssr_output ?? 0) > 0;
+	const cooling =
+		currentStepIsControlledCooldown || status.step_name === "cooling";
 
-	const formatDuration = (seconds?: number) => {
-		if (!seconds) return "N/A";
-		const hours = Math.floor(seconds / 3600);
-		const minutes = Math.floor((seconds % 3600) / 60);
-		const secs = Math.floor(seconds % 60);
-
-		if (hours > 0) {
-			return `${hours}h ${minutes}m`;
-		}
-		if (minutes > 0) {
-			return `${minutes}m ${secs}s`;
-		}
-		return `${secs}s`;
-	};
+	let accentClassName = "text-muted-foreground";
+	let caption: string | undefined = STATE_LABELS[status.state];
+	switch (status.state) {
+		case "ERROR":
+			accentClassName = "text-destructive";
+			caption = "Fault";
+			break;
+		case "TUNING":
+			accentClassName = "text-tuning";
+			caption = "Tuning";
+			break;
+		case "COMPLETE":
+			accentClassName = "text-success";
+			caption = "Complete";
+			break;
+		case "RUNNING":
+			// Caption follows the firing step (stable) rather than instantaneous
+			// SSR output, which can blip to 0% mid-ramp and cause flicker.
+			if (cooling) {
+				accentClassName = "text-chart-cooling";
+				caption = "Cooling";
+			} else if (status.step_name === "hold") {
+				accentClassName = "text-info";
+				caption = "Holding";
+			} else if (status.step_name === "ramp" || heating) {
+				accentClassName = "text-chart-heating";
+				caption = "Heating";
+			} else {
+				accentClassName = "text-info";
+				caption = "Running";
+			}
+			break;
+		default:
+			if (heating) accentClassName = "text-chart-heating";
+	}
 
 	return (
 		<div className="space-y-6">
 			<Card>
-				<CardHeader>
-					<div className="flex items-center justify-between">
-						<div className="flex items-center gap-3">
-							<CardTitle>Kiln Status</CardTitle>
-							{getStateBadge(status.state)}
-						</div>
-						{onRefresh && (
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={onRefresh}
-								disabled={isLoading}
-								title="Refresh status"
-							>
-								<RefreshCw
-									className={`w-4 h-4 ${isLoading ? "animate-spin" : ""}`}
-								/>
-							</Button>
-						)}
-					</div>
-				</CardHeader>
+				<StatusHeader
+					onRefresh={onRefresh}
+					isLoading={isLoading}
+					badge={getStateBadge(status.state)}
+				/>
 				<CardContent className="space-y-4">
-					{/* Temperature Display */}
-					<div className="grid grid-cols-2 gap-4">
-						<div className="space-y-1">
-							<div className="flex items-center gap-2 text-sm text-muted-foreground">
-								<Thermometer className="w-4 h-4" />
-								Current Temperature
-							</div>
-							<div className="text-2xl font-bold">
-								{formatTemp(status.current_temp)}
-							</div>
-						</div>
+					<p className="text-sm text-muted-foreground">
+						{STATE_DESCRIPTIONS[status.state]}
+					</p>
 
-						{status.target_temp !== undefined && (
-							<div className="space-y-1">
-								<div className="text-sm text-muted-foreground">
-									Target Temperature
-								</div>
-								<div className="text-2xl font-bold">
-									{formatTemp(status.target_temp)}
-								</div>
-							</div>
-						)}
-					</div>
+					{/* Stale data / offline banner — keep showing the last reading. */}
+					{error && (
+						<Alert variant="warning">
+							<WifiOff className="h-4 w-4" />
+							<AlertDescription>
+								Connection lost — showing the last known reading while trying to
+								reconnect.
+							</AlertDescription>
+						</Alert>
+					)}
 
-					{/* SSR and Heating Rates */}
-					<div className="grid grid-cols-2 gap-4 pt-2 border-t">
-						<div className="space-y-2">
-							<div className="flex items-center gap-2">
-								<Flame
-									className={`w-5 h-5 ${(status.ssr_output ?? 0) > 0 ? "text-orange-500" : "text-gray-400"}`}
-								/>
-								<span className="text-sm font-medium">SSR Output</span>
-							</div>
-							<div className="flex items-center gap-2">
-								<Gauge className="w-4 h-4 text-muted-foreground" />
-								<span className="text-sm font-bold">
-									{status.ssr_output !== undefined
-										? status.ssr_output > 0
-											? `${status.ssr_output.toFixed(1)}%`
-											: "OFF"
-										: "N/A"}
+					{/* Hero: current temperature + heat-output gauge */}
+					<div className="flex items-center justify-between gap-4">
+						<div className="min-w-0">
+							<div
+								className={cn(
+									"font-bold leading-none tabular-nums",
+									accentClassName,
+								)}
+							>
+								<span className="text-5xl sm:text-6xl">
+									{status.current_temp.toFixed(2)}
 								</span>
+								<span className="align-top text-2xl">°C</span>
 							</div>
+							{status.target_temp !== undefined && status.target_temp > 0 && (
+								<div className="mt-1 text-sm text-muted-foreground tabular-nums">
+									Target {status.target_temp.toFixed(2)}°C
+								</div>
+							)}
+							{caption && (
+								<div className="mt-0.5 text-sm font-medium text-muted-foreground">
+									{caption}
+								</div>
+							)}
 						</div>
-
-						{status.measured_rate !== undefined && (
-							<div className="space-y-2">
-								<div className="flex items-center gap-2">
-									<TrendingUp className="w-5 h-5 text-muted-foreground" />
-									<span className="text-sm font-medium">Heating Rate</span>
-								</div>
-								<div className="text-sm">
-									Measured:{" "}
-									<strong>{status.measured_rate.toFixed(1)}°C/h</strong>
-								</div>
-								{status.desired_rate !== undefined &&
-									status.state === "RUNNING" && (
-										<div className="text-sm text-muted-foreground">
-											Target: {status.desired_rate.toFixed(1)}°C/h
-										</div>
-									)}
-							</div>
-						)}
+						<HeatOutputGauge value={status.ssr_output} />
 					</div>
+
+					{/* Live temp-vs-target trend */}
+					<div className="space-y-2">
+						<LiveTempChart data={tempHistory} />
+						<div className="flex items-center justify-between px-1">
+							<LastUpdated updatedAt={dataUpdatedAt} stale={Boolean(error)} />
+							<span className="inline-flex items-center gap-3 text-xs text-muted-foreground">
+								<span className="inline-flex items-center gap-1">
+									<span className="h-0.5 w-3 rounded bg-chart-heating" />
+									Current
+								</span>
+								{status.target_temp !== undefined && status.target_temp > 0 && (
+									<span className="inline-flex items-center gap-1">
+										<span className="h-0 w-3 border-t border-dashed border-muted-foreground" />
+										Target
+									</span>
+								)}
+							</span>
+						</div>
+					</div>
+
+					{/* Heating rate (heat output now lives in the gauge above) */}
+					{status.measured_rate !== undefined && (
+						<div className="space-y-2 pt-2 border-t">
+							<div className="flex items-center gap-2">
+								<TrendingUp className="w-5 h-5 text-muted-foreground" />
+								<span className="text-sm font-medium">Heating Rate</span>
+							</div>
+							<div className="text-sm">
+								Measured: <strong>{status.measured_rate.toFixed(1)}°C/h</strong>
+							</div>
+							{status.desired_rate !== undefined &&
+								status.state === "RUNNING" && (
+									<div className="text-sm text-muted-foreground">
+										Target: {status.desired_rate.toFixed(1)}°C/h
+									</div>
+								)}
+						</div>
+					)}
 
 					{/* Recovery Mode Warning */}
 					{status.is_recovering && (
-						<Alert className="border-orange-500 bg-orange-50 dark:bg-orange-950/20">
-							<CircleAlert className="h-4 w-4 text-orange-600" />
-							<AlertDescription className="text-orange-800 dark:text-orange-400">
+						<Alert variant="warning">
+							<CircleAlert className="h-4 w-4" />
+							<AlertDescription>
 								<strong>Recovery Mode:</strong> Kiln is recovering from
 								temperature drop.
 								{status.recovery_target_temp !== undefined && (
@@ -325,15 +394,7 @@ export function KilnStatusDisplay({
 									</div>
 								</AlertDescription>
 							</Alert>
-							{isClearingError && (
-								<Alert variant="destructive">
-									<AlertTriangle className="w-4 h-4" />
-									<AlertDescription>
-										Failed to clear error:{" "}
-										{clearingError?.message || "Unknown error"}
-									</AlertDescription>
-								</Alert>
-							)}
+							{isClearingError && <ErrorAlert error={clearingError} />}
 						</>
 					)}
 				</CardContent>
@@ -451,7 +512,7 @@ export function KilnStatusDisplay({
 												key={index}
 												className={`flex items-center gap-2 text-xs p-2 rounded ${
 													isCurrent
-														? "bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700"
+														? "bg-info/10 border border-info/30"
 														: isCompleted
 															? "bg-muted/30 text-muted-foreground"
 															: "bg-muted/50"
@@ -497,7 +558,7 @@ export function KilnStatusDisplay({
 							<CardTitle>Tuning Progress</CardTitle>
 							{status.step_index !== undefined &&
 								status.total_steps !== undefined && (
-									<Badge className="bg-purple-600 hover:bg-purple-700">
+									<Badge className="bg-tuning text-tuning-foreground hover:bg-tuning/90">
 										Step {status.step_index + 1} / {status.total_steps}
 									</Badge>
 								)}
@@ -514,7 +575,7 @@ export function KilnStatusDisplay({
 
 						{/* Current Phase/Step */}
 						{status.step_name && (
-							<div className="p-3 rounded-lg bg-purple-50 dark:bg-purple-950/20 border border-purple-200 dark:border-purple-800 space-y-2">
+							<div className="p-3 rounded-lg bg-tuning/10 border border-tuning/30 space-y-2">
 								<div className="flex items-center justify-between">
 									<span className="text-sm font-medium">
 										Current Phase: {status.step_name}
@@ -564,41 +625,57 @@ export function KilnStatusDisplay({
 				</Card>
 			)}
 
+			{/* PID detail — tucked into an Advanced disclosure (progressive disclosure). */}
 			{status.pid && (
 				<Card>
-					<CardHeader>
-						<CardTitle>PID Control</CardTitle>
-					</CardHeader>
-					<CardContent>
-						<div className="grid grid-cols-2 gap-4 text-sm">
-							{status.pid.kp !== undefined && (
-								<div>
-									<div className="text-muted-foreground">Kp</div>
-									<div className="font-mono">{status.pid.kp.toFixed(3)}</div>
+					<Collapsible>
+						<CardHeader className="pb-3">
+							<CollapsibleTrigger className="group flex w-full items-center justify-between">
+								<CardTitle className="text-base">
+									Advanced — PID control
+								</CardTitle>
+								<ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+							</CollapsibleTrigger>
+						</CardHeader>
+						<CollapsibleContent>
+							<CardContent>
+								<div className="grid grid-cols-2 gap-4 text-sm">
+									{status.pid.kp !== undefined && (
+										<div>
+											<div className="text-muted-foreground">Kp</div>
+											<div className="font-mono">
+												{status.pid.kp.toFixed(3)}
+											</div>
+										</div>
+									)}
+									{status.pid.ki !== undefined && (
+										<div>
+											<div className="text-muted-foreground">Ki</div>
+											<div className="font-mono">
+												{status.pid.ki.toFixed(3)}
+											</div>
+										</div>
+									)}
+									{status.pid.kd !== undefined && (
+										<div>
+											<div className="text-muted-foreground">Kd</div>
+											<div className="font-mono">
+												{status.pid.kd.toFixed(3)}
+											</div>
+										</div>
+									)}
+									{status.pid.output !== undefined && (
+										<div>
+											<div className="text-muted-foreground">Output</div>
+											<div className="font-mono">
+												{status.pid.output.toFixed(1)}%
+											</div>
+										</div>
+									)}
 								</div>
-							)}
-							{status.pid.ki !== undefined && (
-								<div>
-									<div className="text-muted-foreground">Ki</div>
-									<div className="font-mono">{status.pid.ki.toFixed(3)}</div>
-								</div>
-							)}
-							{status.pid.kd !== undefined && (
-								<div>
-									<div className="text-muted-foreground">Kd</div>
-									<div className="font-mono">{status.pid.kd.toFixed(3)}</div>
-								</div>
-							)}
-							{status.pid.output !== undefined && (
-								<div>
-									<div className="text-muted-foreground">Output</div>
-									<div className="font-mono">
-										{status.pid.output.toFixed(1)}%
-									</div>
-								</div>
-							)}
-						</div>
-					</CardContent>
+							</CardContent>
+						</CollapsibleContent>
+					</Collapsible>
 				</Card>
 			)}
 		</div>

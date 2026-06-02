@@ -3,6 +3,7 @@
 import { Loader2, Wifi, WifiOff } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { usePico } from "@/lib/pico/context";
+import { getFriendlyError } from "@/lib/pico/errors";
 import { useKilnStatus } from "@/lib/pico/hooks";
 
 export function ConnectionStatus() {
@@ -31,7 +32,7 @@ export function ConnectionStatus() {
 		return (
 			<Badge
 				variant="default"
-				className="flex items-center gap-2 bg-green-600 hover:bg-green-700"
+				className="flex items-center gap-2 bg-success text-success-foreground hover:bg-success/90"
 			>
 				<Wifi className="w-3 h-3" />
 				<span>Connected</span>
@@ -83,7 +84,9 @@ export function ConnectionStatusDetailed() {
 						</div>
 					)}
 					{error && (
-						<div className="text-destructive">Error: {error.message}</div>
+						<div className="text-destructive">
+							{getFriendlyError(error).message}
+						</div>
 					)}
 				</div>
 			)}

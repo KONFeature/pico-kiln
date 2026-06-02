@@ -12,7 +12,13 @@ export const Route = createFileRoute("/")({
 });
 
 function HomePage() {
-	const { data: status, isLoading, error, refetch } = useKilnStatus();
+	const {
+		data: status,
+		isLoading,
+		error,
+		refetch,
+		dataUpdatedAt,
+	} = useKilnStatus();
 
 	// Auto-select tab based on current state
 	const defaultTab = status?.state === "TUNING" ? "tuning" : "profile";
@@ -30,6 +36,7 @@ function HomePage() {
 							status={status}
 							isLoading={isLoading}
 							error={error}
+							dataUpdatedAt={dataUpdatedAt}
 							onRefresh={() => refetch()}
 						/>
 					</div>

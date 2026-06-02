@@ -9,15 +9,15 @@ export function StepIcon({
 	isControlledCooldown?: boolean;
 }) {
 	if (type === "ramp" && isControlledCooldown) {
-		return <Snowflake className="w-4 h-4 text-blue-500" />;
+		return <Snowflake className="w-4 h-4 text-chart-cooling" />;
 	}
 	switch (type) {
 		case "ramp":
-			return <ArrowUp className="w-4 h-4 text-orange-500" />;
+			return <ArrowUp className="w-4 h-4 text-chart-ssr" />;
 		case "hold":
-			return <Pause className="w-4 h-4 text-yellow-500" />;
+			return <Pause className="w-4 h-4 text-chart-hold" />;
 		case "cooling":
-			return <Snowflake className="w-4 h-4 text-blue-500" />;
+			return <Snowflake className="w-4 h-4 text-chart-cooling" />;
 		default:
 			return <Flame className="w-4 h-4" />;
 	}

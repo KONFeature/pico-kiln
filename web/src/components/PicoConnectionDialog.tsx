@@ -100,11 +100,9 @@ export function PicoConnectionDialog({
 					)}
 
 					{testConnection.isSuccess && testConnection.data && (
-						<Alert className="border-green-600 bg-green-50">
-							<CircleCheckBig className="w-4 h-4 text-green-600" />
-							<AlertDescription className="text-green-800">
-								Connection successful!
-							</AlertDescription>
+						<Alert variant="success">
+							<CircleCheckBig className="w-4 h-4" />
+							<AlertDescription>Connection successful!</AlertDescription>
 						</Alert>
 					)}
 

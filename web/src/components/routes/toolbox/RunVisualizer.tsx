@@ -1,18 +1,19 @@
+import { curveMonotoneX } from "@visx/curve";
 import { CircleAlert } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
+import { Area } from "@/components/charts/area";
+import { AreaChart } from "@/components/charts/area-chart";
+import { Grid } from "@/components/charts/grid";
 import {
-	Area,
-	AreaChart,
-	CartesianGrid,
-	Legend,
-	Line,
-	LineChart,
-	ReferenceLine,
-	ResponsiveContainer,
-	Tooltip,
-	XAxis,
-	YAxis,
-} from "recharts";
+	type KilnMarker,
+	KilnMarkers,
+	KilnTimeAxis,
+	KilnTooltipContent,
+} from "@/components/charts/kiln/parts";
+import { Line } from "@/components/charts/line";
+import { LineChart } from "@/components/charts/line-chart";
+import { ChartTooltip } from "@/components/charts/tooltip";
+import { YAxis } from "@/components/charts/y-axis";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
 	Card,
@@ -21,22 +22,28 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import { elapsedSecondsToDate } from "@/lib/chart-time";
 import {
 	detectRunType,
 	type LogDataPoint,
+	lttbDownsample,
 	parseLogCSV,
 } from "@/lib/csv-parser";
 import { FileSourceSelector } from "./FileSourceSelector";
 
-interface ChartDataPoint {
-	time_hours: number;
-	time_minutes: number;
+interface RunChartPoint {
+	t: Date;
 	temp: number;
-	target_temp: number;
-	ssr_output: number;
-	step_index?: number;
-	measured_rate?: number;
+	target: number;
+	ssr: number;
+	rate: number;
+	[key: string]: unknown;
 }
+
+/** Target points fed to the chart; long logs are decimated to keep phones responsive. */
+const MAX_CHART_POINTS = 800;
+
+const CHART_MARGIN = { top: 18, right: 16, bottom: 28, left: 48 };
 
 export function RunVisualizer() {
 	const [logData, setLogData] = useState<LogDataPoint[] | null>(null);
@@ -60,43 +67,46 @@ export function RunVisualizer() {
 		}
 	}, []);
 
-	const chartData = useMemo<ChartDataPoint[]>(() => {
+	const chartData = useMemo<RunChartPoint[]>(() => {
 		if (!logData) return [];
-
-		return logData.map((point) => ({
-			time_hours: point.elapsed_seconds / 3600,
-			time_minutes: point.elapsed_seconds / 60,
+		const sampled = lttbDownsample(
+			logData,
+			MAX_CHART_POINTS,
+			(p) => p.elapsed_seconds,
+			(p) => p.current_temp_c,
+		);
+		return sampled.map((point) => ({
+			t: elapsedSecondsToDate(point.elapsed_seconds),
 			temp: point.current_temp_c,
-			target_temp: point.target_temp_c,
-			ssr_output: point.ssr_output_percent,
-			step_index: point.step_index,
-			measured_rate: point.measured_rate_c_per_hour,
+			target: point.target_temp_c,
+			ssr: point.ssr_output_percent,
+			rate: point.measured_rate_c_per_hour ?? 0,
 		}));
 	}, [logData]);
 
 	const stats = useMemo(() => {
-		if (chartData.length === 0) return null;
+		if (!logData || logData.length === 0) return null;
 
-		const temps = chartData.map((p) => p.temp);
+		const temps = logData.map((p) => p.current_temp_c);
 		const maxTemp = Math.max(...temps);
 		const minTemp = Math.min(...temps);
-		const duration = chartData[chartData.length - 1].time_hours;
-		const startTime = logData?.[0]?.timestamp || "";
+		const duration = logData[logData.length - 1].elapsed_seconds / 3600;
+		const startTime = logData[0]?.timestamp || "";
 
 		return { maxTemp, minTemp, duration, startTime };
-	}, [chartData, logData]);
+	}, [logData]);
 
-	const hasRateData = useMemo(() => {
-		return chartData.some((p) => p.measured_rate !== undefined);
-	}, [chartData]);
+	const hasRateData = useMemo(
+		() =>
+			logData?.some((p) => p.measured_rate_c_per_hour !== undefined) ?? false,
+		[logData],
+	);
 
-	// Calculate step transitions for visual boundaries
-	const stepTransitions = useMemo(() => {
+	// Step-change boundaries become vertical markers shared across all charts.
+	const markers = useMemo<KilnMarker[]>(() => {
 		if (!logData) return [];
-
-		const transitions: number[] = [];
+		const result: KilnMarker[] = [];
 		let prevStep = -1;
-
 		for (let i = 0; i < logData.length; i++) {
 			const stepIdx = logData[i].step_index;
 			if (
@@ -105,12 +115,14 @@ export function RunVisualizer() {
 				stepIdx >= 0 &&
 				i > 0
 			) {
-				transitions.push(logData[i].elapsed_seconds / 3600);
+				result.push({
+					atSeconds: logData[i].elapsed_seconds,
+					label: String(stepIdx + 1),
+				});
 				prevStep = stepIdx;
 			}
 		}
-
-		return transitions;
+		return result;
 	}, [logData]);
 
 	return (
@@ -153,187 +165,170 @@ export function RunVisualizer() {
 							)}
 						</div>
 
-						<div className="space-y-6">
-							<ResponsiveContainer width="100%" height={400}>
+						<div className="space-y-8">
+							<div>
+								<div className="flex items-center justify-between mb-2">
+									<h4 className="text-base font-semibold">Temperature (°C)</h4>
+									<div className="flex gap-3 text-xs">
+										<span className="flex items-center gap-1.5">
+											<span className="h-0.5 w-3 rounded bg-chart-heating" />
+											Current
+										</span>
+										<span className="flex items-center gap-1.5">
+											<span className="h-0.5 w-3 rounded bg-muted-foreground" />
+											Target
+										</span>
+									</div>
+								</div>
 								<LineChart
 									data={chartData}
-									margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
+									xDataKey="t"
+									aspectRatio="auto"
+									className="h-72"
+									margin={CHART_MARGIN}
+									animationDuration={0}
 								>
-									<CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-									{stepTransitions.map((time, idx) => (
-										<ReferenceLine
-											key={idx}
-											x={time}
-											stroke="#999"
-											strokeDasharray="3 3"
-											opacity={0.4}
-										/>
-									))}
-									<XAxis
-										dataKey="time_hours"
-										label={{
-											value: "Time (hours)",
-											position: "insideBottom",
-											offset: -5,
-										}}
-									/>
-									<YAxis
-										label={{
-											value: "Temperature (°C)",
-											angle: -90,
-											position: "insideLeft",
-										}}
-									/>
-									<Tooltip
-										formatter={(value: number, name: string) => [
-											`${value.toFixed(1)}°C`,
-											name,
-										]}
-										labelFormatter={(label: number) =>
-											`Time: ${label.toFixed(2)}h`
-										}
-									/>
-									<Legend />
+									<Grid horizontal />
+									<YAxis formatValue={(v) => `${Math.round(v)}°`} />
 									<Line
-										type="monotone"
-										dataKey="temp"
-										stroke="#3b82f6"
-										strokeWidth={2}
-										dot={false}
-										name="Current Temp"
-									/>
-									<Line
-										type="monotone"
-										dataKey="target_temp"
-										stroke="#ef4444"
+										dataKey="target"
+										stroke="var(--muted-foreground)"
 										strokeWidth={1.5}
-										strokeDasharray="5 5"
-										dot={false}
-										opacity={0.7}
-										name="Target Temp"
+										curve={curveMonotoneX}
+										fadeEdges={false}
+										showHighlight={false}
+									/>
+									<Line
+										dataKey="temp"
+										stroke="var(--chart-heating)"
+										strokeWidth={2.5}
+										curve={curveMonotoneX}
+										fadeEdges={false}
+										showHighlight={false}
+									/>
+									<KilnMarkers items={markers} />
+									<KilnTimeAxis />
+									<ChartTooltip
+										showDatePill={false}
+										content={({ point }) => (
+											<KilnTooltipContent
+												point={point}
+												rows={[
+													{
+														color: "var(--chart-heating)",
+														label: "Current",
+														value: `${(point.temp as number).toFixed(1)}°C`,
+													},
+													{
+														color: "var(--muted-foreground)",
+														label: "Target",
+														value: `${(point.target as number).toFixed(1)}°C`,
+													},
+												]}
+											/>
+										)}
 									/>
 								</LineChart>
-							</ResponsiveContainer>
+							</div>
 
-							<div className="pt-6 border-t">
-								<h4 className="text-base font-semibold mb-1">SSR Output (%)</h4>
-								<p className="text-sm text-muted-foreground mb-4">
+							<div>
+								<h4 className="text-base font-semibold mb-1">
+									Heat Output (%)
+								</h4>
+								<p className="text-sm text-muted-foreground mb-2">
 									Solid State Relay duty cycle over time
 								</p>
-								<ResponsiveContainer width="100%" height={200}>
-									<AreaChart
-										data={chartData}
-										margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
-									>
-										<CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-										{stepTransitions.map((time, idx) => (
-											<ReferenceLine
-												key={idx}
-												x={time}
-												stroke="#999"
-												strokeDasharray="3 3"
-												opacity={0.4}
+								<AreaChart
+									data={chartData}
+									xDataKey="t"
+									aspectRatio="auto"
+									className="h-44"
+									margin={CHART_MARGIN}
+									animationDuration={0}
+								>
+									<Grid horizontal />
+									<YAxis formatValue={(v) => `${Math.round(v)}%`} />
+									<Area
+										dataKey="ssr"
+										fill="var(--chart-ssr)"
+										fillOpacity={0.3}
+										stroke="var(--chart-ssr)"
+										strokeWidth={2}
+										curve={curveMonotoneX}
+										showHighlight={false}
+									/>
+									<KilnMarkers items={markers} />
+									<KilnTimeAxis />
+									<ChartTooltip
+										showDatePill={false}
+										content={({ point }) => (
+											<KilnTooltipContent
+												point={point}
+												rows={[
+													{
+														color: "var(--chart-ssr)",
+														label: "Heat",
+														value: `${(point.ssr as number).toFixed(0)}%`,
+													},
+												]}
 											/>
-										))}
-										<XAxis
-											dataKey="time_hours"
-											label={{
-												value: "Time (hours)",
-												position: "insideBottom",
-												offset: -5,
-											}}
-										/>
-										<YAxis
-											domain={[0, 100]}
-											label={{
-												value: "SSR Output (%)",
-												angle: -90,
-												position: "insideLeft",
-											}}
-										/>
-										<Tooltip
-											formatter={(value: number) => [
-												`${value.toFixed(1)}%`,
-												"SSR Output",
-											]}
-											labelFormatter={(label: number) =>
-												`Time: ${label.toFixed(2)}h`
-											}
-										/>
-										<Legend />
-										<Area
-											type="monotone"
-											dataKey="ssr_output"
-											stroke="#f97316"
-											fill="#f97316"
-											fillOpacity={0.3}
-											name="SSR Output (%)"
-										/>
-									</AreaChart>
-								</ResponsiveContainer>
+										)}
+									/>
+								</AreaChart>
 							</div>
 
 							{hasRateData && (
-								<div className="pt-6 border-t">
-									<h4 className="text-base font-semibold mb-1">Heating Rate</h4>
-									<p className="text-sm text-muted-foreground mb-4">
-										Measured temperature change rate (°C/hour)
+								<div>
+									<h4 className="text-base font-semibold mb-1">
+										Heating Rate (°C/h)
+									</h4>
+									<p className="text-sm text-muted-foreground mb-2">
+										Measured temperature change rate
 									</p>
-									<ResponsiveContainer width="100%" height={200}>
-										<LineChart
-											data={chartData}
-											margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
-										>
-											<CartesianGrid strokeDasharray="3 3" opacity={0.3} />
-											{stepTransitions.map((time, idx) => (
-												<ReferenceLine
-													key={idx}
-													x={time}
-													stroke="#999"
-													strokeDasharray="3 3"
-													opacity={0.4}
+									<LineChart
+										data={chartData}
+										xDataKey="t"
+										aspectRatio="auto"
+										className="h-44"
+										margin={CHART_MARGIN}
+										animationDuration={0}
+									>
+										<Grid
+											horizontal
+											highlightRowValues={[0]}
+											highlightRowStroke="var(--muted-foreground)"
+										/>
+										<YAxis formatValue={(v) => `${Math.round(v)}`} />
+										<Line
+											dataKey="rate"
+											stroke="var(--chart-rate)"
+											strokeWidth={2}
+											curve={curveMonotoneX}
+											fadeEdges={false}
+											showHighlight={false}
+										/>
+										<KilnMarkers items={markers} />
+										<KilnTimeAxis />
+										<ChartTooltip
+											showDatePill={false}
+											content={({ point }) => (
+												<KilnTooltipContent
+													point={point}
+													rows={[
+														{
+															color: "var(--chart-rate)",
+															label: "Rate",
+															value: `${(point.rate as number).toFixed(1)}°C/h`,
+														},
+													]}
 												/>
-											))}
-											<ReferenceLine y={0} stroke="#000" strokeOpacity={0.3} />
-											<XAxis
-												dataKey="time_hours"
-												label={{
-													value: "Time (hours)",
-													position: "insideBottom",
-													offset: -5,
-												}}
-											/>
-											<YAxis
-												label={{
-													value: "Rate (°C/h)",
-													angle: -90,
-													position: "insideLeft",
-												}}
-											/>
-											<Tooltip
-												formatter={(value: number) => [
-													`${value.toFixed(1)}°C/h`,
-													"Rate",
-												]}
-												labelFormatter={(label: number) =>
-													`Time: ${label.toFixed(2)}h`
-												}
-											/>
-											<Legend />
-											<Line
-												type="monotone"
-												dataKey="measured_rate"
-												stroke="#22c55e"
-												strokeWidth={2}
-												dot={false}
-												name="Measured Rate"
-											/>
-										</LineChart>
-									</ResponsiveContainer>
+											)}
+										/>
+									</LineChart>
 								</div>
 							)}
 
-							<div className="pt-6 border-t">
+							<div className="pt-2 border-t">
 								<h4 className="text-base font-semibold mb-4">Run Statistics</h4>
 								<div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
 									<div>
@@ -355,7 +350,7 @@ export function RunVisualizer() {
 									<div>
 										<div className="text-muted-foreground">Data Points</div>
 										<div className="font-semibold text-lg">
-											{chartData.length.toLocaleString()}
+											{logData.length.toLocaleString()}
 										</div>
 									</div>
 								</div>

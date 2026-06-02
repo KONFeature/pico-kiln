@@ -10,6 +10,7 @@ import {
 	Upload,
 } from "lucide-react";
 import { useState } from "react";
+import { ErrorAlert } from "@/components/ErrorAlert";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,6 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PicoAPIError } from "@/lib/pico/client";
 import { usePico } from "@/lib/pico/context";
 import {
 	useDeleteAllLogs,
@@ -39,11 +41,6 @@ import {
 } from "@/lib/pico/hooks";
 import type { FileDirectory } from "@/lib/pico/types";
 import { readFileAsText } from "@/lib/utils";
-
-interface FileItem {
-	name: string;
-	size: number;
-}
 
 export function FileManager() {
 	const [selectedDirectory, setSelectedDirectory] =
@@ -57,6 +54,8 @@ export function FileManager() {
 	const [uploadDirectory, setUploadDirectory] =
 		useState<FileDirectory>("profiles");
 	const [showUploadDialog, setShowUploadDialog] = useState(false);
+	const [downloadError, setDownloadError] = useState<unknown>(null);
+	const [readError, setReadError] = useState<unknown>(null);
 	const { client, isConfigured } = usePico();
 	const { data: status } = useKilnStatus();
 	const isFileOpsAvailable = status?.state === "IDLE";
@@ -83,28 +82,34 @@ export function FileManager() {
 		filename: string,
 	) => {
 		if (!client) return;
+		setDownloadError(null);
 
 		try {
 			const response = await client.getFile(directory, filename);
-			if (response.success && response.content) {
-				// Create a blob and download
-				const blob = new Blob([response.content], { type: "text/plain" });
-				const url = URL.createObjectURL(blob);
-				const a = document.createElement("a");
-				a.href = url;
-				a.download = filename;
-				document.body.appendChild(a);
-				a.click();
-				document.body.removeChild(a);
-				URL.revokeObjectURL(url);
+			if (!response.success || !response.content) {
+				throw new PicoAPIError(
+					response.error ?? "The kiln couldn't read this file.",
+					undefined,
+					response,
+				);
 			}
+			const blob = new Blob([response.content], { type: "text/plain" });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement("a");
+			a.href = url;
+			a.download = filename;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			URL.revokeObjectURL(url);
 		} catch (error) {
-			console.error("Failed to download file:", error);
+			setDownloadError(error);
 		}
 	};
 
 	const handleUploadFile = async () => {
 		if (!uploadFile) return;
+		setReadError(null);
 
 		try {
 			let content = await readFileAsText(uploadFile);
@@ -134,7 +139,7 @@ export function FileManager() {
 				},
 			);
 		} catch (error) {
-			console.error("Failed to read file:", error);
+			setReadError(error);
 		}
 	};
 
@@ -251,14 +256,9 @@ export function FileManager() {
 
 						{/* File List */}
 						<div className="space-y-2">
-							{filesError && (
-								<Alert variant="destructive">
-									<CircleAlert className="h-4 w-4" />
-									<AlertDescription>
-										Failed to load files. Make sure the kiln is IDLE.
-									</AlertDescription>
-								</Alert>
-							)}
+							{filesError && <ErrorAlert error={filesError} />}
+
+							{downloadError != null && <ErrorAlert error={downloadError} />}
 
 							{isLoadingFiles && (
 								<div className="flex items-center justify-center py-8 text-muted-foreground">
@@ -346,14 +346,7 @@ export function FileManager() {
 						</DialogDescription>
 					</DialogHeader>
 					{deleteMutation.isError && (
-						<Alert variant="destructive">
-							<CircleAlert className="h-4 w-4" />
-							<AlertDescription>
-								{deleteMutation.error instanceof Error
-									? deleteMutation.error.message
-									: "Failed to delete file"}
-							</AlertDescription>
-						</Alert>
+						<ErrorAlert error={deleteMutation.error} />
 					)}
 					<DialogFooter>
 						<Button variant="outline" onClick={() => setFileToDelete(null)}>
@@ -401,14 +394,7 @@ export function FileManager() {
 						</DialogDescription>
 					</DialogHeader>
 					{deleteAllLogsMutation.isError && (
-						<Alert variant="destructive">
-							<CircleAlert className="h-4 w-4" />
-							<AlertDescription>
-								{deleteAllLogsMutation.error instanceof Error
-									? deleteAllLogsMutation.error.message
-									: "Failed to delete logs"}
-							</AlertDescription>
-						</Alert>
+						<ErrorAlert error={deleteAllLogsMutation.error} />
 					)}
 					<DialogFooter>
 						<Button
@@ -445,7 +431,13 @@ export function FileManager() {
 			</Dialog>
 
 			{/* Upload File Dialog */}
-			<Dialog open={showUploadDialog} onOpenChange={setShowUploadDialog}>
+			<Dialog
+				open={showUploadDialog}
+				onOpenChange={(open) => {
+					setShowUploadDialog(open);
+					if (!open) setReadError(null);
+				}}
+			>
 				<DialogContent>
 					<DialogHeader>
 						<DialogTitle>Upload File</DialogTitle>
@@ -462,7 +454,10 @@ export function FileManager() {
 								accept={
 									uploadDirectory === "profiles" ? ".json" : ".csv,.log,.txt"
 								}
-								onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+								onChange={(e) => {
+									setUploadFile(e.target.files?.[0] || null);
+									setReadError(null);
+								}}
 								className="mt-1"
 							/>
 							{uploadFile && (
@@ -472,15 +467,9 @@ export function FileManager() {
 								</p>
 							)}
 						</div>
+						{readError != null && <ErrorAlert error={readError} />}
 						{uploadMutation.isError && (
-							<Alert variant="destructive">
-								<CircleAlert className="h-4 w-4" />
-								<AlertDescription>
-									{uploadMutation.error instanceof Error
-										? uploadMutation.error.message
-										: "Failed to upload file"}
-								</AlertDescription>
-							</Alert>
+							<ErrorAlert error={uploadMutation.error} />
 						)}
 						{uploadMutation.isSuccess && (
 							<Alert>

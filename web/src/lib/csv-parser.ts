@@ -60,6 +60,10 @@ export function parseLogCSV(content: string): ParsedLogData {
 			timestamp: row.timestamp || "",
 		};
 
+		// Remove any point with fcked up elapsed seconds
+		const last = data[data.length - 1];
+		if (last && dataPoint.elapsed_seconds < last.elapsed_seconds) continue;
+
 		// Add optional fields if present
 		if (row.step_name) dataPoint.step_name = row.step_name;
 		if (row.step_index) dataPoint.step_index = parseInt(row.step_index, 10);
@@ -105,4 +109,66 @@ export function secondsToMinutes(seconds: number): number {
  */
 export function detectRunType(data: LogDataPoint[]): "TUNING" | "FIRING" {
 	return data.some((d) => d.state === "TUNING") ? "TUNING" : "FIRING";
+}
+
+/**
+ * Largest-Triangle-Three-Buckets downsampling. Reduces a series to ~`threshold`
+ * points while preserving visual shape (spikes/dips survive), so a 12 h log
+ * logged every 5 s (~8,640 pts) renders cheaply on a phone. First and last
+ * points are always kept; raw data should be retained separately for stats.
+ */
+export function lttbDownsample<T>(
+	data: T[],
+	threshold: number,
+	x: (d: T) => number,
+	y: (d: T) => number,
+): T[] {
+	const n = data.length;
+	if (threshold >= n || threshold < 3) {
+		return data.slice();
+	}
+
+	const sampled: T[] = [data[0]];
+	const bucketSize = (n - 2) / (threshold - 2);
+	let a = 0; // index of the last selected point (anchor for triangle area)
+
+	for (let i = 0; i < threshold - 2; i++) {
+		// Average point of the *next* bucket (the third triangle vertex).
+		const avgStart = Math.floor((i + 1) * bucketSize) + 1;
+		const avgEnd = Math.min(Math.floor((i + 2) * bucketSize) + 1, n);
+		let avgX = 0;
+		let avgY = 0;
+		const avgCount = avgEnd - avgStart;
+		for (let j = avgStart; j < avgEnd; j++) {
+			avgX += x(data[j]);
+			avgY += y(data[j]);
+		}
+		avgX /= avgCount;
+		avgY /= avgCount;
+
+		// Pick the point in the current bucket that forms the largest triangle.
+		const rangeStart = Math.floor(i * bucketSize) + 1;
+		const rangeEnd = Math.floor((i + 1) * bucketSize) + 1;
+		const ax = x(data[a]);
+		const ay = y(data[a]);
+
+		let maxArea = -1;
+		let nextA = rangeStart;
+		for (let j = rangeStart; j < rangeEnd; j++) {
+			const area =
+				Math.abs(
+					(ax - avgX) * (y(data[j]) - ay) - (ax - x(data[j])) * (avgY - ay),
+				) * 0.5;
+			if (area > maxArea) {
+				maxArea = area;
+				nextA = j;
+			}
+		}
+
+		sampled.push(data[nextA]);
+		a = nextA;
+	}
+
+	sampled.push(data[n - 1]);
+	return sampled;
 }

@@ -1,5 +1,4 @@
 import {
-	AlertTriangle,
 	Calendar,
 	Clock,
 	Loader2,
@@ -10,6 +9,7 @@ import {
 	X,
 } from "lucide-react";
 import { useState } from "react";
+import { ErrorAlert } from "@/components/ErrorAlert";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
+import {
 	useCancelScheduled,
 	useListFiles,
 	useReboot,
@@ -46,6 +53,7 @@ import {
 	isStepControlledCooldown,
 	StepIcon,
 } from "@/lib/step-utils";
+import { formatDuration } from "@/lib/utils";
 
 interface ProfileControlsProps {
 	status?: KilnStatus;
@@ -139,105 +147,59 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 		status?.state !== "TUNING";
 	const canStop = isRunning;
 
-	const handleRun = async () => {
+	const handleRun = () => {
 		if (!selectedProfile) return;
-
-		try {
-			const result = await runProfile.mutateAsync(selectedProfile);
-			if (!result.success) {
-				console.error("Failed to start profile:", result.error);
-			}
-		} catch (error) {
-			console.error("Error starting profile:", error);
-		}
+		runProfile.mutate(selectedProfile);
 	};
 
-	const handleStop = async () => {
-		try {
-			const result = await stopProfile.mutateAsync();
-			if (!result.success) {
-				console.error("Failed to stop profile:", result.error);
-			}
-		} catch (error) {
-			console.error("Error stopping profile:", error);
-		}
+	const handleStop = () => {
+		stopProfile.mutate();
 	};
 
-	const handleShutdown = async () => {
-		try {
-			const result = await shutdown.mutateAsync();
-			if (result.success) {
-				setShowShutdownDialog(false);
-			}
-		} catch (error) {
-			console.error("Error during shutdown:", error);
-		}
+	const handleShutdown = () => {
+		shutdown.mutate(undefined, {
+			onSuccess: () => setShowShutdownDialog(false),
+		});
 	};
 
-	const handleReboot = async () => {
-		try {
-			await reboot.mutateAsync();
-			// Always close dialog and consider it successful
-			// The Pico will disconnect immediately upon reboot
-			setShowRebootDialog(false);
-		} catch (error) {
-			console.error("Error during reboot:", error);
-			// Still close the dialog - the reboot might have worked
-			setShowRebootDialog(false);
-		}
+	const handleReboot = () => {
+		// useReboot resolves on a dropped connection (the expected reboot path),
+		// so closing on success covers it; a real failure keeps the dialog open
+		// and surfaces below.
+		reboot.mutate(undefined, {
+			onSuccess: () => setShowRebootDialog(false),
+		});
 	};
 
-	const handleSchedule = async () => {
+	const handleSchedule = () => {
 		if (!selectedProfile || !scheduleDate || !scheduleTime) return;
 
-		try {
-			// Combine date and time into Unix timestamp
-			const dateTimeStr = `${scheduleDate}T${scheduleTime}`;
-			const startTime = Math.floor(new Date(dateTimeStr).getTime() / 1000);
+		const startTime = Math.floor(
+			new Date(`${scheduleDate}T${scheduleTime}`).getTime() / 1000,
+		);
 
-			const result = await scheduleProfile.mutateAsync({
-				profileName: selectedProfile,
-				startTime,
-			});
-
-			if (result.success) {
-				setShowScheduleDialog(false);
-				setScheduleDate("");
-				setScheduleTime("");
-			}
-		} catch (error) {
-			console.error("Error scheduling profile:", error);
-		}
+		scheduleProfile.mutate(
+			{ profileName: selectedProfile, startTime },
+			{
+				onSuccess: () => {
+					setShowScheduleDialog(false);
+					setScheduleDate("");
+					setScheduleTime("");
+				},
+			},
+		);
 	};
 
-	const handleCancelScheduled = async () => {
-		try {
-			await cancelScheduled.mutateAsync();
-		} catch (error) {
-			console.error("Error cancelling scheduled profile:", error);
-		}
-	};
-
-	const formatCountdown = (seconds: number) => {
-		const hours = Math.floor(seconds / 3600);
-		const minutes = Math.floor((seconds % 3600) / 60);
-		const secs = Math.floor(seconds % 60);
-
-		if (hours > 0) {
-			return `${hours}h ${minutes}m`;
-		}
-		if (minutes > 0) {
-			return `${minutes}m ${secs}s`;
-		}
-		return `${secs}s`;
+	const handleCancelScheduled = () => {
+		cancelScheduled.mutate();
 	};
 
 	return (
 		<div className="space-y-4">
 			{hasScheduled && status?.scheduled_profile && (
-				<Card className="border-amber-600">
+				<Card className="border-warning/50">
 					<CardHeader>
-						<CardTitle className="flex items-center gap-2 text-amber-600">
+						<CardTitle className="flex items-center gap-2 text-warning">
 							<Clock className="w-5 h-5" />
 							Scheduled Profile
 						</CardTitle>
@@ -258,7 +220,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 							</div>
 							<div className="text-sm">
 								<strong>Countdown:</strong>{" "}
-								{formatCountdown(status.scheduled_profile.seconds_until_start)}
+								{formatDuration(status.scheduled_profile.seconds_until_start)}
 							</div>
 						</div>
 
@@ -282,13 +244,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 						</Button>
 
 						{cancelScheduled.isError && (
-							<Alert variant="destructive">
-								<AlertTriangle className="w-4 h-4" />
-								<AlertDescription>
-									{cancelScheduled.error?.message ||
-										"Failed to cancel scheduled profile"}
-								</AlertDescription>
-							</Alert>
+							<ErrorAlert error={cancelScheduled.error} />
 						)}
 					</CardContent>
 				</Card>
@@ -303,20 +259,23 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 					{!isRunning && !hasScheduled ? (
 						<>
 							<div className="space-y-2">
-								<label className="text-sm font-medium">Select Profile</label>
-								<select
-									className="w-full px-3 py-2 border rounded-md bg-background"
+								<Label htmlFor="profile-select">Select Profile</Label>
+								<Select
 									value={selectedProfile}
-									onChange={(e) => setSelectedProfile(e.target.value)}
+									onValueChange={setSelectedProfile}
 									disabled={status?.state === "TUNING"}
 								>
-									<option value="">-- Choose a profile --</option>
-									{availableProfiles.map((profile) => (
-										<option key={profile} value={profile}>
-											{profile.replace(/_/g, " ")}
-										</option>
-									))}
-								</select>
+									<SelectTrigger id="profile-select" className="w-full">
+										<SelectValue placeholder="Choose a profile..." />
+									</SelectTrigger>
+									<SelectContent>
+										{availableProfiles.map((profile) => (
+											<SelectItem key={profile} value={profile}>
+												{profile.replace(/_/g, " ")}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
 							</div>
 
 							<div className="grid grid-cols-2 gap-2">
@@ -349,14 +308,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 								</Button>
 							</div>
 
-							{runProfile.isError && (
-								<Alert variant="destructive">
-									<AlertTriangle className="w-4 h-4" />
-									<AlertDescription>
-										{runProfile.error?.message || "Failed to start profile"}
-									</AlertDescription>
-								</Alert>
-							)}
+							{runProfile.isError && <ErrorAlert error={runProfile.error} />}
 
 							{/* Profile details when a profile is selected */}
 							{selectedProfile && selectedProfileData && (
@@ -374,72 +326,83 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 						</>
 					) : (
 						<>
-							<Alert className="border-blue-600 bg-blue-50">
-								<AlertDescription className="text-blue-800">
+							<Alert variant="info">
+								<AlertDescription>
 									Profile is currently running:{" "}
 									<strong>{status?.profile_name}</strong>
 								</AlertDescription>
 							</Alert>
 
-							<Button
-								onClick={handleStop}
-								disabled={!canStop || stopProfile.isPending}
-								variant="destructive"
-								className="w-full"
-								size="lg"
-							>
-								{stopProfile.isPending ? (
-									<>
-										<Loader2 className="w-4 h-4 mr-2 animate-spin" />
-										Stopping...
-									</>
-								) : (
-									<>
-										<Square className="w-4 h-4 mr-2" />
-										Stop Profile
-									</>
-								)}
-							</Button>
+							<div className="space-y-1.5">
+								<Button
+									onClick={handleStop}
+									disabled={!canStop || stopProfile.isPending}
+									variant="outline"
+									className="w-full border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive"
+									size="lg"
+								>
+									{stopProfile.isPending ? (
+										<>
+											<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+											Stopping...
+										</>
+									) : (
+										<>
+											<Square className="w-4 h-4 mr-2" />
+											Stop Firing
+										</>
+									)}
+								</Button>
+								<p className="text-xs text-muted-foreground">
+									Ends the current firing in a controlled way — heating turns
+									off and the kiln cools on its own.
+								</p>
+							</div>
 
-							{stopProfile.isError && (
-								<Alert variant="destructive">
-									<AlertTriangle className="w-4 h-4" />
-									<AlertDescription>
-										{stopProfile.error?.message || "Failed to stop profile"}
-									</AlertDescription>
-								</Alert>
-							)}
+							{stopProfile.isError && <ErrorAlert error={stopProfile.error} />}
 						</>
 					)}
 				</CardContent>
 			</Card>
 
-			<Card className="border-red-600">
+			<Card className="border-destructive/50">
 				<CardHeader>
 					<CardTitle className="text-destructive">Emergency Controls</CardTitle>
 					<CardDescription>
 						Use with caution - immediately stops all heating
 					</CardDescription>
 				</CardHeader>
-				<CardContent className="space-y-2">
-					<Button
-						onClick={() => setShowShutdownDialog(true)}
-						variant="destructive"
-						className="w-full"
-						size="lg"
-					>
-						<Power className="w-4 h-4 mr-2" />
-						Emergency Shutdown
-					</Button>
-					<Button
-						onClick={() => setShowRebootDialog(true)}
-						variant="secondary"
-						className="w-full"
-						size="lg"
-					>
-						<RotateCw className="w-4 h-4 mr-2" />
-						Reboot Pico
-					</Button>
+				<CardContent className="space-y-4">
+					<div className="space-y-1.5">
+						<Button
+							onClick={() => setShowShutdownDialog(true)}
+							variant="destructive"
+							className="w-full"
+							size="lg"
+						>
+							<Power className="w-4 h-4 mr-2" />
+							Emergency Shutdown
+						</Button>
+						<p className="text-xs text-muted-foreground">
+							Cuts power to the heating element right away. Use only if
+							something looks wrong.
+						</p>
+					</div>
+					<div className="space-y-1.5">
+						<Button
+							onClick={() => setShowRebootDialog(true)}
+							variant="secondary"
+							className="w-full"
+							size="lg"
+						>
+							<RotateCw className="w-4 h-4 mr-2" />
+							Reboot Controller
+						</Button>
+						<p className="text-xs text-muted-foreground">
+							Restarts the controller software. Use if the interface stops
+							responding.
+						</p>
+					</div>
 				</CardContent>
 			</Card>
 
@@ -452,6 +415,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 							running program. The kiln will begin cooling naturally.
 						</DialogDescription>
 					</DialogHeader>
+					{shutdown.isError && <ErrorAlert error={shutdown.error} />}
 					<DialogFooter>
 						<Button
 							variant="outline"
@@ -487,12 +451,13 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 								This will restart the Pico controller. The web interface will be
 								unavailable for 10-15 seconds while the device reboots.
 							</p>
-							<p className="text-orange-600 dark:text-orange-400">
+							<p className="text-warning">
 								Note: Any running profile will be stopped and the kiln will
 								enter shutdown mode.
 							</p>
 						</DialogDescription>
 					</DialogHeader>
+					{reboot.isError && <ErrorAlert error={reboot.error} />}
 					<DialogFooter>
 						<Button
 							variant="outline"
@@ -550,12 +515,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 						</div>
 					</div>
 					{scheduleProfile.isError && (
-						<Alert variant="destructive">
-							<AlertTriangle className="w-4 h-4" />
-							<AlertDescription>
-								{scheduleProfile.error?.message || "Failed to schedule profile"}
-							</AlertDescription>
-						</Alert>
+						<ErrorAlert error={scheduleProfile.error} />
 					)}
 					<DialogFooter>
 						<Button

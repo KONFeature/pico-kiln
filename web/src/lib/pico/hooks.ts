@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-query";
 import { PicoAPIError } from "./client";
 import { usePico } from "./context";
+import { isLogicalFailure } from "./errors";
 import type {
 	CancelScheduledResponse,
 	DeleteAllFilesResponse,
@@ -35,6 +36,25 @@ export const picoKeys = {
 	fileContent: (directory: string, filename: string) =>
 		["file-content", directory, filename] as const,
 };
+
+/**
+ * Rethrow logical failures (`{ success: false }` returned with HTTP 200) as a
+ * PicoAPIError so mutations surface them through `isError` instead of resolving
+ * silently. The original response is attached so `getFriendlyError` can detect
+ * the device-provided reason and trust it.
+ */
+function unwrap<
+	T extends { success: boolean; error?: string; message?: string },
+>(res: T, fallback: string): T {
+	if (!res.success) {
+		throw new PicoAPIError(
+			res.error ?? res.message ?? fallback,
+			undefined,
+			res,
+		);
+	}
+	return res;
+}
 
 // === Status Hooks ===
 
@@ -74,6 +94,8 @@ export function useKilnStatus(
 					return 30000;
 			}
 		},
+		// Always treat status as stale: it's a live safety readout, never "fresh".
+		staleTime: 0,
 		// Don't refetch on window focus if we're already polling
 		refetchOnWindowFocus: false,
 		// Retry failed requests with exponential backoff
@@ -97,7 +119,10 @@ export function useRunProfile() {
 			if (!client) {
 				throw new PicoAPIError("Pico client not initialized");
 			}
-			return await client.runProfile(profileName);
+			return unwrap(
+				await client.runProfile(profileName),
+				"Failed to start profile",
+			);
 		},
 		onSuccess: () => {
 			// Immediately refetch status after starting a profile
@@ -118,7 +143,7 @@ export function useStopProfile() {
 			if (!client) {
 				throw new PicoAPIError("Pico client not initialized");
 			}
-			return await client.stopProfile();
+			return unwrap(await client.stopProfile(), "Failed to stop profile");
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -138,7 +163,7 @@ export function useShutdown() {
 			if (!client) {
 				throw new PicoAPIError("Pico client not initialized");
 			}
-			return await client.shutdown();
+			return unwrap(await client.shutdown(), "Failed to shut down kiln");
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -158,7 +183,7 @@ export function useClearError() {
 			if (!client) {
 				throw new PicoAPIError("Pico client not initialized");
 			}
-			return await client.clearError();
+			return unwrap(await client.clearError(), "Failed to clear error");
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -181,12 +206,17 @@ export function useReboot() {
 					throw new PicoAPIError("Pico client not initialized");
 				}
 				try {
-					return await client.reboot();
+					return unwrap(await client.reboot(), "Failed to reboot");
 				} catch (error) {
-					// If the request times out or fails, it might be because
-					// the Pico already rebooted. Treat as success.
-					if (error instanceof PicoAPIError) {
-						// Consider timeout as success since the Pico may have rebooted
+					// Reboot drops the connection before responding, so a timeout or
+					// network failure (no HTTP status, and not an explicit
+					// `{ success: false }`) means the command landed. A real HTTP error
+					// or a logical rejection means it did NOT.
+					if (
+						error instanceof PicoAPIError &&
+						error.statusCode === undefined &&
+						!isLogicalFailure(error)
+					) {
 						return { success: true, message: "Reboot initiated" };
 					}
 					throw error;
@@ -219,7 +249,10 @@ export function useStartTuning() {
 			if (!client) {
 				throw new PicoAPIError("Pico client not initialized");
 			}
-			return await client.startTuning(mode, maxTemp);
+			return unwrap(
+				await client.startTuning(mode, maxTemp),
+				"Failed to start tuning",
+			);
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -239,7 +272,7 @@ export function useStopTuning() {
 			if (!client) {
 				throw new PicoAPIError("Pico client not initialized");
 			}
-			return await client.stopTuning();
+			return unwrap(await client.stopTuning(), "Failed to stop tuning");
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -270,7 +303,10 @@ export function useScheduleProfile() {
 			if (!client) {
 				throw new PicoAPIError("Pico client not initialized");
 			}
-			return await client.scheduleProfile(profileName, startTime);
+			return unwrap(
+				await client.scheduleProfile(profileName, startTime),
+				"Failed to schedule profile",
+			);
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -315,7 +351,10 @@ export function useCancelScheduled() {
 			if (!client) {
 				throw new PicoAPIError("Pico client not initialized");
 			}
-			return await client.cancelScheduled();
+			return unwrap(
+				await client.cancelScheduled(),
+				"Failed to cancel scheduled profile",
+			);
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -444,22 +483,18 @@ export function useDeleteFile() {
 			if (!client) {
 				throw new PicoAPIError("Pico client not initialized");
 			}
-			return await client.deleteFile(directory, filename);
+			return unwrap(
+				await client.deleteFile(directory, filename),
+				"Failed to delete file",
+			);
 		},
-		onSuccess: (data, variables) => {
-			if (data.success) {
-				// Invalidate file list
-				queryClient.invalidateQueries({
-					queryKey: picoKeys.files(variables.directory),
-				});
-				// Remove cached file content
-				queryClient.removeQueries({
-					queryKey: picoKeys.fileContent(
-						variables.directory,
-						variables.filename,
-					),
-				});
-			}
+		onSuccess: (_data, variables) => {
+			queryClient.invalidateQueries({
+				queryKey: picoKeys.files(variables.directory),
+			});
+			queryClient.removeQueries({
+				queryKey: picoKeys.fileContent(variables.directory, variables.filename),
+			});
 		},
 	});
 }
@@ -477,15 +512,11 @@ export function useDeleteAllLogs() {
 			if (!client) {
 				throw new PicoAPIError("Pico client not initialized");
 			}
-			return await client.deleteAllLogs();
+			return unwrap(await client.deleteAllLogs(), "Failed to delete logs");
 		},
-		onSuccess: (data) => {
-			if (data.success) {
-				// Invalidate logs file list
-				queryClient.invalidateQueries({ queryKey: picoKeys.files("logs") });
-				// Remove all cached log file content
-				queryClient.removeQueries({ queryKey: ["file-content", "logs"] });
-			}
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: picoKeys.files("logs") });
+			queryClient.removeQueries({ queryKey: ["file-content", "logs"] });
 		},
 	});
 }
@@ -507,22 +538,18 @@ export function useUploadFile() {
 			if (!client) {
 				throw new PicoAPIError("Pico client not initialized");
 			}
-			return await client.uploadFile(directory, filename, content);
+			return unwrap(
+				await client.uploadFile(directory, filename, content),
+				"Failed to upload file",
+			);
 		},
-		onSuccess: (data, variables) => {
-			if (data.success) {
-				// Invalidate file list to show new file
-				queryClient.invalidateQueries({
-					queryKey: picoKeys.files(variables.directory),
-				});
-				// Invalidate cached content for this file in case it was updated
-				queryClient.invalidateQueries({
-					queryKey: picoKeys.fileContent(
-						variables.directory,
-						variables.filename,
-					),
-				});
-			}
+		onSuccess: (_data, variables) => {
+			queryClient.invalidateQueries({
+				queryKey: picoKeys.files(variables.directory),
+			});
+			queryClient.invalidateQueries({
+				queryKey: picoKeys.fileContent(variables.directory, variables.filename),
+			});
 		},
 	});
 }

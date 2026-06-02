@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronUp, HardDrive, Upload } from "lucide-react";
 import { useState } from "react";
+import { ErrorAlert } from "@/components/ErrorAlert";
 import { Button } from "@/components/ui/button";
 import {
 	Collapsible,
@@ -41,6 +42,7 @@ export function FileSourceSelector({
 	const [selectedFile, setSelectedFile] = useState<string>("");
 	const [manualContent, setManualContent] = useState<string>("");
 	const [showContent, setShowContent] = useState<boolean>(false);
+	const [readError, setReadError] = useState<unknown>(null);
 	const { client } = usePico();
 
 	// Query to list files from Pico
@@ -67,13 +69,14 @@ export function FileSourceSelector({
 	const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
 		const file = e.target.files?.[0];
 		if (!file) return;
+		setReadError(null);
 
 		try {
 			const content = await readFileAsText(file);
 			onFileSelected(content, file.name);
 			setManualContent(content);
 		} catch (error) {
-			console.error("Failed to read file:", error);
+			setReadError(error);
 		}
 	};
 
@@ -125,13 +128,14 @@ export function FileSourceSelector({
 						type="file"
 						accept={accept}
 						onChange={handleFileUpload}
-						className="block w-full text-sm text-slate-500
+						className="block w-full text-sm text-muted-foreground
               file:mr-4 file:py-2 file:px-4
               file:rounded-md file:border-0
               file:text-sm file:font-semibold
-              file:bg-blue-50 file:text-blue-700
-              hover:file:bg-blue-100"
+              file:bg-secondary file:text-secondary-foreground
+              hover:file:bg-secondary/80"
 					/>
+					{readError != null && <ErrorAlert error={readError} />}
 					<Collapsible open={showContent} onOpenChange={setShowContent}>
 						<CollapsibleTrigger asChild>
 							<Button
