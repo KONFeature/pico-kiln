@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Profile } from "./pico/types";
-import { validateProfile } from "./profile-schema";
+import { parseDraftProfile } from "./profile-schema";
 
 const DRAFT_KEY = "pico-kiln-editor-draft";
 
@@ -13,8 +13,7 @@ function loadDraft(): Profile | null {
 		if (!raw) {
 			return null;
 		}
-		const result = validateProfile(JSON.parse(raw));
-		return result.ok ? result.profile : null;
+		return parseDraftProfile(JSON.parse(raw));
 	} catch {
 		return null;
 	}

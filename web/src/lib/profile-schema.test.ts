@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseProfileText, validateProfile } from "./profile-schema";
+import {
+	parseDraftProfile,
+	parseProfileText,
+	validateProfile,
+} from "./profile-schema";
 
 const validProfile = {
 	name: "Bisque",
@@ -104,5 +108,46 @@ describe("parseProfileText", () => {
 		const result = parseProfileText("{not json");
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.error).toMatch(/valid JSON/i);
+	});
+});
+
+describe("parseDraftProfile", () => {
+	const incompleteDraft = {
+		name: "",
+		temp_units: "c",
+		description: "",
+		steps: [
+			{ type: "ramp" },
+			{ type: "ramp", target_temp: 600, desired_rate: 0 },
+			{ type: "hold", target_temp: 600 },
+		],
+	};
+
+	it("restores an incomplete mid-edit draft verbatim", () => {
+		const draft = parseDraftProfile(incompleteDraft);
+		expect(draft).not.toBeNull();
+		expect(draft?.name).toBe("");
+		expect(draft?.steps).toHaveLength(3);
+		expect(draft?.steps[0]).toEqual({ type: "ramp" });
+		expect(draft?.steps[1].desired_rate).toBe(0);
+	});
+
+	it("does NOT apply validateProfile's required-field rules (regression guard)", () => {
+		expect(validateProfile(incompleteDraft).ok).toBe(false);
+		expect(parseDraftProfile(incompleteDraft)).not.toBeNull();
+	});
+
+	it("survives a localStorage JSON round-trip with empty fields dropped", () => {
+		const restored = parseDraftProfile(JSON.parse(JSON.stringify(incompleteDraft)));
+		expect(restored?.steps[0]).toEqual({ type: "ramp" });
+	});
+
+	it("rejects structurally impossible payloads", () => {
+		expect(parseDraftProfile(null)).toBeNull();
+		expect(parseDraftProfile({ ...incompleteDraft, temp_units: "k" })).toBeNull();
+		expect(parseDraftProfile({ ...incompleteDraft, steps: "x" })).toBeNull();
+		expect(
+			parseDraftProfile({ ...incompleteDraft, steps: [{ type: "blast" }] }),
+		).toBeNull();
 	});
 });

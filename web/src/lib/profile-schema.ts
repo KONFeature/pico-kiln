@@ -136,3 +136,60 @@ export function parseProfileText(text: string): ProfileParseResult {
 	}
 	return validateProfile(parsed);
 }
+
+/**
+ * Lenient structural parse for a persisted editor draft. Must NOT enforce
+ * validateProfile's required-field rules: a mid-edit draft is legitimately
+ * incomplete, and rejecting it would discard in-progress work on remount.
+ */
+export function parseDraftProfile(input: unknown): Profile | null {
+	if (!isObject(input)) {
+		return null;
+	}
+
+	const { name, temp_units, description, steps } = input;
+
+	if (typeof name !== "string") {
+		return null;
+	}
+	if (temp_units !== "c" && temp_units !== "f") {
+		return null;
+	}
+	if (!Array.isArray(steps)) {
+		return null;
+	}
+
+	const draftSteps: ProfileStep[] = [];
+	for (const raw of steps) {
+		if (!isObject(raw)) {
+			return null;
+		}
+		if (
+			typeof raw.type !== "string" ||
+			!STEP_TYPES.includes(raw.type as ProfileStepType)
+		) {
+			return null;
+		}
+		const step: ProfileStep = { type: raw.type as ProfileStepType };
+		if (isFiniteNumber(raw.target_temp)) {
+			step.target_temp = raw.target_temp;
+		}
+		if (isFiniteNumber(raw.desired_rate)) {
+			step.desired_rate = raw.desired_rate;
+		}
+		if (isFiniteNumber(raw.min_rate)) {
+			step.min_rate = raw.min_rate;
+		}
+		if (isFiniteNumber(raw.duration)) {
+			step.duration = raw.duration;
+		}
+		draftSteps.push(step);
+	}
+
+	return {
+		name,
+		temp_units,
+		description: typeof description === "string" ? description : "",
+		steps: draftSteps,
+	};
+}
