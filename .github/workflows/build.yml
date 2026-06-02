@@ -6,24 +6,47 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# Serialize releases on the same ref; don't cancel an in-flight release build.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# Build jobs only produce workflow artifacts -> read is enough.
+# The final `release` job elevates to `contents: write` to publish the release.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  # Desktop builds (Windows, macOS, Linux)
-  publish-tauri:
-    permissions:
-      contents: write
+  # ---------------------------------------------------------------------------
+  # Desktop (macOS arm64 / x64 / universal, Linux, Windows)
+  # tauri-action runs in BUILD-ONLY mode (no tagName/releaseId), exposing the
+  # built bundles via the `artifactPaths` output. We stage those and upload them
+  # as a workflow artifact; the `release` job collects everything at the end.
+  # ---------------------------------------------------------------------------
+  build-desktop:
+    name: 'Desktop (${{ matrix.name }})'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest'
+          - name: macos-aarch64
+            platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
-          - platform: 'macos-latest'
+          - name: macos-x86_64
+            platform: 'macos-latest'
             args: '--target x86_64-apple-darwin'
-          - platform: 'macos-latest'
+          - name: macos-universal
+            platform: 'macos-latest'
             args: '--target universal-apple-darwin'
-          - platform: 'ubuntu-22.04'
+          - name: linux
+            platform: 'ubuntu-22.04'
             args: ''
-          - platform: 'windows-latest'
+          - name: windows
+            platform: 'windows-latest'
             args: ''
 
     runs-on: ${{ matrix.platform }}
@@ -31,6 +54,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Sync app version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          tmp="$(mktemp)"
+          jq --arg v "$VERSION" '.version = $v' web/src-tauri/tauri.conf.json > "$tmp"
+          mv "$tmp" web/src-tauri/tauri.conf.json
+          echo "Synced tauri.conf.json version to $VERSION"
 
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -50,33 +82,55 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './web/src-tauri -> target'
+          key: ${{ matrix.name }}
 
       - name: Install frontend dependencies
         run: bun install
         working-directory: ./web
 
-      - name: Build Tauri app
+      - name: Build Tauri app (build-only, no release)
+        id: tauri
         uses: tauri-apps/tauri-action@v0.6
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: ./web
-          tagName: app-v__VERSION__
-          releaseName: 'Kiln v__VERSION__'
-          releaseBody: 'See the assets to download this version and install.'
-          releaseDraft: true
-          prerelease: false
           args: ${{ matrix.args }}
 
-  # Android build
-  publish-android:
-    permissions:
-      contents: write
+      - name: Stage desktop artifacts
+        run: |
+          mkdir -p dist-artifacts
+          echo '${{ steps.tauri.outputs.artifactPaths }}' | jq -r '.[]' | while read -r f; do
+            [ -e "$f" ] || continue
+            cp -R "$f" dist-artifacts/
+          done
+          ls -la dist-artifacts
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.name }}
+          path: dist-artifacts/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Android (APK + AAB) -> workflow artifact `android`
+  # ---------------------------------------------------------------------------
+  build-android:
+    name: 'Android'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Sync app version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          tmp="$(mktemp)"
+          jq --arg v "$VERSION" '.version = $v' web/src-tauri/tauri.conf.json > "$tmp"
+          mv "$tmp" web/src-tauri/tauri.conf.json
+          echo "Synced tauri.conf.json version to $VERSION"
 
       - name: Setup Java
         uses: actions/setup-java@v5
@@ -91,6 +145,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './web/src-tauri -> target'
+          key: android
 
       - name: Install Android targets
         run: |
@@ -102,8 +157,8 @@ jobs:
       - name: Install Android NDK
         run: |
           echo "y" | sdkmanager --install "ndk;26.1.10909125" "build-tools;34.0.0" "platforms;android-34"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
-          echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> "$GITHUB_ENV"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -133,13 +188,13 @@ jobs:
             echo "Setting up Android signing..."
             echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" > keystore.properties
             echo "password=${{ secrets.ANDROID_KEY_PASSWORD }}" >> keystore.properties
-            base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > $RUNNER_TEMP/keystore.jks
+            base64 -d <<< "${{ secrets.ANDROID_KEY_BASE64 }}" > "$RUNNER_TEMP/keystore.jks"
             echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
           else
             echo "Skipping Android signing - secrets not configured"
           fi
 
-      - name: Build Android APK
+      - name: Build Android APK/AAB
         run: |
           cd web
           cargo tauri android build --ci
@@ -148,37 +203,43 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
           NDK_HOME: ${{ env.NDK_HOME }}
 
-      - name: Upload APK to release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
-        with:
-          draft: true
-          files: |
-            web/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
-            web/src-tauri/gen/android/app/build/outputs/apk/**/*.aab
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Stage Android artifacts
+        run: |
+          mkdir -p dist-artifacts
+          find web/src-tauri/gen/android/app/build/outputs -type f \( -name '*.apk' -o -name '*.aab' \) -exec cp {} dist-artifacts/ \;
+          ls -la dist-artifacts
 
-      - name: Upload APK artifacts
-        if: "!startsWith(github.ref, 'refs/tags/v')"
+      - name: Upload Android artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: kiln-android-${{ github.sha }}
-          path: |
-            web/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
-            web/src-tauri/gen/android/app/build/outputs/apk/**/*.aab
+          name: android
+          path: dist-artifacts/*
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
 
-  # iOS build
-  publish-ios:
-    permissions:
-      contents: write
+  # ---------------------------------------------------------------------------
+  # iOS (best-effort, UNSIGNED) -> workflow artifact `ios` only.
+  # No Apple signing is configured, so this cannot produce a distributable IPA.
+  # The whole job is `continue-on-error` and is intentionally NOT a dependency
+  # of `release`, so it can never block a desktop+android release.
+  # To ship real IPAs later, wire up App Store Connect signing secrets here.
+  # ---------------------------------------------------------------------------
+  build-ios:
+    name: 'iOS (best-effort, unsigned)'
     runs-on: macos-latest
+    continue-on-error: true
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Sync app version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          tmp="$(mktemp)"
+          jq --arg v "$VERSION" '.version = $v' web/src-tauri/tauri.conf.json > "$tmp"
+          mv "$tmp" web/src-tauri/tauri.conf.json
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -187,6 +248,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './web/src-tauri -> target'
+          key: ios
 
       - name: Install iOS targets
         run: |
@@ -213,38 +275,59 @@ jobs:
             cargo tauri ios init
           fi
 
-      - name: Build iOS app (requires code signing for IPA)
+      - name: Build iOS app (unsigned)
         run: |
           cd web
-          # Build without signing will create .app but not .ipa
-          # For IPA, you need to configure code signing certificates
-          cargo tauri ios build --ci || echo "iOS build requires code signing setup"
-        continue-on-error: true
+          cargo tauri ios build --ci || echo "iOS build needs code signing for a distributable IPA"
 
-      - name: Check for iOS build outputs
+      - name: Stage iOS artifacts
         run: |
-          echo "Checking for iOS build artifacts..."
-          find web/src-tauri/gen/apple -type f \( -name "*.ipa" -o -name "*.app" \) 2>/dev/null || echo "No iOS artifacts found - code signing may be required"
-        continue-on-error: true
-
-      - name: Upload IPA to release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
-        with:
-          draft: true
-          files: |
-            web/src-tauri/gen/apple/build/Build/Products/Debug-iphoneos/*.app
-            web/src-tauri/gen/apple/build/Build/Products/Release-iphoneos/*.app
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
+          mkdir -p dist-artifacts
+          find web/src-tauri/gen/apple -type f -name '*.ipa' -exec cp {} dist-artifacts/ \; 2>/dev/null || true
+          find web/src-tauri/gen/apple -type d -name '*.app' -exec cp -R {} dist-artifacts/ \; 2>/dev/null || true
+          ls -la dist-artifacts || true
 
       - name: Upload iOS artifacts
-        if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: actions/upload-artifact@v7
         with:
-          name: kiln-ios-${{ github.sha }}
-          path: |
-            web/src-tauri/gen/apple/build/Build/Products/**/*.app
+          name: ios
+          path: dist-artifacts/*
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Single GitHub release: collects desktop + android artifacts into ONE draft
+  # release on the pushed tag (e.g. v0.1.5). iOS is excluded on purpose (it only
+  # lives as a run artifact). Runs only for tag pushes.
+  # ---------------------------------------------------------------------------
+  release:
+    name: 'GitHub Release'
+    needs: [build-desktop, build-android]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+
+      - name: List collected assets
+        run: find release-assets -type f | sort
+
+      - name: Create / update GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'Kiln ${{ github.ref_name }}'
+          body: 'See the assets to download this version and install.'
+          draft: true
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-assets/desktop-*/*
+            release-assets/android/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
