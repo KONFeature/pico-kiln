@@ -30,7 +30,16 @@ interface UseChartInteractionParams {
 		lo: number,
 	) => number;
 	canInteract: boolean;
+	/**
+	 * Fired when a drag/pinch selection ends with a meaningful range. Lets a
+	 * parent commit the range (e.g. brush-to-zoom). Optional — when omitted the
+	 * selection behaves exactly as before (transient highlight band, cleared on
+	 * release), so existing charts are unaffected.
+	 */
+	onSelectionCommit?: (selection: ChartSelection) => void;
 }
+
+const MIN_SELECTION_PX = 6;
 
 interface ChartInteractionResult {
 	tooltipData: TooltipData | null;
@@ -58,8 +67,24 @@ export function useChartInteraction({
 	xAccessor,
 	bisectDate,
 	canInteract,
+	onSelectionCommit,
 }: UseChartInteractionParams): ChartInteractionResult {
 	const [selection, setSelection] = useState<ChartSelection | null>(null);
+	const selectionRef = useRef<ChartSelection | null>(null);
+	selectionRef.current = selection;
+
+	const commitSelection = useCallback(() => {
+		const sel = selectionRef.current;
+		if (!(sel?.active && onSelectionCommit)) {
+			return;
+		}
+		if (
+			Math.abs(sel.endX - sel.startX) >= MIN_SELECTION_PX &&
+			sel.startIndex !== sel.endIndex
+		) {
+			onSelectionCommit(sel);
+		}
+	}, [onSelectionCommit]);
 	const {
 		tooltipData,
 		setTooltipData,
@@ -215,8 +240,9 @@ export function useChartInteraction({
 		if (isDraggingRef.current) {
 			isDraggingRef.current = false;
 		}
+		commitSelection();
 		setSelection(null);
-	}, []);
+	}, [commitSelection]);
 
 	const handleTouchStart = useCallback(
 		(event: React.TouchEvent<SVGGElement>) => {
@@ -295,8 +321,9 @@ export function useChartInteraction({
 
 	const handleTouchEnd = useCallback(() => {
 		clearTooltip();
+		commitSelection();
 		setSelection(null);
-	}, [clearTooltip]);
+	}, [clearTooltip, commitSelection]);
 
 	const clearSelection = useCallback(() => {
 		setSelection(null);
