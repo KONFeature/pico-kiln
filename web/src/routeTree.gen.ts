@@ -9,48 +9,89 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as VisualizerRouteImport } from './routes/visualizer'
+import { Route as FilesRouteImport } from './routes/files'
+import { Route as EditorRouteImport } from './routes/editor'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as ToolboxIndexRouteImport } from './routes/toolbox/index'
 
+const VisualizerRoute = VisualizerRouteImport.update({
+  id: '/visualizer',
+  path: '/visualizer',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FilesRoute = FilesRouteImport.update({
+  id: '/files',
+  path: '/files',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EditorRoute = EditorRouteImport.update({
+  id: '/editor',
+  path: '/editor',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ToolboxIndexRoute = ToolboxIndexRouteImport.update({
-  id: '/toolbox/',
-  path: '/toolbox/',
-  getParentRoute: () => rootRouteImport,
-} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/toolbox/': typeof ToolboxIndexRoute
+  '/editor': typeof EditorRoute
+  '/files': typeof FilesRoute
+  '/visualizer': typeof VisualizerRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/toolbox': typeof ToolboxIndexRoute
+  '/editor': typeof EditorRoute
+  '/files': typeof FilesRoute
+  '/visualizer': typeof VisualizerRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/toolbox/': typeof ToolboxIndexRoute
+  '/editor': typeof EditorRoute
+  '/files': typeof FilesRoute
+  '/visualizer': typeof VisualizerRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/toolbox/'
+  fullPaths: '/' | '/editor' | '/files' | '/visualizer'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/toolbox'
-  id: '__root__' | '/' | '/toolbox/'
+  to: '/' | '/editor' | '/files' | '/visualizer'
+  id: '__root__' | '/' | '/editor' | '/files' | '/visualizer'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  ToolboxIndexRoute: typeof ToolboxIndexRoute
+  EditorRoute: typeof EditorRoute
+  FilesRoute: typeof FilesRoute
+  VisualizerRoute: typeof VisualizerRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/visualizer': {
+      id: '/visualizer'
+      path: '/visualizer'
+      fullPath: '/visualizer'
+      preLoaderRoute: typeof VisualizerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/files': {
+      id: '/files'
+      path: '/files'
+      fullPath: '/files'
+      preLoaderRoute: typeof FilesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/editor': {
+      id: '/editor'
+      path: '/editor'
+      fullPath: '/editor'
+      preLoaderRoute: typeof EditorRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -58,19 +99,14 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/toolbox/': {
-      id: '/toolbox/'
-      path: '/toolbox'
-      fullPath: '/toolbox/'
-      preLoaderRoute: typeof ToolboxIndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  ToolboxIndexRoute: ToolboxIndexRoute,
+  EditorRoute: EditorRoute,
+  FilesRoute: FilesRoute,
+  VisualizerRoute: VisualizerRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

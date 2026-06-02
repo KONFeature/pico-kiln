@@ -1,13 +1,27 @@
 import { Link } from "@tanstack/react-router";
-import { Flame, Menu, Settings, Wrench, X } from "lucide-react";
+import {
+	Edit,
+	Flame,
+	FolderOpen,
+	LineChart,
+	Menu,
+	Settings,
+	X,
+} from "lucide-react";
 import { useState } from "react";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { PicoConnectionDialog } from "./PicoConnectionDialog";
 import { ThemeToggle } from "./ThemeToggle";
 
+const navLinkClass =
+	"flex items-center gap-3 p-3 rounded-lg hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors mb-2";
+const navLinkActiveClass =
+	"flex items-center gap-3 p-3 rounded-lg bg-sidebar-primary text-sidebar-primary-foreground hover:bg-sidebar-primary/90 transition-colors mb-2";
+
 export default function Header() {
 	const [isOpen, setIsOpen] = useState(false);
 	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+	const closeMenu = () => setIsOpen(false);
 
 	return (
 		<>
@@ -64,28 +78,42 @@ export default function Header() {
 				<nav className="flex-1 p-4 overflow-y-auto">
 					<Link
 						to="/"
-						onClick={() => setIsOpen(false)}
-						className="flex items-center gap-3 p-3 rounded-lg hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors mb-2"
-						activeProps={{
-							className:
-								"flex items-center gap-3 p-3 rounded-lg bg-sidebar-primary text-sidebar-primary-foreground hover:bg-sidebar-primary/90 transition-colors mb-2",
-						}}
+						onClick={closeMenu}
+						className={navLinkClass}
+						activeProps={{ className: navLinkActiveClass }}
 					>
 						<Flame size={20} />
 						<span className="font-medium">Kiln Control</span>
 					</Link>
 
 					<Link
-						to="/toolbox"
-						onClick={() => setIsOpen(false)}
-						className="flex items-center gap-3 p-3 rounded-lg hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors mb-2"
-						activeProps={{
-							className:
-								"flex items-center gap-3 p-3 rounded-lg bg-sidebar-primary text-sidebar-primary-foreground hover:bg-sidebar-primary/90 transition-colors mb-2",
-						}}
+						to="/visualizer"
+						onClick={closeMenu}
+						className={navLinkClass}
+						activeProps={{ className: navLinkActiveClass }}
 					>
-						<Wrench size={20} />
-						<span className="font-medium">Toolbox</span>
+						<LineChart size={20} />
+						<span className="font-medium">Visualizer</span>
+					</Link>
+
+					<Link
+						to="/editor"
+						onClick={closeMenu}
+						className={navLinkClass}
+						activeProps={{ className: navLinkActiveClass }}
+					>
+						<Edit size={20} />
+						<span className="font-medium">Profile Editor</span>
+					</Link>
+
+					<Link
+						to="/files"
+						onClick={closeMenu}
+						className={navLinkClass}
+						activeProps={{ className: navLinkActiveClass }}
+					>
+						<FolderOpen size={20} />
+						<span className="font-medium">Files</span>
 					</Link>
 				</nav>
 			</aside>
