@@ -26,7 +26,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_executor::Executor;
 use embassy_rp::multicore::{spawn_core1, Stack};
-use embassy_rp::peripherals::CORE1;
+use embassy_rp::Peri;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Instant, Timer};
@@ -93,37 +93,52 @@ fn main() -> ! {
     spawn_core1(p.CORE1, stack, move || {
         let executor1 = EXECUTOR1.init(Executor::new());
         executor1.run(|spawner| {
-            spawner
-                .spawn(control_task(core1_periphs, config, cmd_rx, status_tx))
-                .unwrap()
+            // embassy-executor 0.10: a `#[task]` fn returns `Result<SpawnToken, _>`
+            // (pool exhaustion is fallible) and `Spawner::spawn` returns `()`, so
+            // the `unwrap` moves inside.
+            spawner.spawn(control_task(core1_periphs, config, cmd_rx, status_tx).unwrap())
         });
     });
 
     // Core 0: web + logging + recovery + WiFi + NTP + LCD.
+    // Core 0's peripherals — disjoint from Core 1's, taken individually (see
+    // `Core0Periphs`). The fixed Pico 2 W cyw43 wiring plus the flash.
+    let core0_periphs = Core0Periphs {
+        wl_pwr: p.PIN_23,
+        wl_dio: p.PIN_24,
+        wl_cs: p.PIN_25,
+        wl_clk: p.PIN_29,
+        pio: p.PIO0,
+        dma: p.DMA_CH0,
+        flash: p.FLASH,
+    };
+
     let executor0 = EXECUTOR0.init(Executor::new());
     executor0.run(|spawner| {
-        spawner
-            .spawn(core0_main(
-                Core0Periphs::from(p),
+        spawner.spawn(
+            core0_main(
+                core0_periphs,
                 storage,
                 config,
                 commands.sender(),
                 status,
                 reboot,
-            ))
-            .unwrap()
+            )
+            .unwrap(),
+        )
     });
 }
 
-/// Peripherals handed to Core 1 (the kiln I/O only).
+/// Peripherals handed to Core 1 (the kiln I/O only). embassy-rp 0.10 hands out
+/// each peripheral as a `Peri<'static, T>` handle rather than the bare singleton.
 struct Core1Periphs {
-    spi: embassy_rp::peripherals::SPI1,
-    sck: embassy_rp::peripherals::PIN_18,
-    mosi: embassy_rp::peripherals::PIN_19,
-    miso: embassy_rp::peripherals::PIN_16,
-    cs: embassy_rp::peripherals::PIN_28,
-    ssr: embassy_rp::peripherals::PIN_15,
-    watchdog: embassy_rp::peripherals::WATCHDOG,
+    spi: Peri<'static, embassy_rp::peripherals::SPI1>,
+    sck: Peri<'static, embassy_rp::peripherals::PIN_18>,
+    mosi: Peri<'static, embassy_rp::peripherals::PIN_19>,
+    miso: Peri<'static, embassy_rp::peripherals::PIN_16>,
+    cs: Peri<'static, embassy_rp::peripherals::PIN_28>,
+    ssr: Peri<'static, embassy_rp::peripherals::PIN_15>,
+    watchdog: Peri<'static, embassy_rp::peripherals::WATCHDOG>,
 }
 
 /// The Core 1 control task — the same per-tick orchestration as
@@ -195,17 +210,27 @@ async fn control_task(
     }
 }
 
-/// Peripherals handed to Core 0 (network + flash + LCD).
+/// Peripherals handed to Core 0 (network + flash). A single `embassy-rp`
+/// `Peripherals` cannot be split by storing the whole struct on one side: once
+/// Core 1's fields are moved out, the remainder can no longer be moved or
+/// borrowed wholesale. So Core 0 takes the *specific* peripherals it owns, which
+/// are disjoint from Core 1's. These are the fixed Pico 2 W cyw43 wiring plus the
+/// on-board flash; the LCD I2C is omitted until the LCD driver is ported (U9).
+///
+/// The `platform::build_*` builders that consume these are still `unimplemented!`
+/// DEVICE stubs, so the fields are not read yet.
+#[allow(dead_code)]
 struct Core0Periphs {
-    // cyw43 (WiFi) pins, flash, I2C for the LCD, etc. Elided to the fields the
-    // platform builders consume; see `platform::build_*`.
-    raw: embassy_rp::Peripherals,
-}
-
-impl From<embassy_rp::Peripherals> for Core0Periphs {
-    fn from(raw: embassy_rp::Peripherals) -> Self {
-        Self { raw }
-    }
+    // cyw43 WiFi: power-on, the PIO-driven SPI (data/cs/clk), the PIO block, and
+    // a DMA channel — all hardwired to the CYW43 on the Pico 2 W.
+    wl_pwr: Peri<'static, embassy_rp::peripherals::PIN_23>,
+    wl_dio: Peri<'static, embassy_rp::peripherals::PIN_24>,
+    wl_cs: Peri<'static, embassy_rp::peripherals::PIN_25>,
+    wl_clk: Peri<'static, embassy_rp::peripherals::PIN_29>,
+    pio: Peri<'static, embassy_rp::peripherals::PIO0>,
+    dma: Peri<'static, embassy_rp::peripherals::DMA_CH0>,
+    // Flash filesystem (littlefs): the QSPI flash peripheral.
+    flash: Peri<'static, embassy_rp::peripherals::FLASH>,
 }
 
 /// Core 0 setup task: bring up cyw43 → an `embassy-net` `Stack`, mount flash,
@@ -222,7 +247,9 @@ async fn core0_main(
     status: &'static StatusWatch,
     reboot: &'static RebootSignal,
 ) {
-    let spawner = embassy_executor::Spawner::for_current_executor().await;
+    // SAFETY: `core0_main` runs as a task on Core 0's embassy executor, which is
+    // exactly the precondition embassy-executor 0.10 requires for this call.
+    let spawner = unsafe { embassy_executor::Spawner::for_current_executor() }.await;
 
     // WiFi + network stack (cyw43 firmware blobs + PIO SPI), then DHCP. Returns
     // the `embassy-net` Stack the web workers serve on.
@@ -263,30 +290,30 @@ async fn core0_main(
     // starting a fresh file.
     let recovery = platform::attempt_recovery(&state).await;
 
-    // `AppRouter` (TAIT) names the router type so it stores in a StaticCell and
-    // keeps the `#[task]` web_task non-generic.
-    static APP: StaticCell<picoserve::Router<kiln_app::server::AppRouter, AppState>> =
-        StaticCell::new();
-    let app: &'static _ = APP.init(kiln_app::server::make_app());
+    // `make_app` bakes the shared `AppState` into the router; picoserve 0.18
+    // then serves the stateless `Router<P>` aliased as `AppRouter`, which names
+    // the router type so it stores in a StaticCell and keeps the `#[task]`
+    // web_task non-generic. (`AppState` is `Copy`, so the copy into `make_app`
+    // leaves `state` usable.)
+    static APP: StaticCell<kiln_app::server::AppRouter> = StaticCell::new();
+    let app: &'static _ = APP.init(kiln_app::server::make_app(state));
     let web_cfg = platform::web_config();
 
+    // embassy-executor 0.10: `#[task]` fns return `Result<SpawnToken, _>` and
+    // `Spawner::spawn` returns `()`, so each token is unwrapped before spawning.
     for id in 0..kiln_app::server::WEB_TASK_POOL_SIZE {
-        spawner
-            .spawn(kiln_app::server::web_task(id, stack, app, web_cfg, state))
-            .unwrap();
+        spawner.spawn(kiln_app::server::web_task(id, stack, app, web_cfg).unwrap());
     }
-    spawner
-        .spawn(kiln_app::server::csv_logger_task(
-            status, storage, clock, config, recovery,
-        ))
-        .unwrap();
+    spawner.spawn(
+        kiln_app::server::csv_logger_task(status, storage, clock, config, recovery).unwrap(),
+    );
     // WiFi reconnect monitor (`wifi_manager.monitor`): re-join on link failure.
-    spawner.spawn(platform::wifi_monitor_task(stack)).unwrap();
+    spawner.spawn(platform::wifi_monitor_task(stack).unwrap());
     // NOTE: the LCD task is intentionally NOT spawned — the LCD driver
     // (`lcd1602_i2c` + `lcd_manager`) is not yet ported. See MIGRATION_AUDIT.md U9.
     // TODO(LCD): port the driver, then spawn `lcd_task(status, display)` here.
-    spawner.spawn(platform::ntp_task(clock, stack)).unwrap();
-    spawner.spawn(platform::reboot_task(reboot)).unwrap();
+    spawner.spawn(platform::ntp_task(clock, stack).unwrap());
+    spawner.spawn(platform::reboot_task(reboot).unwrap());
 }
 
 #[panic_handler]

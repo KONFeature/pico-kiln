@@ -17,15 +17,19 @@ kiln-hal = { path = "../kiln-hal" }
 kiln-control = { path = "../kiln-control", features = ["embassy"] }
 kiln-app = { path = "../kiln-app", features = ["embassy"] }
 
-embassy-executor = { version = "0.10", features = ["arch-cortex-m", "executor-thread", "executor-interrupt"] }
-embassy-rp = { version = "0.9", features = ["rp235xa", "time-driver", "critical-section-impl"] }
+# embassy-executor 0.10 renamed the arch selector from `arch-cortex-m` to
+# `platform-cortex-m`.
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
+# embassy-rp 0.10 is the release that pins embassy-executor 0.10 / embassy-sync
+# 0.8 / embassy-time 0.5; cyw43 0.7 + cyw43-pio 0.10 are from the same set.
+embassy-rp = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl"] }
 embassy-time = "0.5"
 embassy-sync = "0.8"
 embassy-net = { version = "0.9", features = ["tcp", "udp", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
 embassy-futures = "0.1"
 
-cyw43 = { version = "0.5", features = ["firmware-logs"] }
-cyw43-pio = "0.7"
+cyw43 = { version = "0.7", features = ["firmware-logs"] }
+cyw43-pio = "0.10"
 
 picoserve = { version = "0.18", features = ["embassy"] }
 
@@ -38,10 +42,18 @@ cortex-m-rt = "0.7"
 
 # NTP wall clock (Oracle Q4) and the flash filesystem (Oracle Q2). The exact
 # crate APIs are device-verified; pinned here as the intended dependencies.
-sntpc = { version = "0.5", default-features = false }
-littlefs2 = "0.5"
+sntpc = { version = "0.10", default-features = false }
+# littlefs2 is the intended flash filesystem, but littlefs2-sys compiles the
+# bundled C `littlefs` and needs a freestanding ARM C toolchain with libc
+# headers (arm-none-eabi-gcc, or clang + picolibc/newlib headers) that this
+# build environment lacks. No code calls it yet (every `FlashStorage` body in
+# platform.rs is an `unimplemented!()` DEVICE stub), so it is commented out to
+# keep the crate compiling. Re-enable once the flash bodies are implemented and
+# an ARM C toolchain is available.
+# littlefs2 = "0.7"
 
-panic-halt = "1"
+# NOTE: no `panic-halt` — `main.rs` defines its own `#[panic_handler]` that
+# de-energises the SSR before halting (two handlers would collide).
 
 [features]
 default = []

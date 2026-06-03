@@ -22,7 +22,7 @@ use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_time::{Duration, Instant};
 use kiln_app::api::Directory;
 use kiln_app::config::KilnConfig;
-use kiln_app::server::{AppState, Clock, Display, RebootSignal, StorageError};
+use kiln_app::server::{AppState, Clock, Display, RebootSignal, Storage, StorageError};
 use kiln_control::ControlParams;
 use kiln_core::protocol::{Command, ProfileName, Status};
 use kiln_core::state::KilnState;
@@ -33,16 +33,20 @@ use crate::{Core0Periphs, Core1Periphs};
 // === Watchdog ===============================================================
 
 /// The RP2350 hardware watchdog (`ENABLE_WATCHDOG`, 8 s in `config.example.py`).
+/// embassy-rp 0.10's `Watchdog::feed(timeout)` reloads the counter with a fresh
+/// period on every pet, so the configured timeout is stored and replayed.
 pub struct RpWatchdog {
     inner: embassy_rp::watchdog::Watchdog,
+    timeout: Duration,
 }
 
 impl kiln_hal::platform::Watchdog for RpWatchdog {
     fn start(&mut self, timeout_ms: u32) {
-        self.inner.start(Duration::from_millis(timeout_ms as u64));
+        self.timeout = Duration::from_millis(timeout_ms as u64);
+        self.inner.start(self.timeout);
     }
     fn feed(&mut self) {
-        self.inner.feed();
+        self.inner.feed(self.timeout);
     }
 }
 
@@ -159,9 +163,40 @@ pub fn build_kiln_io(
 }
 
 /// DEVICE placeholder types for the concrete embassy-rp SPI device / pin the
-/// kiln-hal drivers are generic over.
+/// kiln-hal drivers are generic over. They are uninhabited (no value is ever
+/// constructed — [`build_kiln_io`] is `unimplemented!()`); the trait impls below
+/// exist only so `Max31856<DeviceSpi>` / `Ssr<DevicePin>` satisfy the
+/// `embedded-hal` bounds the `Controller` methods require, keeping the crate
+/// type-checkable until the real SPI/GPIO wiring lands. Every body is
+/// unreachable.
 pub enum DeviceSpi {}
 pub enum DevicePin {}
+
+impl embedded_hal::spi::ErrorType for DeviceSpi {
+    type Error = core::convert::Infallible;
+}
+
+impl embedded_hal::spi::SpiDevice<u8> for DeviceSpi {
+    fn transaction(
+        &mut self,
+        _operations: &mut [embedded_hal::spi::Operation<'_, u8>],
+    ) -> Result<(), Self::Error> {
+        match *self {}
+    }
+}
+
+impl embedded_hal::digital::ErrorType for DevicePin {
+    type Error = core::convert::Infallible;
+}
+
+impl embedded_hal::digital::OutputPin for DevicePin {
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        match *self {}
+    }
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        match *self {}
+    }
+}
 
 // === Wall clock (Oracle Q4) =================================================
 
@@ -212,6 +247,13 @@ impl Clock for NtpClock {
 /// littlefs over the RP2350 flash. Every flash *write* is wrapped in the
 /// [`flash_handshake`] so Core 1 de-energises the SSR and parks while XIP is
 /// down; reads are plain XIP and need no handshake.
+///
+/// NOTE: the `littlefs2` dependency is currently commented out in `Cargo.toml`
+/// (its `littlefs2-sys` build compiles the bundled C `littlefs`, which needs a
+/// freestanding ARM C toolchain + libc headers this environment lacks). Until
+/// that is restored, every method below is an `unimplemented!()` / error DEVICE
+/// stub and this struct holds no real filesystem handle — re-enable the dep and
+/// fill in the bodies together.
 pub struct FlashStorage {
     // DEVICE: the mounted littlefs Filesystem + a CriticalSectionRawMutex (writes
     // are sync and do not await, but the lock guards cross-task reentry).
@@ -325,14 +367,14 @@ impl Display for LcdDisplay {
 use static_cell::StaticCell;
 
 /// picoserve timeouts (`web_server.py` connection limits), built once.
-pub fn web_config() -> &'static picoserve::Config<Duration> {
-    static CONFIG: StaticCell<picoserve::Config<Duration>> = StaticCell::new();
+pub fn web_config() -> &'static picoserve::Config {
+    static CONFIG: StaticCell<picoserve::Config> = StaticCell::new();
     CONFIG.init(
         picoserve::Config::new(picoserve::Timeouts {
-            start_read_request: Some(Duration::from_secs(5)),
-            persistent_start_read_request: Some(Duration::from_secs(1)),
-            read_request: Some(Duration::from_secs(1)),
-            write: Some(Duration::from_secs(1)),
+            start_read_request: Duration::from_secs(5),
+            persistent_start_read_request: Duration::from_secs(1),
+            read_request: Duration::from_secs(1),
+            write: Duration::from_secs(1),
         })
         .keep_connection_alive(),
     )

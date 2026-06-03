@@ -9,10 +9,11 @@
 //! `embassy-net`, the littlefs CSV logger, and the WiFi/NTP/LCD tasks) is behind
 //! the `embassy` feature; `kiln-firmware` hands it a running `Stack` and flash.
 #![cfg_attr(not(test), no_std)]
-#![cfg_attr(
-    feature = "embassy",
-    feature(impl_trait_in_assoc_type, type_alias_impl_trait)
-)]
+#![cfg_attr(feature = "embassy", feature(impl_trait_in_assoc_type))]
+// The picoserve router builds a deeply-nested `Route`/`PathRouter` type, and the
+// embassy task pool computes the layout of the resulting handler future; the
+// default recursion limit (128) overflows while doing so.
+#![recursion_limit = "512"]
 
 pub mod api;
 pub mod config;

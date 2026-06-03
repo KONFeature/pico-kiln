@@ -262,9 +262,16 @@ pub async fn lcd_task(status: &'static StatusWatch, display: &'static mut dyn Di
 // its decisions to the verified modules.
 
 mod web {
+    // `ApiResponse` (the handler response type) is also used as the early-return
+    // error in `load_profile`/`file_guard`, so several `Result`s have a large
+    // `Err` variant. That is intentional — it is the response, and boxing it is
+    // not free in `no_std` — so the `result_large_err` lint is silenced here.
+    #![allow(clippy::result_large_err)]
+
     use super::*;
     use picoserve::extract::State;
-    use picoserve::response::{IntoResponse, StatusCode};
+    use picoserve::response::chunked::{ChunkWriter, ChunkedResponse, Chunks, ChunksWritten};
+    use picoserve::response::{Content, IntoResponse, StatusCode};
     use picoserve::routing::{get, parse_path_segment, post};
 
     /// Cap on a buffered command/JSON body (`MAX_JSON_BODY`); profiles are small.
@@ -277,78 +284,122 @@ mod web {
     /// Max length of a profile/log filename held on the stack.
     const NAME_CAP: usize = 64;
 
-    /// The concrete router type, named via TAIT so it can live in a `StaticCell`
-    /// and so [`web_task`] stays non-generic (an `#[embassy_executor::task]`
-    /// cannot be generic). Its defining use is [`make_app`]'s return type.
-    pub type AppRouter = impl picoserve::routing::PathRouter<AppState>;
+    /// Router-construction props implementing picoserve 0.18's [`AppBuilder`].
+    /// Using the trait (rather than a bare module-level `type Foo = impl ...`)
+    /// gives the opaque router type a single defining use inside `build_app`, so
+    /// the `#[embassy_executor::task]` [`web_task`] — which must name the router
+    /// type — does not form a type-resolution cycle with the alias. The shared
+    /// [`AppState`] is baked in via `with_state`, leaving the stateless
+    /// `Router<P>` that picoserve 0.18's `Server` serves.
+    pub struct AppProps {
+        pub state: AppState,
+    }
 
-    /// Build the picoserve router; the path set and methods match `web_server.py`.
-    pub fn make_app() -> picoserve::Router<AppRouter, AppState> {
-        // Every `/api/*` route also answers `OPTIONS` with 200 + CORS so the
-        // browser's cross-origin preflight succeeds — the reference returned
-        // 200/CORS for any OPTIONS (`web_server.py:780-782`); without it the
-        // hosted web app's POST/PUT/DELETE-with-JSON would fail at preflight.
-        picoserve::Router::new()
-            .route("/", get(page_index))
-            .route("/index.html", get(page_index))
-            .route("/tuning", get(page_tuning))
-            .route("/tuning.html", get(page_tuning))
-            .route("/api/status", get(status_json).options(cors_preflight))
-            .route("/api/tuning/status", get(status_json).options(cors_preflight))
-            .route("/api/scheduled", get(scheduled_json).options(cors_preflight))
-            .route(
-                "/api/stop",
-                post(|s: State<AppState>| async move { enqueue(&s.0, Command::Stop) })
+    impl picoserve::AppBuilder for AppProps {
+        type PathRouter = impl picoserve::routing::PathRouter;
+
+        // The path set and methods match `web_server.py`. Every `/api/*` route
+        // also answers `OPTIONS` with 200 + CORS so the browser's cross-origin
+        // preflight succeeds — the reference returned 200/CORS for any OPTIONS
+        // (`web_server.py:780-782`); without it the hosted web app's
+        // POST/PUT/DELETE-with-JSON would fail at preflight.
+        fn build_app(self) -> picoserve::Router<Self::PathRouter> {
+            picoserve::Router::new()
+                .route("/", get(page_index))
+                .route("/index.html", get(page_index))
+                .route("/tuning", get(page_tuning))
+                .route("/tuning.html", get(page_tuning))
+                .route("/api/status", get(status_json).options(cors_preflight))
+                .route(
+                    "/api/tuning/status",
+                    get(status_json).options(cors_preflight),
+                )
+                .route(
+                    "/api/scheduled",
+                    get(scheduled_json).options(cors_preflight),
+                )
+                .route(
+                    "/api/stop",
+                    post(|s: State<AppState>| async move { enqueue(&s.0, Command::Stop) })
+                        .options(cors_preflight),
+                )
+                .route(
+                    "/api/clear-error",
+                    post(|s: State<AppState>| async move { enqueue(&s.0, Command::ClearError) })
+                        .options(cors_preflight),
+                )
+                .route(
+                    "/api/shutdown",
+                    post(|s: State<AppState>| async move { enqueue(&s.0, Command::Shutdown) })
+                        .options(cors_preflight),
+                )
+                .route(
+                    "/api/scheduled/cancel",
+                    post(
+                        |s: State<AppState>| async move { enqueue(&s.0, Command::CancelScheduled) },
+                    )
                     .options(cors_preflight),
-            )
-            .route(
-                "/api/clear-error",
-                post(|s: State<AppState>| async move { enqueue(&s.0, Command::ClearError) })
-                    .options(cors_preflight),
-            )
-            .route(
-                "/api/shutdown",
-                post(|s: State<AppState>| async move { enqueue(&s.0, Command::Shutdown) })
-                    .options(cors_preflight),
-            )
-            .route(
-                "/api/scheduled/cancel",
-                post(|s: State<AppState>| async move { enqueue(&s.0, Command::CancelScheduled) })
-                    .options(cors_preflight),
-            )
-            .route(
-                "/api/tuning/stop",
-                post(|s: State<AppState>| async move { enqueue(&s.0, Command::StopTuning) })
-                    .options(cors_preflight),
-            )
-            .route("/api/reboot", post(reboot).options(cors_preflight))
-            .route(
-                "/api/config",
-                get(config_get).post(config_post).options(cors_preflight),
-            )
-            .route("/api/run", post(run).options(cors_preflight))
-            .route("/api/schedule", post(schedule).options(cors_preflight))
-            .route(
-                "/api/tuning/start",
-                post(tuning_start).options(cors_preflight),
-            )
-            .route(
-                ("/api/files", parse_path_segment()),
-                get(files_list).options(cors_preflight),
-            )
-            .route(
-                ("/api/files", parse_path_segment(), parse_path_segment()),
-                get(file_get)
-                    .put(file_put)
-                    .delete(file_delete)
-                    .options(cors_preflight),
-            )
+                )
+                .route(
+                    "/api/tuning/stop",
+                    post(|s: State<AppState>| async move { enqueue(&s.0, Command::StopTuning) })
+                        .options(cors_preflight),
+                )
+                .route("/api/reboot", post(reboot).options(cors_preflight))
+                .route(
+                    "/api/config",
+                    get(config_get).post(config_post).options(cors_preflight),
+                )
+                .route("/api/run", post(run).options(cors_preflight))
+                .route("/api/schedule", post(schedule).options(cors_preflight))
+                .route(
+                    "/api/tuning/start",
+                    post(tuning_start).options(cors_preflight),
+                )
+                .route(
+                    ("/api/files", parse_path_segment()),
+                    get(files_list).options(cors_preflight_dir),
+                )
+                .route(
+                    ("/api/files", parse_path_segment(), parse_path_segment()),
+                    get(file_get)
+                        .put(file_put)
+                        .delete(file_delete)
+                        .options(cors_preflight_file),
+                )
+                // Bake the shared state in: picoserve 0.18 serves a stateless
+                // `Router<P>`, with the state carried inside the router itself.
+                .with_state(self.state)
+        }
+    }
+
+    /// The concrete router type, named so it can live in a `StaticCell` and so
+    /// [`web_task`] stays non-generic (an `#[embassy_executor::task]` cannot be
+    /// generic). `picoserve::AppRouter<Props>` resolves to `Router<P, ()>`.
+    pub type AppRouter = picoserve::AppRouter<AppProps>;
+
+    /// Build the picoserve router with `state` baked in.
+    pub fn make_app(state: AppState) -> AppRouter {
+        use picoserve::AppBuilder as _;
+        AppProps { state }.build_app()
     }
 
     /// CORS preflight responder: 200 with an empty body; the CORS headers are
     /// added by [`ApiResponse`]'s `IntoResponse` (the `Text` arm), matching the
-    /// reference's blanket OPTIONS handler.
+    /// reference's blanket OPTIONS handler. picoserve 0.18 requires a method
+    /// handler to accept the route's path parameters, so the three arities get
+    /// distinct (parameter-ignoring) entry points.
     async fn cors_preflight() -> impl IntoResponse {
+        ApiResponse::error_text(StatusCode::OK, "")
+    }
+
+    async fn cors_preflight_dir(_dir: heapless::String<16>) -> impl IntoResponse {
+        ApiResponse::error_text(StatusCode::OK, "")
+    }
+
+    async fn cors_preflight_file(
+        _params: (heapless::String<16>, heapless::String<64>),
+    ) -> impl IntoResponse {
         ApiResponse::error_text(StatusCode::OK, "")
     }
 
@@ -391,10 +442,7 @@ mod web {
         ApiResponse::json(StatusCode::OK, body)
     }
 
-    async fn config_post(
-        State(state): State<AppState>,
-        JsonBody(body): JsonBody,
-    ) -> impl IntoResponse {
+    async fn config_post(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
         let merged = match config::parse_over(state.config.clone(), body.as_str()) {
             Ok(c) => c,
             Err(_) => return ApiResponse::error(StatusCode::BAD_REQUEST, "Invalid configuration"),
@@ -416,7 +464,7 @@ mod web {
         }
     }
 
-    async fn run(State(state): State<AppState>, JsonBody(body): JsonBody) -> impl IntoResponse {
+    async fn run(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
         let name = match api::json_get_str(body.as_str(), "profile") {
             Some(n) if !n.is_empty() => n,
             _ => return ApiResponse::error(StatusCode::BAD_REQUEST, "Profile name required"),
@@ -427,10 +475,7 @@ mod web {
         }
     }
 
-    async fn schedule(
-        State(state): State<AppState>,
-        JsonBody(body): JsonBody,
-    ) -> impl IntoResponse {
+    async fn schedule(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
         let name = api::json_get_str(body.as_str(), "profile");
         let start = api::json_get_f64(body.as_str(), "start_time");
         if !api::schedule_fields_present(name, start) {
@@ -453,10 +498,7 @@ mod web {
         }
     }
 
-    async fn tuning_start(
-        State(state): State<AppState>,
-        JsonBody(body): JsonBody,
-    ) -> impl IntoResponse {
+    async fn tuning_start(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
         let mode = match api::parse_tuning_mode(
             api::json_get_str(body.as_str(), "mode").unwrap_or("STANDARD"),
         ) {
@@ -533,8 +575,8 @@ mod web {
     }
 
     async fn files_list(
-        State(state): State<AppState>,
         dir: heapless::String<16>,
+        State(state): State<AppState>,
     ) -> impl IntoResponse {
         let directory = match file_guard(&state, &dir, None) {
             Ok(d) => d,
@@ -565,9 +607,8 @@ mod web {
     }
 
     async fn file_get(
+        (dir, file): (heapless::String<16>, heapless::String<64>),
         State(state): State<AppState>,
-        dir: heapless::String<16>,
-        file: heapless::String<64>,
     ) -> impl IntoResponse {
         let directory = match file_guard(&state, &dir, Some(&file)) {
             Ok(d) => d,
@@ -585,9 +626,8 @@ mod web {
     }
 
     async fn file_put(
+        (dir, file): (heapless::String<16>, heapless::String<64>),
         State(state): State<AppState>,
-        dir: heapless::String<16>,
-        file: heapless::String<64>,
         upload: Upload,
     ) -> impl IntoResponse {
         let directory = match file_guard(&state, &dir, Some(&file)) {
@@ -618,9 +658,8 @@ mod web {
     }
 
     async fn file_delete(
+        (dir, file): (heapless::String<16>, heapless::String<64>),
         State(state): State<AppState>,
-        dir: heapless::String<16>,
-        file: heapless::String<64>,
     ) -> impl IntoResponse {
         // The web app's "delete all logs" maps to DELETE /api/files/logs/all
         // (`handle_api_files_delete_all`). Route it before the single-file path so
@@ -658,23 +697,26 @@ mod web {
         let mut names: heapless::Vec<heapless::String<NAME_CAP>, MAX_PROFILES> =
             heapless::Vec::new();
         let mut total = 0usize;
-        state.storage.for_each(directory, &mut |name, _size, _modified| {
-            total += 1;
-            if names.len() < names.capacity() {
-                let mut s = heapless::String::<NAME_CAP>::new();
-                if s.push_str(name).is_ok() {
-                    let _ = names.push(s);
+        state
+            .storage
+            .for_each(directory, &mut |name, _size, _modified| {
+                total += 1;
+                if names.len() < names.capacity() {
+                    let mut s = heapless::String::<NAME_CAP>::new();
+                    if s.push_str(name).is_ok() {
+                        let _ = names.push(s);
+                    }
                 }
-            }
-        });
+            });
         if state.storage.remove_all(directory).is_err() {
-            return ApiResponse::error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to delete files",
-            );
+            return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete files");
         }
         let mut body = heapless::String::<2048>::new();
-        let _ = write!(body, "{{\"success\":true,\"deleted_count\":{},\"deleted_files\":[", total);
+        let _ = write!(
+            body,
+            "{{\"success\":true,\"deleted_count\":{},\"deleted_files\":[",
+            total
+        );
         for (i, name) in names.iter().enumerate() {
             if i > 0 {
                 let _ = body.push(',');
@@ -797,6 +839,24 @@ mod web {
         ("Access-Control-Allow-Headers", "Content-Type"),
     ];
 
+    /// A [`Content`] wrapper that overrides the Content-Type. picoserve 0.18's
+    /// `Response::new` derives the Content-Type from the body's `Content` impl
+    /// (e.g. `&str` → `text/plain`); wrapping lets us set the exact type once,
+    /// without emitting a duplicate `Content-Type` header.
+    struct Typed<C: Content>(C, &'static str);
+
+    impl<C: Content> Content for Typed<C> {
+        fn content_type(&self) -> &'static str {
+            self.1
+        }
+        fn content_length(&self) -> usize {
+            self.0.content_length()
+        }
+        async fn write_content<W: picoserve::io::Write>(self, writer: W) -> Result<(), W::Error> {
+            self.0.write_content(writer).await
+        }
+    }
+
     impl IntoResponse for ApiResponse {
         async fn write_to<
             R: picoserve::io::Read,
@@ -806,23 +866,22 @@ mod web {
             connection: picoserve::response::Connection<'_, R>,
             response_writer: W,
         ) -> Result<picoserve::ResponseSent, W::Error> {
+            use picoserve::response::Response;
             match self {
                 ApiResponse::Json { status, body } => {
-                    picoserve::response::Response::new(status, body.as_str())
+                    Response::new(status, Typed(body, "application/json"))
                         .with_headers(CORS)
-                        .with_header("Content-Type", "application/json")
                         .write_to(connection, response_writer)
                         .await
                 }
                 ApiResponse::StaticJson { status, body } => {
-                    picoserve::response::Response::new(status, body)
+                    Response::new(status, Typed(body, "application/json"))
                         .with_headers(CORS)
-                        .with_header("Content-Type", "application/json")
                         .write_to(connection, response_writer)
                         .await
                 }
                 ApiResponse::Text { status, body } => {
-                    picoserve::response::Response::new(status, body)
+                    Response::new(status, Typed(body, "text/plain"))
                         .with_headers(CORS)
                         .write_to(connection, response_writer)
                         .await
@@ -831,24 +890,25 @@ mod web {
                     bytes,
                     content_type,
                 } => {
-                    picoserve::response::Response::new(StatusCode::OK, bytes)
+                    Response::new(StatusCode::OK, Typed(bytes, content_type))
                         .with_headers(CORS)
-                        .with_header("Content-Type", content_type)
                         .write_to(connection, response_writer)
                         .await
                 }
+                // Streamed bodies have a size not worth buffering, so they use a
+                // chunked (`Transfer-Encoding: chunked`) response; the Content-Type
+                // comes from each `Chunks` impl.
                 ApiResponse::Download(d) => {
-                    let content_type = content_type_for(&d.name);
-                    picoserve::response::Response::new(StatusCode::OK, StorageBody(d))
+                    ChunkedResponse::new(StorageChunks(d))
+                        .into_response()
                         .with_headers(CORS)
-                        .with_header("Content-Type", content_type)
                         .write_to(connection, response_writer)
                         .await
                 }
                 ApiResponse::Index(body) => {
-                    picoserve::response::Response::new(StatusCode::OK, body)
+                    ChunkedResponse::new(body)
+                        .into_response()
                         .with_headers(CORS)
-                        .with_header("Content-Type", "text/html")
                         .write_to(connection, response_writer)
                         .await
                 }
@@ -865,48 +925,58 @@ mod web {
         names: heapless::Vec<heapless::String<NAME_CAP>, MAX_PROFILES>,
     }
 
-    impl picoserve::response::Body for IndexBody {
-        async fn write_response_body<W: picoserve::io::Write>(
+    impl Chunks for IndexBody {
+        fn content_type(&self) -> &'static str {
+            "text/html"
+        }
+
+        async fn write_chunks<W: picoserve::io::Write>(
             self,
-            mut writer: W,
-        ) -> Result<(), W::Error> {
+            mut chunk_writer: ChunkWriter<W>,
+        ) -> Result<ChunksWritten, W::Error> {
             // Streams `html::render_profiles_list` (the host-tested spec)
             // fragment-for-fragment, so no full-page buffer is needed. Keep these
             // byte fragments in lockstep with that function.
-            writer.write_all(self.pre).await?;
+            chunk_writer.write_chunk(self.pre).await?;
             if self.names.is_empty() {
-                writer
-                    .write_all(b"<ul><li>No profiles found</li></ul>")
+                chunk_writer
+                    .write_chunk(b"<ul><li>No profiles found</li></ul>")
                     .await?;
             } else {
-                writer.write_all(b"<ul>").await?;
+                chunk_writer.write_chunk(b"<ul>").await?;
                 for name in &self.names {
                     let n = name.as_bytes();
-                    writer.write_all(b"<li>").await?;
-                    writer.write_all(n).await?;
-                    writer
-                        .write_all(b" <button onclick=\"startProfile('")
+                    chunk_writer.write_chunk(b"<li>").await?;
+                    chunk_writer.write_chunk(n).await?;
+                    chunk_writer
+                        .write_chunk(b" <button onclick=\"startProfile('")
                         .await?;
-                    writer.write_all(n).await?;
-                    writer.write_all(b"')\">Start</button></li>").await?;
+                    chunk_writer.write_chunk(n).await?;
+                    chunk_writer
+                        .write_chunk(b"')\">Start</button></li>")
+                        .await?;
                 }
-                writer.write_all(b"</ul>").await?;
+                chunk_writer.write_chunk(b"</ul>").await?;
             }
-            writer.write_all(self.post).await?;
-            Ok(())
+            chunk_writer.write_chunk(self.post).await?;
+            chunk_writer.finalize().await
         }
     }
 
-    /// A picoserve response body that streams a file from [`Storage`] in 1 KiB
+    /// A picoserve chunked body that streams a file from [`Storage`] in 1 KiB
     /// chunks (the reference's `FILE_CHUNK_SIZE`), so peak RAM stays flat
     /// regardless of file size.
-    struct StorageBody(Download);
+    struct StorageChunks(Download);
 
-    impl picoserve::response::Body for StorageBody {
-        async fn write_response_body<W: picoserve::io::Write>(
+    impl Chunks for StorageChunks {
+        fn content_type(&self) -> &'static str {
+            content_type_for(&self.0.name)
+        }
+
+        async fn write_chunks<W: picoserve::io::Write>(
             self,
-            mut writer: W,
-        ) -> Result<(), W::Error> {
+            mut chunk_writer: ChunkWriter<W>,
+        ) -> Result<ChunksWritten, W::Error> {
             let d = self.0;
             let mut offset = 0u64;
             let mut buf = [0u8; api::FILE_CHUNK_SIZE];
@@ -915,10 +985,10 @@ mod web {
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
-                writer.write_all(&buf[..n]).await?;
+                chunk_writer.write_chunk(&buf[..n]).await?;
                 offset += n as u64;
             }
-            Ok(())
+            chunk_writer.finalize().await
         }
     }
 
@@ -974,6 +1044,7 @@ mod web {
             let content_length = parts
                 .headers()
                 .get("Content-Length")
+                .and_then(|v| v.as_str().ok())
                 .and_then(|v| v.parse::<i64>().ok())
                 .unwrap_or(0);
             let outcome = match api::validate_upload_size(content_length) {
@@ -989,6 +1060,7 @@ mod web {
         state: &AppState,
         request_body: picoserve::request::RequestBody<'_, R>,
     ) -> UploadOutcome {
+        use picoserve::io::Read as _;
         if state.storage.upload_begin().is_err() {
             return UploadOutcome::Failed;
         }
@@ -1011,31 +1083,25 @@ mod web {
         }
     }
 
-    /// The picoserve worker pool. `make_app().with_state(state)` is built once in
-    /// the firmware and shared `&'static`; each worker serves on port 80.
+    /// The picoserve worker pool. `make_app(state)` bakes the shared state into
+    /// the router, which is built once in the firmware and shared `&'static`;
+    /// each worker serves on port 80. picoserve 0.18 replaces the free
+    /// `listen_and_serve_with_state` function with the `Server` builder.
     #[embassy_executor::task(pool_size = WEB_TASK_POOL_SIZE)]
     pub async fn web_task(
         id: usize,
         stack: embassy_net::Stack<'static>,
-        app: &'static picoserve::Router<AppRouter, AppState>,
-        config: &'static picoserve::Config<embassy_time::Duration>,
-        state: AppState,
+        app: &'static AppRouter,
+        config: &'static picoserve::Config,
     ) -> ! {
         let mut tcp_rx = [0u8; 1024];
         let mut tcp_tx = [0u8; 1024];
         let mut http = [0u8; 2048];
-        picoserve::listen_and_serve_with_state(
-            id,
-            app,
-            config,
-            stack,
-            80,
-            &mut tcp_rx,
-            &mut tcp_tx,
-            &mut http,
-            &state,
-        )
-        .await
+        loop {
+            let _ = picoserve::Server::new(app, config, &mut http)
+                .listen_and_serve(id, stack, 80, &mut tcp_rx, &mut tcp_tx)
+                .await;
+        }
     }
 }
 

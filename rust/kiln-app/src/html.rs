@@ -85,7 +85,10 @@ mod tests {
 
     #[test]
     fn display_name_strips_json_only() {
-        assert_eq!(profile_display_name("biscuit_faience.json"), Some("biscuit_faience"));
+        assert_eq!(
+            profile_display_name("biscuit_faience.json"),
+            Some("biscuit_faience")
+        );
         assert_eq!(profile_display_name("test_ramp.json"), Some("test_ramp"));
         assert_eq!(profile_display_name("notes.txt"), None);
         assert_eq!(profile_display_name("README"), None);
