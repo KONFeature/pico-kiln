@@ -7,7 +7,7 @@ Rust control-logic crate against the original MicroPython implementation.
 > (`thumbv8m.main-none-eabihf`) and the full test suite is **green — 46/46**
 > (36 unit tests + 10 reference-replay tests) across all seven ported modules:
 > `pid`, `rate_monitor`, `scheduler`, `profile`, `state`, `tuner`, `temp_filter`.
-> The sibling `kiln-hal` crate (MAX31856 + SSR drivers) adds 9 driver tests. See
+> The sibling `kiln-hal` crate (MAX31856 + SSR drivers) adds 12 driver tests. See
 > [Results](#results-snapshot).
 
 ---
@@ -286,7 +286,7 @@ test result: ok. 36 passed; 0 failed; ...
    Running tests/replay_temp_filter.rs  test result: ok. 1 passed; ...  # init/spike/faults/shutdown
 ```
 
-Total (kiln-core): 36 unit + 10 replay = 46 tests green. `kiln-hal` adds 9.
+Total (kiln-core): 36 unit + 10 replay = 46 tests green. `kiln-hal` adds 12.
 
 Cross-compile for RP2350:
 

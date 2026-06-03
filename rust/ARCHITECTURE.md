@@ -244,7 +244,7 @@ covered transitively (it's mostly `kiln-core` calls) and end-to-end by
 ## 8. Status & roadmap
 
 - ✅ `kiln-core`: 7 modules ported, 36 unit + 10 replay tests green.
-- ✅ `kiln-hal`: `max31856` + `ssr` drivers over `embedded-hal`, 9 tests green.
+- ✅ `kiln-hal`: `max31856` + `ssr` drivers over `embedded-hal`, 12 tests green.
 - ⏭ `kiln-core`: extract `ssr_schedule`, `gain_schedule`, `protocol`, `recovery`
   (all unblock the layers above).
 - ⏭ `kiln-control` + `kiln-app`: embassy tasks; `kiln-firmware` shim.

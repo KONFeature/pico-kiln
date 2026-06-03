@@ -39,12 +39,13 @@ cd rust
 cargo test -p kiln-hal
 ```
 
-9 tests using `embedded-hal-mock`: they assert the exact SPI transactions the
+12 tests using `embedded-hal-mock`: they assert the exact SPI transactions the
 driver issues (address byte then read/write, single chip-select per access),
 decode known positive/negative temperatures and fault bits, check
 `start_autoconverting` preserves the other config bits and that reads are `0.0`
-before the first conversion, and verify the SSR starts low and the drop guard
-fires.
+before the first conversion, validate the `MAINS_FREQUENCY` / `THERMOCOUPLE_AVERAGING`
+config mapping (and its fallback to the kiln defaults) down to the AVGSEL / notch
+register writes, and verify the SSR starts low and the drop guard fires.
 
 > No system C linker? See `../TESTING.md §5` for the static-musl + `rust-lld`
 > recipe that runs the suite with only the Rust toolchain.

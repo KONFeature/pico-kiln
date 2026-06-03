@@ -69,18 +69,33 @@ impl ThermocoupleType {
 }
 
 /// Samples averaged per conversion (CR1 bits 4-6). More averaging trades
-/// conversion time for noise rejection.
+/// conversion time for noise rejection. `Default` is the kiln's
+/// `THERMOCOUPLE_AVERAGING` default of 8 samples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Averaging {
-    #[default]
     S1,
     S2,
     S4,
+    #[default]
     S8,
     S16,
 }
 
 impl Averaging {
+    /// Map a `THERMOCOUPLE_AVERAGING` config value (1, 2, 4, 8, 16) to its AVGSEL
+    /// setting; `None` for any other count. Mirrors `VALID_AVERAGING` in
+    /// `hardware.py` — pair with `.unwrap_or_default()` for the same fallback to 8.
+    pub fn from_samples(samples: u8) -> Option<Self> {
+        match samples {
+            1 => Some(Self::S1),
+            2 => Some(Self::S2),
+            4 => Some(Self::S4),
+            8 => Some(Self::S8),
+            16 => Some(Self::S16),
+            _ => None,
+        }
+    }
+
     fn bits(self) -> u8 {
         match self {
             Self::S1 => 0x00,
@@ -93,11 +108,26 @@ impl Averaging {
 }
 
 /// Mains-frequency notch filter for the ADC (CR0 bit 0). Pick the local mains
-/// frequency to reject its hum; must be set before conversions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// frequency to reject its hum; must be set before conversions. `Default` is the
+/// kiln's `MAINS_FREQUENCY` default of 60 Hz.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NoiseFilter {
     Hz50,
+    #[default]
     Hz60,
+}
+
+impl NoiseFilter {
+    /// Map a `MAINS_FREQUENCY` config value (50 or 60) to its notch setting;
+    /// `None` otherwise. Mirrors the check in `hardware.py` — pair with
+    /// `.unwrap_or_default()` for the same fallback to 60 Hz.
+    pub fn from_hz(hz: u16) -> Option<Self> {
+        match hz {
+            50 => Some(Self::Hz50),
+            60 => Some(Self::Hz60),
+            _ => None,
+        }
+    }
 }
 
 /// Decoded fault status register (0x0F). Mirrors the booleans Adafruit's
@@ -308,6 +338,44 @@ mod tests {
         let mut dev = Max31856::new(spi.clone());
 
         dev.set_thermocouple_type(ThermocoupleType::S).unwrap();
+        spi.done();
+    }
+
+    #[test]
+    fn config_values_validate_and_fall_back_to_kiln_defaults() {
+        assert_eq!(Averaging::from_samples(1), Some(Averaging::S1));
+        assert_eq!(Averaging::from_samples(8), Some(Averaging::S8));
+        assert_eq!(Averaging::from_samples(16), Some(Averaging::S16));
+        assert_eq!(Averaging::from_samples(3), None);
+        assert_eq!(Averaging::from_samples(3).unwrap_or_default(), Averaging::S8);
+
+        assert_eq!(NoiseFilter::from_hz(50), Some(NoiseFilter::Hz50));
+        assert_eq!(NoiseFilter::from_hz(60), Some(NoiseFilter::Hz60));
+        assert_eq!(NoiseFilter::from_hz(55), None);
+        assert_eq!(NoiseFilter::from_hz(55).unwrap_or_default(), NoiseFilter::Hz60);
+    }
+
+    #[test]
+    fn set_averaging_writes_avgsel_preserving_type() {
+        let mut expect = Vec::new();
+        expect.extend(read_reg(REG_CR1, &[0x03])); // K-type already set
+        expect.extend(write_reg(REG_CR1, 0x33)); // keep 0x03, AVGSEL=8 -> 0x30
+        let mut spi = SpiMock::new(&expect);
+        let mut dev = Max31856::new(spi.clone());
+
+        dev.set_averaging(Averaging::S8).unwrap();
+        spi.done();
+    }
+
+    #[test]
+    fn set_noise_filter_writes_mains_bit() {
+        let mut expect = Vec::new();
+        expect.extend(read_reg(REG_CR0, &[CR0_OCFAULT0]));
+        expect.extend(write_reg(REG_CR0, CR0_OCFAULT0 | CR0_50HZ)); // 50 Hz sets bit 0
+        let mut spi = SpiMock::new(&expect);
+        let mut dev = Max31856::new(spi.clone());
+
+        dev.set_noise_filter(NoiseFilter::Hz50).unwrap();
         spi.done();
     }
 
