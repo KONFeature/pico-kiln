@@ -4,8 +4,10 @@ This document explains how to build, test, cross-compile, and (re)validate the
 Rust control-logic crate against the original MicroPython implementation.
 
 > **Current status (verified):** `kiln-core` compiles `no_std` for the RP2350
-> (`thumbv8m.main-none-eabihf`) and the full test suite is **green — 7/7**
-> (6 unit tests + 1 reference-replay test). See [Results](#results-snapshot).
+> (`thumbv8m.main-none-eabihf`) and the full test suite is **green — 39/39**
+> (30 unit tests + 9 reference-replay tests) across all six ported modules:
+> `pid`, `rate_monitor`, `scheduler`, `profile`, `state`, `tuner`. See
+> [Results](#results-snapshot).
 
 ---
 
@@ -206,37 +208,51 @@ rust/
 └── kiln-core/
     ├── Cargo.toml                  # zero-dependency, no_std lib
     ├── README.md
-    ├── src/
+    ├── src/                        # one module per ported kiln/*.py
     │   ├── lib.rs                  # #![no_std], re-exports
-    │   └── pid.rs                  # PID port + unit tests
+    │   ├── pid.rs
+    │   ├── rate_monitor.rs
+    │   ├── scheduler.rs
+    │   ├── profile.rs
+    │   ├── state.rs
+    │   └── tuner.rs
     ├── tests/
-    │   ├── replay_pid.rs           # equivalence test (reads the fixture)
-    │   └── fixtures/
-    │       └── pid_golden.csv      # generated from kiln/pid.py
+    │   ├── replay_pid.rs           # equivalence tests (replay fixtures)
+    │   ├── replay_rate.rs
+    │   ├── replay_profile.rs
+    │   ├── replay_state.rs         # run / stall / recovery scenarios
+    │   ├── replay_tuner.rs         # safe / standard / error scenarios
+    │   └── fixtures/               # *_golden.csv generated from kiln/*.py
     └── tools/
-        └── gen_pid_golden.py       # fixture generator (imports real pid.py)
+        └── gen_*_golden.py         # fixture generators (import the real modules)
 ```
 
 ---
 
-## 10. Roadmap & adding the next equivalence test
+## 10. Status & adding the next equivalence test
 
-Port order (each is hardware-free and host-testable the same way):
+All hardware-free modules are ported and equivalence-tested:
 
-1. ✅ `pid` — done
-2. `rate_monitor` (`kiln/rate_monitor.py`) — rolling temp/rate window
-3. `profile` (`kiln/profile.py`) — step parsing/validation
-4. `state` (`kiln/state.py`) — the firing state machine (ramp/hold/cooling,
+1. ✅ `pid` (`kiln/pid.py`) — PID with anti-windup
+2. ✅ `rate_monitor` (`kiln/rate_monitor.py`) — rolling temp/rate window
+3. ✅ `scheduler` (`kiln/scheduler.py`) — delayed-start queue
+4. ✅ `profile` (`kiln/profile.py`) — step model + duration/progress
+5. ✅ `state` (`kiln/state.py`) — firing state machine (ramp/hold/cooling,
    stall detection, recovery)
-5. `tuner` (`kiln/tuner.py`) — Ziegler-Nichols auto-tune sequence
+6. ✅ `tuner` (`kiln/tuner.py`) — Ziegler-Nichols auto-tune sequences
 
-**Pattern for each new module:**
+What's intentionally **not** in `kiln-core`: the concurrency layer (`comms.py`
+queues, `_thread`) and anything touching hardware — those belong to the future
+`kiln-hal` / `firmware` crates and map to `embassy` primitives.
 
-1. Write `tools/gen_<mod>_golden.py` that imports the real Python module (via the
-   `micropython` shim, by file path) and emits a CSV/JSON fixture covering the
-   important branches.
-2. Port the logic into `kiln-core/src/<mod>.rs` (`no_std`, mirror the math/branch
-   order; manual `clamp`, no float intrinsics).
+**Pattern for each module (for reference / future tweaks):**
+
+1. Write `tools/gen_<mod>_golden.py` that imports the real Python module (by file
+   path, with a `micropython` shim / stubbed `kiln` package and a patched clock
+   where needed) and emits a fixture covering the important branches.
+2. Port the logic into `kiln-core/src/<mod>.rs` (`no_std`, inject time, mirror the
+   math/branch order; manual `clamp`/`abs`, no float intrinsics; strings kept out
+   of the core).
 3. Add `tests/replay_<mod>.rs` that replays the fixture and asserts equivalence.
 4. Verify with `cargo test` (or the §5 recipe) and the §6 cross-build.
 
@@ -250,19 +266,19 @@ the single biggest risk-reducer for a fire-capable controller.
 Produced with the §5 recipe (this environment has no system linker):
 
 ```
-running 6 tests
-test pid::tests::anti_windup_freezes_integral_when_saturated_high ... ok
-test pid::tests::first_call_uses_unit_dt_and_zero_error_gives_zero ... ok
-test pid::tests::negative_dt_is_floored ... ok
-test pid::tests::positive_error_drives_output_up_and_clamps ... ok
-test pid::tests::reset_clears_state ... ok
-test pid::tests::set_gains_bumpless_preserves_i_term ... ok
-test result: ok. 6 passed; 0 failed; ...
+running 30 tests        # src/lib.rs unit tests
+... pid::tests (6) ... rate_monitor::tests (4) ... scheduler::tests (5) ...
+... profile::tests (5) ... state::tests (5) ... tuner::tests (5) ...
+test result: ok. 30 passed; 0 failed; ...
 
-running 1 test
-test replay_matches_reference_pid ... ok
-test result: ok. 1 passed; 0 failed; ...
+   Running tests/replay_pid.rs       test result: ok. 1 passed; ...
+   Running tests/replay_rate.rs      test result: ok. 1 passed; ...
+   Running tests/replay_profile.rs   test result: ok. 1 passed; ...
+   Running tests/replay_state.rs     test result: ok. 3 passed; ...  # run/stall/recovery
+   Running tests/replay_tuner.rs     test result: ok. 3 passed; ...  # safe/standard/error
 ```
+
+Total: 30 unit + 9 replay = 39 tests green.
 
 Cross-compile for RP2350:
 

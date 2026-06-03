@@ -16,9 +16,11 @@ pub mod profile;
 pub mod rate_monitor;
 pub mod scheduler;
 pub mod state;
+pub mod tuner;
 
 pub use pid::{Pid, PidStats};
 pub use profile::{Profile, ProfileError, Step, StepKind};
 pub use rate_monitor::TempHistory;
 pub use scheduler::{ScheduleError, ScheduledProfileQueue};
 pub use state::{ControllerConfig, KilnController, KilnError, KilnState};
+pub use tuner::{TuningMode, TuningStage, ZieglerNicholsTuner};

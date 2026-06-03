@@ -10,11 +10,21 @@ heart of a planned MicroPython → Rust migration.
 
 ## What's here today
 
-| Module | Ports | Status |
-|--------|-------|--------|
-| `pid`  | `kiln/pid.py` — PID with conditional-integration anti-windup | ✅ ported + replay-tested |
+Every hardware-free module of the MicroPython controller is ported and
+equivalence-tested:
 
-Planned next: `state` (state machine), `profile`, `rate_monitor`, `tuner`.
+| Module | Ports | Equivalence check |
+|--------|-------|-------------------|
+| `pid` | `kiln/pid.py` — PID with conditional-integration anti-windup | golden replay (240 samples) |
+| `rate_monitor` | `kiln/rate_monitor.py` — `TempHistory` ring buffer + rate | golden replay (overflow + clear) |
+| `scheduler` | `kiln/scheduler.py` — delayed-start queue (generic payload) | unit tests |
+| `profile` | `kiln/profile.py` — step model + duration/progress | golden replay (5 profiles) |
+| `state` | `kiln/state.py` — firing state machine | golden replay (run / stall / recovery) |
+| `tuner` | `kiln/tuner.py` — Ziegler-Nichols auto-tuner (4 modes) | golden replay (safe / standard / error) |
+
+The concurrency layer (`comms.py` queues, `_thread`) is intentionally **not**
+here — it maps to `embassy-sync` channels in the firmware crate, not to portable
+logic.
 
 ## Test it
 
@@ -23,23 +33,32 @@ cd rust
 cargo test -p kiln-core
 ```
 
-The headline test, `replay_pid.rs`, replays
+30 unit tests plus 9 golden-replay tests. Each `replay_*.rs` feeds inputs
+captured from the **real** MicroPython module back through the Rust port and
+asserts the outputs match within `1e-6`. For example `replay_pid.rs` replays
 `tests/fixtures/pid_golden.csv` — 240 samples spanning ramp / hold / step-down
-(186 saturated, 112 negative-error) — through the Rust `Pid` and asserts every
-`output`, `p_term`, `i_term`, `d_term`, and the `integral_frozen` flag match the
-reference within `1e-6`.
+(186 saturated, 112 negative-error) — checking every `output`, `p_term`,
+`i_term`, `d_term`, and the `integral_frozen` flag.
 
-## Regenerate the golden fixture
+> No system C linker? See `../TESTING.md §5` for the static-musl + `rust-lld`
+> recipe that runs the whole suite with only the Rust toolchain.
 
-The fixture is produced by importing the **real** `kiln/pid.py` (via a tiny
-`micropython` shim) and driving it through a deterministic scenario:
+## Regenerate the golden fixtures
+
+Each module has a generator under `tools/` that imports the **real** Python
+module (via a `micropython` shim / stubbed `kiln` package where needed) and
+drives it through a deterministic scenario:
 
 ```bash
 python3 rust/kiln-core/tools/gen_pid_golden.py
+python3 rust/kiln-core/tools/gen_rate_golden.py
+python3 rust/kiln-core/tools/gen_profile_golden.py
+python3 rust/kiln-core/tools/gen_state_golden.py
+python3 rust/kiln-core/tools/gen_tuner_golden.py
 ```
 
-If you change `kiln/pid.py`, regenerate the fixture and re-run the test to keep
-the port honest.
+If you change a `kiln/*.py` module, regenerate its fixture and re-run the tests
+to keep the port honest.
 
 ## Why this layering
 
