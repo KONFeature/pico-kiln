@@ -115,12 +115,14 @@ where
 
     // ---- inspection (sim / tests) ---------------------------------------
 
+    #[cfg(test)]
     pub fn state(&self) -> KilnState {
         self.state.state
     }
     pub fn watchdog(&self) -> &W {
         &self.wdt
     }
+    #[cfg(test)]
     pub fn ssr(&self) -> &O {
         &self.ssr_out
     }
@@ -162,7 +164,7 @@ where
 
         if self.state.state == KilnState::Idle && self.scheduler.can_consume(wall_s) {
             if let Some(item) = self.scheduler.consume(wall_s) {
-                if self.state.run_profile(item.profile.clone(), mono_s).is_ok() {
+                if self.state.run_profile(item.profile.clone(), mono_s) {
                     self.current_profile = Some(item.name);
                     self.pid.reset();
                 }
@@ -327,7 +329,7 @@ where
                 if matches!(self.state.state, KilnState::Running | KilnState::Tuning) {
                     return;
                 }
-                if self.state.run_profile(parsed, mono_s).is_ok() {
+                if self.state.run_profile(parsed, mono_s) {
                     self.current_profile = Some(profile);
                     self.pid.reset();
                 }
@@ -340,18 +342,14 @@ where
                 current_temp,
                 step_index,
             } => {
-                if self
-                    .state
-                    .resume_profile(
-                        parsed,
-                        elapsed_seconds,
-                        last_logged_temp,
-                        current_temp,
-                        step_index,
-                        mono_s,
-                    )
-                    .is_ok()
-                {
+                if self.state.resume_profile(
+                    parsed,
+                    elapsed_seconds,
+                    last_logged_temp,
+                    current_temp,
+                    step_index,
+                    mono_s,
+                ) {
                     self.current_profile = Some(profile);
                     self.pid.reset();
                 }
@@ -388,7 +386,7 @@ where
                     name: profile,
                     profile: parsed,
                 };
-                let _ = self.scheduler.schedule(item, start_time as f64, wall_s);
+                self.scheduler.schedule(item, start_time as f64, wall_s);
             }
             Command::CancelScheduled => {
                 self.scheduler.cancel();

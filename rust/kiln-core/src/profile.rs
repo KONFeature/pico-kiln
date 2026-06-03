@@ -60,7 +60,8 @@ impl Default for Step {
 
 impl Step {
     /// Controlled ramp to `target_temp` at `desired_rate` °C/h (defaults to
-    /// [`DEFAULT_RAMP_RATE`] when `None`), with an optional `min_rate`.
+    /// [`DEFAULT_RAMP_RATE`] when `None`), with an optional `min_rate`. Used by
+    /// `kiln-sim` and the replay/unit tests to build profile fixtures.
     pub fn ramp(target_temp: f64, desired_rate: Option<f64>, min_rate: Option<f64>) -> Self {
         Step {
             kind: StepKind::Ramp,
@@ -82,7 +83,8 @@ impl Step {
         }
     }
 
-    /// Natural cooling, optionally until `target_temp` is reached.
+    /// Natural cooling, optionally until `target_temp` is reached. Used by
+    /// `kiln-sim` and the replay/unit tests to build profile fixtures.
     pub fn cooling(target_temp: Option<f64>) -> Self {
         Step {
             kind: StepKind::Cooling,
@@ -150,7 +152,8 @@ impl Profile {
         self.n_steps
     }
 
-    /// Estimated total duration in seconds.
+    /// Estimated total duration in seconds. Used by the golden replay test
+    /// (`tests/replay_profile.rs`).
     pub fn duration(&self) -> f64 {
         self.duration
     }
@@ -193,14 +196,16 @@ impl Profile {
     }
 
     /// `elapsed_seconds >= duration` (fallback completion check; step
-    /// sequencing is the primary mechanism in the controller).
+    /// sequencing is the primary mechanism in the controller). Used by the
+    /// golden replay test (`tests/replay_profile.rs`).
     pub fn is_complete(&self, elapsed_seconds: f64) -> bool {
         elapsed_seconds >= self.duration
     }
 
     /// Progress percentage in `[.., 100]`. Mirrors
     /// `min(100.0, (elapsed / duration) * 100)`, returning `100.0` when the
-    /// duration is zero.
+    /// duration is zero. Used by the golden replay test
+    /// (`tests/replay_profile.rs`).
     pub fn progress(&self, elapsed_seconds: f64) -> f64 {
         if self.duration == 0.0 {
             return 100.0;

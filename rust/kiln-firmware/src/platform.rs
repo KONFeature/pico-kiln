@@ -271,12 +271,11 @@ pub fn build_kiln_io(
 }
 
 /// One or more SSRs driven as one logical output with staggered turn-on/off — a
-/// runtime-sized analogue of [`kiln_hal::MultiSsr`] (whose relay count is a const
-/// generic, which we cannot pick from runtime config). Same behaviour: on a
-/// rising/falling edge each relay switches once its `i * stagger_ms` delay has
-/// elapsed (inrush limiting), while [`force_off`](ConfiguredSsr::force_off) — the
-/// emergency path — drops every relay at once. Backs the host-tested
-/// `ssr_schedule` decisions exactly as `MultiSsr` does.
+/// runtime-sized multi-relay output (the relay count comes from runtime config,
+/// not a const generic). On a rising/falling edge each relay switches once its
+/// `i * stagger_ms` delay has elapsed (inrush limiting), while
+/// [`force_off`](ConfiguredSsr::force_off) — the emergency path — drops every
+/// relay at once. Backs the host-tested `ssr_schedule` decisions.
 pub struct ConfiguredSsr {
     pins: heapless::Vec<Output<'static>, MAX_SSR>,
     on: [bool; MAX_SSR],
@@ -1363,9 +1362,3 @@ pub async fn reboot_task(reboot: &'static RebootSignal) -> ! {
     cortex_m::peripheral::SCB::sys_reset()
 }
 
-/// Force-off helper used by the LCD/idle transitions if needed; kept with the
-/// other RP2350 specifics. (Reserved.)
-#[allow(dead_code)]
-fn _state_is_active(s: KilnState) -> bool {
-    matches!(s, KilnState::Running | KilnState::Tuning)
-}

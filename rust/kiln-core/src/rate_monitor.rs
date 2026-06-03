@@ -107,11 +107,13 @@ impl<const CAP: usize> TempHistory<CAP> {
     }
 
     /// Number of stored samples.
+    #[cfg(test)]
     pub fn size(&self) -> usize {
         self.len
     }
 
-    /// Whether the buffer is at capacity.
+    /// Whether the buffer is at capacity. Used by the golden replay test
+    /// (`tests/replay_rate.rs`).
     pub fn is_full(&self) -> bool {
         self.len >= CAP
     }

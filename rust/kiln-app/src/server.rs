@@ -1021,9 +1021,9 @@ mod web {
             self,
             mut chunk_writer: ChunkWriter<W>,
         ) -> Result<ChunksWritten, W::Error> {
-            // Streams `html::render_profiles_list` (the host-tested spec)
-            // fragment-for-fragment, so no full-page buffer is needed. Keep these
-            // byte fragments in lockstep with that function.
+            // Renders the `<ul>` profile list fragment-for-fragment (the same
+            // markup `server/html_cache.py:render_profiles_list` produced), so no
+            // full-page buffer is needed.
             chunk_writer.write_chunk(self.pre).await?;
             if self.names.is_empty() {
                 chunk_writer

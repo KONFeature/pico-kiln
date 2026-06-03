@@ -20,8 +20,6 @@ pub const MAX_UPLOAD_SIZE: u32 = 512_000;
 pub const MAX_JSON_BODY: usize = 4096;
 /// File streaming chunk size (`FILE_CHUNK_SIZE`).
 pub const FILE_CHUNK_SIZE: usize = 1024;
-/// Per-transfer timeout in seconds (`FILE_TRANSFER_TIMEOUT`).
-pub const FILE_TRANSFER_TIMEOUT: u64 = 60;
 
 /// `", ".join(VALID_TUNING_MODES)` — the order is SAFE, STANDARD, THOROUGH,
 /// HIGH_TEMP, embedded in the invalid-mode message.
@@ -199,7 +197,7 @@ pub fn json_get_str<'a>(body: &'a str, key: &str) -> Option<&'a str> {
 }
 
 /// Extract a numeric field's raw token, or `None` if absent/non-numeric. Parse
-/// with [`json_get_f64`]/[`json_get_u64`].
+/// with [`json_get_f64`].
 pub fn json_get_number<'a>(body: &'a str, key: &str) -> Option<&'a str> {
     let b = body.as_bytes();
     let start = value_start(body, key)?;
@@ -221,11 +219,6 @@ pub fn json_get_number<'a>(body: &'a str, key: &str) -> Option<&'a str> {
 
 /// Extract a numeric field as `f64`.
 pub fn json_get_f64(body: &str, key: &str) -> Option<f64> {
-    json_get_number(body, key)?.parse().ok()
-}
-
-/// Extract a numeric field as `u64` (e.g. a Unix-seconds `start_time`).
-pub fn json_get_u64(body: &str, key: &str) -> Option<u64> {
     json_get_number(body, key)?.parse().ok()
 }
 
@@ -319,7 +312,6 @@ mod tests {
     fn json_extracts_string_and_number() {
         let body = r#"{"profile": "cone6_glaze", "start_time": 1700000000}"#;
         assert_eq!(json_get_str(body, "profile"), Some("cone6_glaze"));
-        assert_eq!(json_get_u64(body, "start_time"), Some(1_700_000_000));
         assert_eq!(json_get_str(body, "missing"), None);
 
         let tuning = r#"{ "mode":"SAFE" , "max_temp" : 200.5 }"#;

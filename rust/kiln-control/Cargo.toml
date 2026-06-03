@@ -2,21 +2,15 @@
 name = "kiln-control"
 version = "0.1.0"
 edition = "2021"
-description = "Core 1 real-time safety loop for the pico-kiln controller — platform-generic, no embassy-rp. The synchronous Controller is host-testable; the async run() glue is behind the `embassy` feature."
+description = "Core 1 real-time safety loop for the pico-kiln controller — platform-generic, no embassy-rp. The synchronous Controller is host-testable; kiln-firmware supplies the async task that drives it."
 license = "PolyForm-Noncommercial-1.0.0"
 publish = false
 
 [dependencies]
 kiln-core = { path = "../kiln-core" }
 kiln-hal = { path = "../kiln-hal" }
-# Portable embassy crates only (NO embassy-rp). Optional + feature-gated so the
-# pure synchronous Controller — and its host unit tests — build and link without
-# an embassy-time driver. kiln-firmware enables `embassy` for the async run().
-embassy-time = { version = "0.5", optional = true }
-embassy-sync = { version = "0.8", optional = true }
 
 [features]
 default = []
 # Expose the host mock sensor/SSR/watchdog (used by kiln-sim).
 mock = []
-embassy = ["dep:embassy-time", "dep:embassy-sync"]

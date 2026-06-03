@@ -102,16 +102,13 @@ impl<const CAP: usize> TempFilter<CAP> {
     }
 
     /// Last successfully filtered temperature (°C). Meaningful once initialised.
+    #[cfg(test)]
     pub fn last_good(&self) -> f64 {
         self.last_good
     }
 
-    /// Whether a valid reading has ever been seen.
-    pub fn is_initialized(&self) -> bool {
-        self.initialized
-    }
-
     /// Current consecutive-fault count (reset to 0 by a good reading).
+    #[cfg(test)]
     pub fn fault_count(&self) -> u32 {
         self.fault_count
     }

@@ -84,11 +84,13 @@ impl ProfileName {
     }
 
     /// Length in bytes.
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Whether the name is empty.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -162,6 +164,7 @@ pub enum Command {
 impl Command {
     /// The integer message tag, identical to `comms.MessageType` (1..=10). Kept
     /// so logs/wire traces line up with the MicroPython reference.
+    #[cfg(test)]
     pub fn message_type(&self) -> u8 {
         match self {
             Command::RunProfile { .. } => 1,

@@ -15,16 +15,6 @@
 //! The locking in the original is unnecessary here — cross-core access is the
 //! firmware's job (e.g. an `embassy_sync` mutex/channel).
 
-/// Why a `schedule` call was rejected. Mirrors the two `raise` paths in
-/// `ScheduledProfileQueue.schedule`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScheduleError {
-    /// Something is already scheduled (only one item allowed at a time).
-    AlreadyScheduled,
-    /// `start_time` was not strictly in the future (`start_time <= now`).
-    StartTimeNotInFuture,
-}
-
 /// A pending scheduled item.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Scheduled<P> {
@@ -57,20 +47,21 @@ impl<P> ScheduledProfileQueue<P> {
     }
 
     /// Schedule `payload` to start at `start_time` (seconds), given the current
-    /// `now`. Rejects a second schedule and any non-future start time.
-    pub fn schedule(&mut self, payload: P, start_time: f64, now: f64) -> Result<(), ScheduleError> {
+    /// `now`. Returns `false` (rejecting) on a second schedule or any non-future
+    /// start time; the API layer validates and reports those to the client.
+    pub fn schedule(&mut self, payload: P, start_time: f64, now: f64) -> bool {
         if self.item.is_some() {
-            return Err(ScheduleError::AlreadyScheduled);
+            return false;
         }
         if start_time <= now {
-            return Err(ScheduleError::StartTimeNotInFuture);
+            return false;
         }
         self.item = Some(Scheduled {
             payload,
             start_time,
             scheduled_at: now,
         });
-        Ok(())
+        true
     }
 
     /// Whether a scheduled item exists and its start time has arrived.
@@ -110,6 +101,7 @@ impl<P> ScheduledProfileQueue<P> {
     }
 
     /// Whether anything is currently scheduled.
+    #[cfg(test)]
     pub fn is_scheduled(&self) -> bool {
         self.item.is_some()
     }
@@ -122,31 +114,22 @@ mod tests {
     #[test]
     fn schedule_rejects_non_future_start() {
         let mut q: ScheduledProfileQueue<&str> = ScheduledProfileQueue::new();
-        assert_eq!(
-            q.schedule("cone6.json", 100.0, 100.0),
-            Err(ScheduleError::StartTimeNotInFuture)
-        );
-        assert_eq!(
-            q.schedule("cone6.json", 90.0, 100.0),
-            Err(ScheduleError::StartTimeNotInFuture)
-        );
+        assert!(!q.schedule("cone6.json", 100.0, 100.0));
+        assert!(!q.schedule("cone6.json", 90.0, 100.0));
         assert!(!q.is_scheduled());
     }
 
     #[test]
     fn schedule_rejects_double_booking() {
         let mut q = ScheduledProfileQueue::new();
-        assert_eq!(q.schedule("a.json", 200.0, 100.0), Ok(()));
-        assert_eq!(
-            q.schedule("b.json", 300.0, 100.0),
-            Err(ScheduleError::AlreadyScheduled)
-        );
+        assert!(q.schedule("a.json", 200.0, 100.0));
+        assert!(!q.schedule("b.json", 300.0, 100.0));
     }
 
     #[test]
     fn can_consume_and_consume_respect_start_time() {
         let mut q = ScheduledProfileQueue::new();
-        q.schedule("cone6.json", 200.0, 100.0).unwrap();
+        assert!(q.schedule("cone6.json", 200.0, 100.0));
 
         assert!(!q.can_consume(199.999));
         assert_eq!(q.consume(199.999), None);
@@ -162,7 +145,7 @@ mod tests {
     fn cancel_reports_whether_something_was_removed() {
         let mut q = ScheduledProfileQueue::new();
         assert!(!q.cancel());
-        q.schedule("a.json", 200.0, 100.0).unwrap();
+        assert!(q.schedule("a.json", 200.0, 100.0));
         assert!(q.cancel());
         assert!(!q.is_scheduled());
     }
@@ -172,7 +155,7 @@ mod tests {
         let mut q = ScheduledProfileQueue::new();
         assert!(q.status(0.0).is_none());
 
-        q.schedule("cone6.json", 3700.0, 100.0).unwrap();
+        assert!(q.schedule("cone6.json", 3700.0, 100.0));
         let s = q.status(100.5).unwrap();
         assert_eq!(*s.payload, "cone6.json");
         assert_eq!(s.start_time, 3700.0);

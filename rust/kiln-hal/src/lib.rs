@@ -7,13 +7,10 @@
 //!
 //! - [`max31856`] — MAX31856 thermocouple amplifier (raw temperature + faults),
 //!   a faithful port of the Adafruit driver `kiln/hardware.py` relies on.
-//! - [`ssr`] — solid-state-relay output with an off-on-drop safety guard.
 #![cfg_attr(not(test), no_std)]
 
 pub mod max31856;
 pub mod platform;
-pub mod ssr;
 
 pub use max31856::{Faults, Max31856, ThermocoupleType};
-pub use platform::{NoopWatchdog, SsrOutput, TempSensor, Watchdog};
-pub use ssr::{MultiSsr, Ssr};
+pub use platform::{SsrOutput, TempSensor, Watchdog};

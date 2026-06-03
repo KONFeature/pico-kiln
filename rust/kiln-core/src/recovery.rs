@@ -15,9 +15,9 @@
 //!    safety check (a matching temperature means little time has passed).
 //!
 //! Per `kiln-core`'s rules the reference's human-readable `recovery_reason`
-//! string becomes a typed [`RecoveryReason`]; formatting is a web/log concern.
-//! The arithmetic mirrors the reference (validated by
-//! `tests/replay_recovery.rs`).
+//! string is dropped (it was console-diagnostic only); only `can_recover` and
+//! the echoed resume parameters cross into the controller. The arithmetic
+//! mirrors the reference (validated by `tests/replay_recovery.rs`).
 
 use crate::state::KilnState;
 
@@ -44,8 +44,9 @@ pub struct LastLogEntry {
     /// Last logged current temperature (°C) — CSV `current_temp`. The deviation
     /// check compares against this.
     pub last_temp: f64,
-    /// Last logged target temperature (°C) — CSV `target_temp`. Echoed through
-    /// for the resume; not part of the decision.
+    /// Last logged target temperature (°C) — CSV `target_temp`. Parsed for
+    /// schema validation (a malformed column rejects the row, matching the
+    /// reference's `float(values[3])`); not part of the decision.
     pub last_target_temp: f64,
     /// How far into the run the last entry was (seconds) — CSV `elapsed`.
     pub elapsed_seconds: f64,
@@ -53,32 +54,16 @@ pub struct LastLogEntry {
     pub step_index: Option<usize>,
 }
 
-/// Why recovery was or wasn't warranted — typed replacement for the reference's
-/// `RecoveryInfo.recovery_reason` string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecoveryReason {
-    /// State was `Running` and the temperature still matches: resume.
-    Ok,
-    /// Last logged state was not `Running` (Complete/Error/Idle/Tuning/…).
-    NotRunning,
-    /// Current temperature deviated more than `max_temp_delta` from last-logged.
-    TempDeviation,
-}
-
-/// The recovery decision: whether to resume, why, and the resume parameters
-/// (echoed from the entry) the controller needs to `resume_profile`.
+/// The recovery decision: whether to resume and the resume parameters (echoed
+/// from the entry) the controller needs to `resume_profile`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RecoveryDecision {
     /// Whether resuming is safe and warranted.
     pub can_recover: bool,
-    /// The typed reason, set on every path.
-    pub reason: RecoveryReason,
     /// Echoed `elapsed_seconds` to resume from.
     pub elapsed_seconds: f64,
     /// Echoed last logged temperature.
     pub last_temp: f64,
-    /// Echoed last logged target temperature.
-    pub last_target_temp: f64,
     /// Echoed last step index.
     pub step_index: Option<usize>,
 }
@@ -89,15 +74,13 @@ pub struct RecoveryDecision {
 /// Mirrors `server/recovery.py:check_recovery` from the point it has the parsed
 /// last-log entry (line 197 onward), branch-for-branch:
 ///
-/// 1. the resume parameters (`elapsed_seconds`, `last_temp`, `last_target_temp`,
-///    `step_index`) are echoed through first — they are populated on the
-///    `RecoveryInfo` before any condition is checked, so they are present even
-///    when recovery is refused;
-/// 2. `state != Running` → reject with [`RecoveryReason::NotRunning`];
-/// 3. `|current_temp − last_temp| > max_temp_delta` → reject with
-///    [`RecoveryReason::TempDeviation`]; the comparison is strict `>`, so an
-///    exact-delta match still recovers;
-/// 4. otherwise recover with [`RecoveryReason::Ok`].
+/// 1. the resume parameters (`elapsed_seconds`, `last_temp`, `step_index`) are
+///    echoed through first — they are populated before any condition is checked,
+///    so they are present even when recovery is refused;
+/// 2. `state != Running` → reject;
+/// 3. `|current_temp − last_temp| > max_temp_delta` → reject; the comparison is
+///    strict `>`, so an exact-delta match still recovers;
+/// 4. otherwise recover.
 pub fn check_recovery(
     entry: &LastLogEntry,
     current_temp: f64,
@@ -107,16 +90,13 @@ pub fn check_recovery(
     // reference fills RecoveryInfo (recovery.py:198-201) before the checks.
     let mut decision = RecoveryDecision {
         can_recover: false,
-        reason: RecoveryReason::NotRunning,
         elapsed_seconds: entry.elapsed_seconds,
         last_temp: entry.last_temp,
-        last_target_temp: entry.last_target_temp,
         step_index: entry.step_index,
     };
 
     // 1. Was the last logged state RUNNING? (recovery.py:218)
     if entry.state != KilnState::Running {
-        decision.reason = RecoveryReason::NotRunning;
         return decision;
     }
 
@@ -125,13 +105,11 @@ pub fn check_recovery(
     //    recent enough to resume. Strict `>` mirrors the reference (recovery.py:224-231).
     let temp_deviation = abs(current_temp - entry.last_temp);
     if temp_deviation > max_temp_delta {
-        decision.reason = RecoveryReason::TempDeviation;
         return decision;
     }
 
     // All checks passed — recovery is safe. (recovery.py:234-235)
     decision.can_recover = true;
-    decision.reason = RecoveryReason::Ok;
     decision
 }
 
@@ -154,11 +132,9 @@ mod tests {
         let e = running(300.0);
         let d = check_recovery(&e, 298.0, 15.0);
         assert!(d.can_recover);
-        assert_eq!(d.reason, RecoveryReason::Ok);
         // Resume parameters echoed straight through.
         assert_eq!(d.elapsed_seconds, 1800.0);
         assert_eq!(d.last_temp, 300.0);
-        assert_eq!(d.last_target_temp, 305.0);
         assert_eq!(d.step_index, Some(3));
     }
 
@@ -167,7 +143,6 @@ mod tests {
         // |285 - 300| == 15 == max_delta; strict `>` means this still recovers.
         let d = check_recovery(&running(300.0), 285.0, 15.0);
         assert!(d.can_recover, "exact-delta match must recover (strict >)");
-        assert_eq!(d.reason, RecoveryReason::Ok);
     }
 
     #[test]
@@ -175,11 +150,9 @@ mod tests {
         // current well below last
         let lo = check_recovery(&running(300.0), 250.0, 15.0);
         assert!(!lo.can_recover);
-        assert_eq!(lo.reason, RecoveryReason::TempDeviation);
         // current well above last (abs handles the negative argument)
         let hi = check_recovery(&running(300.0), 400.0, 15.0);
         assert!(!hi.can_recover);
-        assert_eq!(hi.reason, RecoveryReason::TempDeviation);
         // Parameters are still echoed on a refusal.
         assert_eq!(hi.elapsed_seconds, 1800.0);
         assert_eq!(hi.step_index, Some(3));
@@ -200,7 +173,6 @@ mod tests {
             // Temperature matches exactly, so only the state gates this.
             let d = check_recovery(&e, 300.0, 15.0);
             assert!(!d.can_recover, "{state:?} must not recover");
-            assert_eq!(d.reason, RecoveryReason::NotRunning, "{state:?}");
         }
     }
 
@@ -219,9 +191,6 @@ mod tests {
     fn zero_delta_requires_exact_temperature() {
         // With max_delta 0, any non-zero deviation is rejected; exact recovers.
         assert!(check_recovery(&running(300.0), 300.0, 0.0).can_recover);
-        assert_eq!(
-            check_recovery(&running(300.0), 300.1, 0.0).reason,
-            RecoveryReason::TempDeviation
-        );
+        assert!(!check_recovery(&running(300.0), 300.1, 0.0).can_recover);
     }
 }

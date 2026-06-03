@@ -42,18 +42,6 @@ pub enum KilnState {
     Error,
 }
 
-impl KilnState {
-    pub fn as_u8(self) -> u8 {
-        match self {
-            KilnState::Idle => 0,
-            KilnState::Running => 1,
-            KilnState::Tuning => 2,
-            KilnState::Complete => 3,
-            KilnState::Error => 4,
-        }
-    }
-}
-
 /// Typed fault reason (replaces the reference's error strings).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum KilnError {
@@ -100,13 +88,6 @@ impl Default for ControllerConfig {
     }
 }
 
-/// Why a (re)start was refused — mirrors the two `raise` paths.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StartError {
-    AlreadyRunning,
-    TuningInProgress,
-}
-
 /// The firing state machine. Construct with [`KilnController::new`], drive with
 /// [`KilnController::update`].
 #[derive(Debug, Clone)]
@@ -135,7 +116,6 @@ pub struct KilnController {
     error: Option<KilnError>,
 
     recovery_target_temp: Option<f64>,
-    recovery_start_time: Option<f64>,
 }
 
 impl KilnController {
@@ -160,7 +140,6 @@ impl KilnController {
             stall_fail_count: 0,
             error: None,
             recovery_target_temp: None,
-            recovery_start_time: None,
         }
     }
 
@@ -200,11 +179,9 @@ impl KilnController {
     // ---- lifecycle -------------------------------------------------------
 
     /// Start running `profile` at time `now`. Mirrors `run_profile`.
-    pub fn run_profile(&mut self, profile: Profile, now: f64) -> Result<(), StartError> {
-        match self.state {
-            KilnState::Running => return Err(StartError::AlreadyRunning),
-            KilnState::Tuning => return Err(StartError::TuningInProgress),
-            _ => {}
+    pub fn run_profile(&mut self, profile: Profile, now: f64) -> bool {
+        if matches!(self.state, KilnState::Running | KilnState::Tuning) {
+            return false;
         }
         self.profile = Some(profile);
         self.state = KilnState::Running;
@@ -219,7 +196,7 @@ impl KilnController {
         self.last_temp_recording = 0.0;
         self.last_stall_check = 0.0;
         self.stall_fail_count = 0;
-        Ok(())
+        true
     }
 
     /// Stop and return to idle. Mirrors `stop` -> `_reset_to_idle`.
@@ -239,7 +216,6 @@ impl KilnController {
         self.step_start_time = 0.0;
         self.step_start_temp = 0.0;
         self.recovery_target_temp = None;
-        self.recovery_start_time = None;
         self.temp_history.clear();
         self.last_temp_recording = 0.0;
         self.last_stall_check = 0.0;
@@ -337,7 +313,6 @@ impl KilnController {
         if let Some(rec_target) = self.recovery_target_temp {
             if self.current_temp >= rec_target - 1.0 {
                 self.recovery_target_temp = None;
-                self.recovery_start_time = None;
                 self.temp_history.clear();
                 self.last_temp_recording = self.elapsed_offset;
                 self.last_stall_check = self.elapsed_offset;
@@ -466,11 +441,9 @@ impl KilnController {
         current_temp: Option<f64>,
         step_index: Option<usize>,
         now: f64,
-    ) -> Result<(), StartError> {
-        match self.state {
-            KilnState::Running => return Err(StartError::AlreadyRunning),
-            KilnState::Tuning => return Err(StartError::TuningInProgress),
-            _ => {}
+    ) -> bool {
+        if matches!(self.state, KilnState::Running | KilnState::Tuning) {
+            return false;
         }
 
         self.profile = Some(profile);
@@ -517,12 +490,11 @@ impl KilnController {
             let temp_loss = llt - cur;
             if temp_loss > TEMP_LOSS_THRESHOLD && !is_cooling {
                 self.recovery_target_temp = Some(llt);
-                self.recovery_start_time = Some(now);
-                return Ok(());
+                return true;
             }
             // temp_loss during cooling is expected — fall through, no recovery.
         }
-        Ok(())
+        true
     }
 
     /// Estimate which step `elapsed_seconds` falls in. Mirrors
@@ -604,8 +576,8 @@ mod tests {
     fn cannot_start_while_running() {
         let mut c = KilnController::new(cfg());
         let p = Profile::new(&[Step::hold(100.0, 10.0)]).unwrap();
-        c.run_profile(p.clone(), 0.0).unwrap();
-        assert_eq!(c.run_profile(p, 1.0), Err(StartError::AlreadyRunning));
+        assert!(c.run_profile(p.clone(), 0.0));
+        assert!(!c.run_profile(p, 1.0));
     }
 
     #[test]
@@ -614,7 +586,7 @@ mod tests {
         // current_temp starts at 0 -> step_start_temp = 0 at run.
         c.current_temp = 100.0;
         let p = Profile::new(&[Step::hold(100.0, 30.0)]).unwrap();
-        c.run_profile(p, 0.0).unwrap();
+        assert!(c.run_profile(p, 0.0));
 
         // t=0 first call: elapsed 0, hold target 100.
         let t0 = c.update(100.0, 0.0);
@@ -633,7 +605,7 @@ mod tests {
         let mut c = KilnController::new(cfg());
         c.current_temp = 50.0;
         let p = Profile::new(&[Step::hold(50.0, 1000.0)]).unwrap();
-        c.run_profile(p, 100.0).unwrap();
+        assert!(c.run_profile(p, 100.0));
         c.update(50.0, 100.0); // first call: elapsed 0, sets last_update_time
         c.update(50.0, 100.5); // delta 0.5 -> elapsed 0.5
         c.update(50.0, 5000.0); // delta huge -> clamped to 1.0 -> elapsed 1.5

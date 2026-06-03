@@ -10,10 +10,22 @@
 //!   * state_recovery_golden.csv — resume_profile + recovery hold
 
 use kiln_core::profile::{Profile, Step, StepKind};
-use kiln_core::state::{ControllerConfig, KilnController};
+use kiln_core::state::{ControllerConfig, KilnController, KilnState};
 use std::path::PathBuf;
 
 const TOL: f64 = 1e-6;
+
+/// Local re-encoding of the former `KilnState::as_u8` — kept only as golden
+/// comparison scaffolding; production code never encoded the state to a byte.
+fn state_u8(s: KilnState) -> u8 {
+    match s {
+        KilnState::Idle => 0,
+        KilnState::Running => 1,
+        KilnState::Tuning => 2,
+        KilnState::Complete => 3,
+        KilnState::Error => 4,
+    }
+}
 
 fn fixture(name: &str) -> PathBuf {
     [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", name]
@@ -152,7 +164,7 @@ fn run_fixture(name: &str) -> usize {
             run_now,
         } => {
             c.current_temp = pre_run_temp;
-            c.run_profile(profile, run_now).expect("run_profile");
+            assert!(c.run_profile(profile, run_now), "run_profile");
         }
         Op::Resume {
             elapsed,
@@ -161,8 +173,10 @@ fn run_fixture(name: &str) -> usize {
             step_index,
             now,
         } => {
-            c.resume_profile(profile, elapsed, last_logged, current, step_index, now)
-                .expect("resume_profile");
+            assert!(
+                c.resume_profile(profile, elapsed, last_logged, current, step_index, now),
+                "resume_profile"
+            );
         }
     }
 
@@ -181,10 +195,10 @@ fn run_fixture(name: &str) -> usize {
         let out = c.update(temp, now);
 
         assert_eq!(
-            c.state.as_u8(),
+            state_u8(c.state),
             exp_state,
             "{name} row {idx} state: rust={} ref={exp_state}",
-            c.state.as_u8()
+            state_u8(c.state)
         );
         close(out, exp_target, idx, "target", name);
         assert_eq!(

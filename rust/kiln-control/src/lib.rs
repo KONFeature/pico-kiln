@@ -9,10 +9,10 @@
 //!   traits (sensor, SSR, watchdog), takes time injected, and pulls in no
 //!   `embassy` dependency — so the exact shipping logic runs under `cargo test`
 //!   and in `kiln-sim` against a thermal model.
-//! - [`run`] (behind the `embassy` feature) is the thin async task that wraps the
-//!   `Controller` with `embassy-time` cadence and `embassy-sync` channel I/O. It
-//!   names no concrete chip; `kiln-firmware` injects the drivers and channel
-//!   endpoints.
+//!
+//! The async task that drives the `Controller` (embassy-time cadence + channel
+//! I/O) lives in `kiln-firmware`, which reimplements the loop to weave in the
+//! cross-core flash-pause handshake.
 #![cfg_attr(not(test), no_std)]
 
 pub mod controller;
@@ -21,14 +21,8 @@ pub mod params;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
 
-#[cfg(feature = "embassy")]
-pub mod run;
-
 pub use controller::{Controller, IterationOutcome, ScheduledItem};
 pub use params::ControlParams;
-
-#[cfg(feature = "embassy")]
-pub use run::run;
 
 #[cfg(test)]
 mod tests {

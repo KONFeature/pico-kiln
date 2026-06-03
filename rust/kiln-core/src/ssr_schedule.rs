@@ -107,16 +107,19 @@ impl SsrSchedule {
     }
 
     /// The requested duty (may differ from what's applied until the next cycle).
+    /// Used by the golden replay test (`tests/replay_ssr_schedule.rs`).
     pub fn duty_cycle(&self) -> f64 {
         self.duty_cycle
     }
 
     /// The duty currently being applied (latched at the last cycle boundary).
+    /// Used by the golden replay test (`tests/replay_ssr_schedule.rs`).
     pub fn duty_cycle_locked(&self) -> f64 {
         self.duty_cycle_locked
     }
 
     /// Configured cycle period in milliseconds (`int(cycle_time * 1000)`).
+    #[cfg(test)]
     pub fn cycle_time_ms(&self) -> u32 {
         self.cycle_time_ms
     }

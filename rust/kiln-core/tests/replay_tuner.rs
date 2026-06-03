@@ -7,10 +7,20 @@
 //!   * tuner_standard_golden.csv — plateau x3 + timeout x3 -> COMPLETE
 //!   * tuner_error_golden.csv    — over-max-temp -> ERROR
 
-use kiln_core::tuner::{TuningMode, ZieglerNicholsTuner};
+use kiln_core::tuner::{TuningMode, TuningStage, ZieglerNicholsTuner};
 use std::path::PathBuf;
 
 const TOL: f64 = 1e-6;
+
+/// Local re-encoding of the former `TuningStage::as_u8` — golden comparison
+/// scaffolding only; production code never encoded the stage to a byte.
+fn stage_u8(s: TuningStage) -> u8 {
+    match s {
+        TuningStage::Running => 0,
+        TuningStage::Complete => 1,
+        TuningStage::Error => 2,
+    }
+}
 
 fn fixture(name: &str) -> PathBuf {
     [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", name]
@@ -84,10 +94,10 @@ fn run_fixture(name: &str) -> usize {
             "{name} row {idx} continue: rust={cont} ref={exp_cont}"
         );
         assert_eq!(
-            t.stage().as_u8(),
+            stage_u8(t.stage()),
             exp_stage,
             "{name} row {idx} stage: rust={} ref={exp_stage}",
-            t.stage().as_u8()
+            stage_u8(t.stage())
         );
         assert_eq!(
             t.current_step_index(),

@@ -181,19 +181,16 @@ impl Pid {
         }
     }
 
-    /// Diagnostics from the most recent [`update`](Self::update).
+    /// Diagnostics from the most recent [`update`](Self::update). Used by the
+    /// golden replay test (`tests/replay_pid.rs`).
     pub fn stats(&self) -> PidStats {
         self.stats
     }
 
     /// Current integral accumulator (for inspection/tests).
+    #[cfg(test)]
     pub fn integral(&self) -> f64 {
         self.integral
-    }
-
-    /// Output limits `(min, max)`.
-    pub fn limits(&self) -> (f64, f64) {
-        (self.out_min, self.out_max)
     }
 }
 

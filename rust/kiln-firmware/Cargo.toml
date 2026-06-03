@@ -14,7 +14,7 @@ publish = false
 [dependencies]
 kiln-core = { path = "../kiln-core" }
 kiln-hal = { path = "../kiln-hal" }
-kiln-control = { path = "../kiln-control", features = ["embassy"] }
+kiln-control = { path = "../kiln-control" }
 kiln-app = { path = "../kiln-app", features = ["embassy"] }
 
 # embassy-executor 0.10 renamed the arch selector from `arch-cortex-m` to

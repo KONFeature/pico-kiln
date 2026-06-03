@@ -5,11 +5,8 @@
 //! compiled-in `index.html` and a handler splices the freshly-rendered list in at
 //! request time (the profile set is tiny and rarely changes).
 //!
-//! Pure + host-tested: no allocation, writes into any [`core::fmt::Write`]. The
-//! embassy handler in `server.rs` only collects the profile names and streams
-//! prefix + [`render_profiles_list`] + suffix.
-
-use core::fmt::{self, Write};
+//! Pure + host-tested. The embassy handler in `server.rs` collects the profile
+//! names and streams prefix + an inline-rendered list + suffix.
 
 /// The placeholder `index.html` carries where the server-rendered profile list
 /// goes (`static/index.html`, the `<h2>Profiles</h2>` section).
@@ -26,25 +23,6 @@ pub fn profile_display_name(filename: &str) -> Option<&str> {
         .filter(|stem| !stem.is_empty())
 }
 
-/// Render the `<ul>` profile list exactly as `render_profiles_list`
-/// (`html_cache.py:78-86`): empty → a single "No profiles found" item, else one
-/// `<li>{name} <button onclick="startProfile('{name}')">Start</button></li>` per
-/// name. `names` are display stems (see [`profile_display_name`]).
-pub fn render_profiles_list<W: Write, S: AsRef<str>>(w: &mut W, names: &[S]) -> fmt::Result {
-    if names.is_empty() {
-        return w.write_str("<ul><li>No profiles found</li></ul>");
-    }
-    w.write_str("<ul>")?;
-    for name in names {
-        let name = name.as_ref();
-        write!(
-            w,
-            "<li>{name} <button onclick=\"startProfile('{name}')\">Start</button></li>"
-        )?;
-    }
-    w.write_str("</ul>")
-}
-
 /// Split a template at [`PROFILES_PLACEHOLDER`] into `(prefix, suffix)` so a
 /// handler can stream prefix + rendered list + suffix without buffering the whole
 /// page. `None` if the placeholder is absent (caller serves the bytes verbatim).
@@ -59,29 +37,6 @@ pub fn split_profiles_placeholder(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn render(names: &[&str]) -> String {
-        let mut s = String::new();
-        render_profiles_list(&mut s, names).unwrap();
-        s
-    }
-
-    #[test]
-    fn empty_list_matches_reference() {
-        assert_eq!(render(&[]), "<ul><li>No profiles found</li></ul>");
-    }
-
-    #[test]
-    fn list_matches_reference_format() {
-        // Verbatim `html_cache.render_profiles_list` output for two profiles.
-        assert_eq!(
-            render(&["biscuit_faience", "test_ramp"]),
-            "<ul>\
-<li>biscuit_faience <button onclick=\"startProfile('biscuit_faience')\">Start</button></li>\
-<li>test_ramp <button onclick=\"startProfile('test_ramp')\">Start</button></li>\
-</ul>"
-        );
-    }
 
     #[test]
     fn display_name_strips_json_only() {

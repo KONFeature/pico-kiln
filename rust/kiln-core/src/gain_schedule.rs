@@ -89,21 +89,19 @@ impl GainSchedule {
     }
 
     /// Whether scheduling is active (`h > 0`).
+    #[cfg(test)]
     pub fn enabled(&self) -> bool {
         self.h > 0.0
     }
 
-    /// The base (unscaled) gains.
-    pub fn base(&self) -> Gains {
-        self.base
-    }
-
     /// The gains most recently emitted (what the PID is currently using).
+    #[cfg(test)]
     pub fn current(&self) -> Gains {
         self.current
     }
 
     /// The scale factor `g(T) = 1 + h·(T − T_ambient)` at `current_temp`.
+    #[cfg(test)]
     pub fn gain_scale(&self, current_temp: f64) -> f64 {
         1.0 + self.h * (current_temp - self.t_ambient)
     }

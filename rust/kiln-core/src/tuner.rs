@@ -25,15 +25,6 @@ pub enum TuningStage {
     Error,
 }
 
-impl TuningStage {
-    pub fn as_u8(self) -> u8 {
-        match self {
-            TuningStage::Running => 0,
-            TuningStage::Complete => 1,
-            TuningStage::Error => 2,
-        }
-    }
-}
 
 const PLATEAU_WINDOW: usize = 5;
 const PLATEAU_CHECK_INTERVAL: f64 = 60.0;

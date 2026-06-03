@@ -25,6 +25,7 @@ impl MockSensor {
     pub fn set_temp(&mut self, raw_temp: f32) {
         self.raw_temp = raw_temp;
     }
+    #[cfg(test)]
     pub fn set_fault(&mut self, fault: bool) {
         self.fault = fault;
     }
@@ -40,12 +41,12 @@ impl TempSensor for MockSensor {
     }
 }
 
-/// An SSR that records its commanded state and how often it was forced off.
+/// An SSR that records how often it was forced off (the emergency path a test
+/// asserts on). Commanded duty is measured by the sim via `ssr_subtick`'s
+/// return value, not recorded here.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MockSsr {
-    pub on: bool,
     pub force_off_count: u32,
-    pub apply_count: u32,
 }
 
 impl MockSsr {
@@ -56,13 +57,10 @@ impl MockSsr {
 
 impl SsrOutput for MockSsr {
     type Error = Infallible;
-    fn apply(&mut self, on: bool, _now_ms: u64) -> Result<(), Infallible> {
-        self.on = on;
-        self.apply_count += 1;
+    fn apply(&mut self, _on: bool, _now_ms: u64) -> Result<(), Infallible> {
         Ok(())
     }
     fn force_off(&mut self) -> Result<(), Infallible> {
-        self.on = false;
         self.force_off_count += 1;
         Ok(())
     }

@@ -52,10 +52,6 @@ impl<const N: usize> FixedStr<N> {
     pub fn as_str(&self) -> &str {
         core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
 }
 
 impl<const N: usize> Default for FixedStr<N> {
@@ -105,14 +101,6 @@ impl PinList {
     /// The configured pins, in order.
     pub fn as_slice(&self) -> &[u8] {
         &self.pins[..self.len]
-    }
-
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
     }
 }
 

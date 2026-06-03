@@ -30,8 +30,8 @@ pub use protocol::{
     Command, ProfileName, ProtocolError, ScheduledSnapshot, Status, TuningSnapshot,
 };
 pub use rate_monitor::TempHistory;
-pub use recovery::{check_recovery, LastLogEntry, RecoveryDecision, RecoveryReason};
-pub use scheduler::{ScheduleError, ScheduledProfileQueue};
+pub use recovery::{check_recovery, LastLogEntry, RecoveryDecision};
+pub use scheduler::ScheduledProfileQueue;
 pub use ssr_schedule::SsrSchedule;
 pub use state::{ControllerConfig, KilnController, KilnError, KilnState};
 pub use temp_filter::{TempError, TempFilter};

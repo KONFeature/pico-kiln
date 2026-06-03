@@ -11,8 +11,8 @@
 //! - [`TempSensor`] — the thermocouple read + fault check (the SPI half of
 //!   `TemperatureSensor.read()`); [`crate::Max31856`] implements it.
 //! - [`SsrOutput`] — the relay actuation the duty schedule drives (the
-//!   `pin.value()` half of `SSRController`); [`crate::Ssr`] and
-//!   [`crate::MultiSsr`] implement it.
+//!   `pin.value()` half of `SSRController`); `kiln-firmware`'s `ConfiguredSsr`
+//!   implements it.
 
 /// A hardware watchdog: armed once with a timeout, then fed to prevent a reset.
 ///
@@ -26,16 +26,6 @@ pub trait Watchdog {
     fn start(&mut self, timeout_ms: u32);
     /// Reset the countdown. Called only on a successful control iteration.
     fn feed(&mut self);
-}
-
-/// A watchdog that does nothing — for `ENABLE_WATCHDOG = false` (the reference
-/// default) and the host simulation, where no hardware reset exists.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoopWatchdog;
-
-impl Watchdog for NoopWatchdog {
-    fn start(&mut self, _timeout_ms: u32) {}
-    fn feed(&mut self) {}
 }
 
 /// A thermocouple amplifier: read the latest temperature and check for faults.
@@ -87,14 +77,6 @@ mod tests {
         fn feed(&mut self) {
             self.feeds += 1;
         }
-    }
-
-    #[test]
-    fn noop_watchdog_is_a_watchdog_and_does_nothing() {
-        let mut w = NoopWatchdog;
-        w.start(8000);
-        w.feed();
-        w.feed();
     }
 
     #[test]
