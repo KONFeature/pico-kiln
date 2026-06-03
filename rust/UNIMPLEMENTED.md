@@ -7,8 +7,9 @@
 > **Update 2026-06-03 — Group B (flash storage) is DONE.** `FlashStorage` is now
 > a real littlefs2 mount over the reserved top 1.5 MiB of flash (config +
 > profiles + logs), cross-compiles clean for `thumbv8m`, and is clippy-clean. The
-> ARM toolchain blocker is resolved (see Storage plan). Groups **A, C, D, E**
-> remain.
+> ARM toolchain blocker is resolved (see Storage plan). **Group C (safety
+> register pokes) is also DONE** (`raw_ssr_off` / `raw_watchdog_feed`,
+> disassembly-verified RAM-resident). Groups **A, D, E** remain.
 
 ## TL;DR
 
@@ -16,8 +17,8 @@ All missing code lives in **one crate: `kiln-firmware`** (`src/platform.rs` +
 `src/main.rs`). The logic crates (`kiln-core`, `kiln-control`, `kiln-app`,
 `kiln-hal`) are complete and host-tested — `grep` for `unimplemented!`/`todo!`
 finds nothing in them. What remains is **device-I/O wiring**, not business logic:
-drivers (SPI/GPIO/cyw43/LCD), the network/NTP bring-up, and two RAM-resident
-safety pokes. (The flash filesystem — Group B — is now implemented.)
+the sensor/SSR builder, cyw43/WiFi/NTP bring-up, and the LCD. (Flash storage —
+Group B — and the safety pokes — Group C — are now implemented.)
 
 The `kiln-app` web/CSV/recovery/config consumers are all written against the
 `Storage` / `Clock` / `Display` traits (`kiln-app/src/server.rs:54-117`), so each
@@ -51,14 +52,20 @@ littlefs keeps no mtime, so `for_each`'s `modified` is derived from the
 timestamp the logger embeds in each filename (`filename_time_key`), preserving
 recovery's "most recent log" ordering and the web file-list dates.
 
-## Group C — safety-critical stubs that compile but do nothing 🔴
+## Group C — safety register pokes ✅ DONE
 
-| # | Symbol | Location | Problem |
+| # | Symbol | Location | Implementation |
 |---|---|---|---|
-| C1 | `raw_ssr_off()` | `platform.rs:90` | **Empty body.** Called from the panic handler (`main.rs:324`) to de-energise the SSR on a crash. Currently does NOT drive the GPIO low → the relay can stay ON through a panic. Needs a `SIO.gpio_out_clr` register poke. |
-| C2 | `raw_watchdog_feed()` | `platform.rs:80` | Reads a dummy volatile; does NOT poke `WATCHDOG.load`. RAM-resident feed used during the flash-park (`flash_handshake.rs`). Without it the watchdog trips mid-flash-write. |
+| C1 | `raw_ssr_off()` | `platform.rs:99` | Drives SSR GPIO 15 low: `str 1<<15 → SIO gpio_out(0).value_clr` (`0xd000_0020`) + `gpio_oe(0).value_set` (`0xd000_0038`) so it actively drives low even if OE glitched. |
+| C2 | `raw_watchdog_feed()` | `platform.rs:84` | `str 0x00ff_ffff → WATCHDOG.load` (`0x400d_8004`) — max 24-bit reload so the flash-park can't trip a reset; harmless when the watchdog is disabled. |
 
-These are the de-energise-on-failure path — highest priority despite being small.
+Both addresses come from `rp_pac` `const fn as_ptr()` (compile-time constants);
+the `write_volatile`s inline, so each function is a self-contained register poke.
+**Verified by disassembly of the release ELF:** both sit at RAM VMAs
+(`0x2000_0000` / `0x2000_0014`) in `.data.ram_func`, contain **no `bl`/`blx`**
+(no flash calls), and emit exactly the stores above — so they are safe to run
+with XIP down (C2 during the flash-park, C1 from the panic handler). Needed a new
+`rp-pac` direct dep: embassy-rp's `pac` re-export is `pub(crate)`.
 
 ## Group D — stub task bodies (loop, but do no work)
 
@@ -111,9 +118,8 @@ at it via `CC_thumbv8m_main_none_eabihf` if it is not first on PATH. See
 
 ## Priority order (remaining)
 
-1. **C1 + C2** — safety pokes; small, no deps.
-2. **A1 `build_kiln_io`** — nothing reads temperature without it (drivers already done in `kiln-hal`).
-3. **A2 `init_network`** + **D2 `ntp_task`** + **D1 `wifi_monitor_task`** — network reachability + timestamps.
-4. **E LCD** — optional, last.
+1. **A1 `build_kiln_io`** — nothing reads temperature without it (drivers already done in `kiln-hal`).
+2. **A2 `init_network`** + **D2 `ntp_task`** + **D1 `wifi_monitor_task`** — network reachability + timestamps.
+3. **E LCD** — optional, last.
 
-~~B (flash storage)~~ — ✅ done (this pass).
+~~B (flash storage)~~ — ✅ done. ~~C1 + C2 (safety pokes)~~ — ✅ done.

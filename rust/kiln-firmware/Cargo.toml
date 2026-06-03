@@ -35,6 +35,11 @@ picoserve = { version = "0.18", features = ["embassy"] }
 
 embedded-hal = "1.0"
 embedded-hal-bus = "0.3"
+# Direct register access for the two RAM-resident safety pokes (raw_ssr_off /
+# raw_watchdog_feed): embassy-rp's `pac` re-export is pub(crate), so depend on
+# rp-pac directly. Pinned to the same 7.x + `rp235x` feature embassy-rp uses, so
+# cargo unifies it to a single pac instance (no second copy).
+rp-pac = { version = "7", features = ["rp235x"] }
 static_cell = "2"
 heapless = "0.8"
 cortex-m = "0.7"

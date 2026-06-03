@@ -74,21 +74,43 @@ impl kiln_hal::platform::Watchdog for MaybeWatchdog {
 
 /// RAM-resident raw watchdog feed for [`flash_handshake::park_until_idle`] — it
 /// runs while flash (XIP) is disabled, so it cannot call the flash-resident
-/// `embassy_rp` feed path. DEVICE: writes the watchdog LOAD register directly.
+/// `embassy_rp` feed path.
+///
+/// Reloads the watchdog down-counter to the maximum LOAD so the brief flash-park
+/// spin cannot trip a reset before Core 0 finishes the flash write; the normal
+/// per-tick driver feed (with the configured timeout) takes back over once the
+/// loop resumes. `pac::…as_ptr()` is a `const fn` (a compile-time address) and
+/// the `write_volatile` inlines, so this touches only the register, never flash.
+/// Harmless when `ENABLE_WATCHDOG=false` (the counter is simply not armed).
 #[link_section = ".data.ram_func"]
 #[inline(never)]
 pub fn raw_watchdog_feed() {
-    // DEVICE: `embassy_rp::pac::WATCHDOG.load().write_value(...)` with the same
-    // reload the driver uses; a register poke, no flash access.
-    unsafe { core::ptr::read_volatile(&0u32) };
+    const WATCHDOG_LOAD_MASK: u32 = 0x00ff_ffff; // LOAD is a 24-bit field
+    let load = rp_pac::WATCHDOG.load().as_ptr() as *mut u32;
+    unsafe { core::ptr::write_volatile(load, WATCHDOG_LOAD_MASK) };
 }
 
-/// RAM-safe emergency SSR de-energise for the panic handler. DEVICE: drives the
-/// SSR GPIO low via the SIO register, independent of any driver state.
+/// The SSR GPIO on the Pico 2 W. MUST match `Core1Periphs.ssr` (`main.rs`, the
+/// `p.PIN_15` wiring) and the `SSR_PIN` config. Used only by [`raw_ssr_off`],
+/// which cannot read the runtime config from its RAM-resident context.
+const SSR_PIN: u32 = 15;
+
+/// RAM-safe emergency SSR de-energise for the panic handler — drives the SSR GPIO
+/// low independent of any driver state.
+///
+/// Clears the output bit (de-energise) and asserts the output-enable so the pin
+/// actively drives low even if `OE` was glitched. GPIO 15 lives in bank 0
+/// (GPIO 0..31), so `gpio_out(0)` / `gpio_oe(0)`. Const-address register pokes
+/// only — no flash access, safe to run with XIP down.
 #[link_section = ".data.ram_func"]
 #[inline(never)]
 pub fn raw_ssr_off() {
-    // DEVICE: `embassy_rp::pac::SIO.gpio_out_clr(0).write(|w| w.set_gpio_out_clr(1 << SSR_PIN))`.
+    let out_clr = rp_pac::SIO.gpio_out(0).value_clr().as_ptr();
+    let oe_set = rp_pac::SIO.gpio_oe(0).value_set().as_ptr();
+    unsafe {
+        core::ptr::write_volatile(out_clr, 1u32 << SSR_PIN);
+        core::ptr::write_volatile(oe_set, 1u32 << SSR_PIN);
+    }
 }
 
 // === Config (config.json → KilnConfig) ======================================
