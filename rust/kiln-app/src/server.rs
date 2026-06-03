@@ -30,8 +30,13 @@ use crate::api::{self, Directory};
 use crate::config::KilnConfig;
 use crate::{config, csv, html, json, profile_json};
 
-/// Command-queue depth (Core 0 → Core 1) — the reference command queue holds 10.
-pub const COMMAND_DEPTH: usize = 10;
+/// Command-queue depth (Core 0 → Core 1). The reference held 10, but there each
+/// slot was a tiny dict reference; here a profile-bearing `Command` (`RunProfile`
+/// / `ResumeProfile` / `ScheduleProfile`) embeds a full `Profile` (~2.3 KB), so
+/// every slot costs that much *static* RAM. Commands are user actions drained one
+/// per control tick (≈1 Hz), so a shallow queue is ample — 3 keeps a small burst
+/// margin while cutting the channel from ~24.5 KB to ~7.4 KB.
+pub const COMMAND_DEPTH: usize = 3;
 /// Latest-status broadcast consumers: web pollers + CSV logger + LCD + recovery.
 pub const STATUS_CONSUMERS: usize = 4;
 /// picoserve worker pool size — the reference's `MAX_CONCURRENT_CONNECTIONS`.
@@ -322,6 +327,15 @@ mod web {
     const MAX_PROFILES: usize = 32;
     /// Max length of a profile/log filename held on the stack.
     const NAME_CAP: usize = 64;
+    /// Packed-arena byte cap for the streamed `/api/files` listing, and the max
+    /// entries it holds. Sized ≈ the old single-`String` build so peak RAM is
+    /// unchanged, but the body is streamed and always closes as valid JSON.
+    /// Entries past either bound are dropped at an object boundary.
+    const FILE_LIST_ARENA: usize = 2048;
+    const FILE_LIST_MAX: usize = 48;
+    /// Upper bound on one rendered `{"name":..,"size":..,"modified":..}` object:
+    /// a `NAME_CAP` (64) name + two 20-digit `u64`s + ~32 bytes of framing.
+    const FILE_ENTRY_CAP: usize = 160;
 
     /// Router-construction props implementing picoserve 0.18's [`AppBuilder`].
     /// Using the trait (rather than a bare module-level `type Foo = impl ...`)
@@ -656,28 +670,39 @@ mod web {
             Ok(d) => d,
             Err(resp) => return resp,
         };
-        let mut body = heapless::String::<2048>::new();
-        let _ = write!(
-            body,
-            "{{\"success\":true,\"directory\":\"{}\",\"files\":[",
-            directory.as_str()
-        );
-        let mut count = 0usize;
+        // Render each entry's JSON object once into a packed byte arena, then
+        // stream it back chunked (see `FileList`). Peak RAM stays flat and — unlike
+        // the old single 2 KB `String` build, which silently truncated to invalid
+        // JSON past ~30 files — the emitted body is always well-formed.
+        let mut body = FileList {
+            directory,
+            arena: heapless::Vec::new(),
+            lens: heapless::Vec::new(),
+        };
         state
             .storage
             .for_each(directory, &mut |name, size, modified| {
-                if count > 0 {
-                    let _ = body.push(',');
+                if body.lens.len() >= body.lens.capacity() {
+                    return; // entry cap reached; emit a valid (shorter) list
                 }
-                let _ = write!(
-                    body,
+                let mut rec = heapless::String::<FILE_ENTRY_CAP>::new();
+                // A name longer than fits (or huge numbers) overflows `rec`; skip
+                // that entry rather than emit a half-written, malformed object.
+                if write!(
+                    rec,
                     "{{\"name\":\"{}\",\"size\":{},\"modified\":{}}}",
                     name, size, modified
-                );
-                count += 1;
+                )
+                .is_err()
+                {
+                    return;
+                }
+                if body.arena.len() + rec.len() <= body.arena.capacity() {
+                    let _ = body.arena.extend_from_slice(rec.as_bytes());
+                    let _ = body.lens.push(rec.len() as u16);
+                }
             });
-        let _ = write!(body, "],\"count\":{}}}", count);
-        ApiResponse::json(StatusCode::OK, body)
+        ApiResponse::FileList(body)
     }
 
     async fn file_get(
@@ -893,6 +918,7 @@ mod web {
         },
         Download(Download),
         Index(IndexBody),
+        FileList(FileList),
     }
 
     impl ApiResponse {
@@ -999,7 +1025,64 @@ mod web {
                         .write_to(connection, response_writer)
                         .await
                 }
+                ApiResponse::FileList(body) => {
+                    ChunkedResponse::new(body)
+                        .into_response()
+                        .with_headers(CORS)
+                        .write_to(connection, response_writer)
+                        .await
+                }
             }
+        }
+    }
+
+    /// The `GET /api/files/{dir}` listing, rendered once into a packed arena then
+    /// streamed as a chunked response. `arena` holds the entry JSON objects
+    /// back-to-back; `lens` records each object's byte length so [`write_chunks`]
+    /// can slice and comma-join them without scanning for a separator. Bounded by
+    /// [`FILE_LIST_ARENA`] / [`FILE_LIST_MAX`]; entries past either bound are
+    /// dropped at an object boundary, so the emitted JSON is always well-formed.
+    ///
+    /// [`write_chunks`]: Chunks::write_chunks
+    pub(super) struct FileList {
+        directory: Directory,
+        arena: heapless::Vec<u8, FILE_LIST_ARENA>,
+        lens: heapless::Vec<u16, FILE_LIST_MAX>,
+    }
+
+    impl Chunks for FileList {
+        fn content_type(&self) -> &'static str {
+            "application/json"
+        }
+
+        async fn write_chunks<W: picoserve::io::Write>(
+            self,
+            mut chunk_writer: ChunkWriter<W>,
+        ) -> Result<ChunksWritten, W::Error> {
+            let mut prefix = heapless::String::<96>::new();
+            let _ = write!(
+                prefix,
+                "{{\"success\":true,\"directory\":\"{}\",\"files\":[",
+                self.directory.as_str()
+            );
+            chunk_writer.write_chunk(prefix.as_bytes()).await?;
+
+            // Emit each pre-rendered object, comma-separated, slicing the arena by
+            // the recorded lengths (kept in lockstep with the handler's render).
+            let mut off = 0usize;
+            for (i, &len) in self.lens.iter().enumerate() {
+                if i > 0 {
+                    chunk_writer.write_chunk(b",").await?;
+                }
+                let end = off + len as usize;
+                chunk_writer.write_chunk(&self.arena[off..end]).await?;
+                off = end;
+            }
+
+            let mut suffix = heapless::String::<24>::new();
+            let _ = write!(suffix, "],\"count\":{}}}", self.lens.len());
+            chunk_writer.write_chunk(suffix.as_bytes()).await?;
+            chunk_writer.finalize().await
         }
     }
 

@@ -24,8 +24,11 @@ pub const COOLING_ESTIMATE_RATE: f64 = 100.0;
 /// Start temperature assumed when the first step has no target — mirrors
 /// `self.steps[0].get('target_temp', 20)`.
 pub const ASSUMED_START_TEMP: f64 = 20.0;
-/// Max inline steps (no heap). Real kiln schedules are far smaller.
-pub const MAX_STEPS: usize = 32;
+/// Max inline steps (no heap). Real kiln schedules are 4-5 steps; 16 keeps
+/// generous headroom (e.g. for future step types) while halving the inline
+/// `[Step; MAX_STEPS]` array. `Profile` is duplicated in every in-flight command,
+/// in the controller, and in the scheduler, so this size matters for RAM.
+pub const MAX_STEPS: usize = 16;
 
 /// Step kind. The reference uses the strings `"ramp" | "hold" | "cooling"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

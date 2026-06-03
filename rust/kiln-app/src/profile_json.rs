@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn rejects_too_many_steps() {
-        // Build 33 cooling steps (MAX_STEPS is 32).
+        // One more than MAX_STEPS cooling steps -> rejected.
         let mut s = String::from(r#"{"name":"x","steps":["#);
         for i in 0..(MAX_STEPS + 1) {
             if i > 0 {
