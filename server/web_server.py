@@ -396,70 +396,64 @@ def cancel_file_transfers():
     for task in list(_transfer_tasks):
         task.cancel()
 
-# === File Management Handlers ===
 
-async def handle_api_files_list(writer, directory):
-    """GET /api/files/<directory> - List files in directory"""
-    try:
-        # Check if IDLE
-        is_idle, error = check_idle_state()
-        if not is_idle:
-            await send_json_response(writer, error, 403)
-            return
+async def _file_guard(writer, directory, filename=None):
+    """Run the shared file-op preconditions.
 
-        # Validate directory
-        is_valid, dir_path, error = validate_directory(directory)
-        if not is_valid:
-            await send_json_response(writer, error, 400)
-            return
-
-        # List files
-        import os
-        try:
-            files = []
-            for filename in os.listdir(dir_path):
-                filepath = f"{dir_path}/{filename}"
-                try:
-                    stat = os.stat(filepath)
-                    files.append({
-                        'name': filename,
-                        'size': stat[6],  # st_size
-                        'modified': stat[8]  # st_mtime
-                    })
-                except:
-                    # If stat fails, just add name
-                    files.append({'name': filename, 'size': 0, 'modified': 0})
-
-            await send_json_response(writer, {
-                'success': True,
-                'directory': directory,
-                'files': files,
-                'count': len(files)
-            })
-        except OSError as e:
-            await send_json_response(writer, {
-                'success': False,
-                'error': f'Failed to list directory: {e}'
-            }, 500)
-
-    except Exception as e:
-        print(f"[Web Server] Error listing files: {e}")
-        await send_json_response(writer, {'success': False, 'error': str(e)}, 500)
-
-async def handle_api_files_get(writer, directory, filename):
-    """GET /api/files/<directory>/<filename> - stream raw file content in 1KB chunks."""
+    Returns the validated directory path, or None after sending the matching
+    error: 403 if the kiln is not IDLE, 400 for a bad directory or unsafe
+    filename. Pass filename=None for directory-only operations.
+    """
     is_idle, error = check_idle_state()
     if not is_idle:
         await send_json_response(writer, error, 403)
-        return
+        return None
 
     is_valid, dir_path, error = validate_directory(directory)
     if not is_valid:
         await send_json_response(writer, error, 400)
+        return None
+
+    if filename is not None and not safe_filename(filename):
+        await send_json_response(writer, {'success': False, 'error': 'Invalid filename'}, 400)
+        return None
+
+    return dir_path
+
+# === File Management Handlers ===
+
+async def handle_api_files_list(writer, directory):
+    """GET /api/files/<directory> - List files in directory"""
+    dir_path = await _file_guard(writer, directory)
+    if dir_path is None:
         return
 
-    if not safe_filename(filename):
-        await send_json_response(writer, {'success': False, 'error': 'Invalid filename'}, 400)
+    import os
+    try:
+        files = []
+        for filename in os.listdir(dir_path):
+            filepath = f"{dir_path}/{filename}"
+            try:
+                stat = os.stat(filepath)
+                files.append({'name': filename, 'size': stat[6], 'modified': stat[8]})
+            except:
+                # If stat fails, just add name
+                files.append({'name': filename, 'size': 0, 'modified': 0})
+
+        await send_json_response(writer, {
+            'success': True,
+            'directory': directory,
+            'files': files,
+            'count': len(files)
+        })
+    except OSError as e:
+        print(f"[Web Server] Error listing files: {e}")
+        await send_json_response(writer, {'success': False, 'error': f'Failed to list directory: {e}'}, 500)
+
+async def handle_api_files_get(writer, directory, filename):
+    """GET /api/files/<directory>/<filename> - stream raw file content in 1KB chunks."""
+    dir_path = await _file_guard(writer, directory, filename)
+    if dir_path is None:
         return
 
     import os
@@ -509,61 +503,23 @@ async def handle_api_files_get(writer, directory, filename):
 
 async def handle_api_files_delete(writer, directory, filename):
     """DELETE /api/files/<directory>/<filename> - Delete a file"""
+    dir_path = await _file_guard(writer, directory, filename)
+    if dir_path is None:
+        return
+
+    filepath = f"{dir_path}/{filename}"
     try:
-        # Check if IDLE
-        is_idle, error = check_idle_state()
-        if not is_idle:
-            await send_json_response(writer, error, 403)
-            return
-
-        # Validate directory
-        is_valid, dir_path, error = validate_directory(directory)
-        if not is_valid:
-            await send_json_response(writer, error, 400)
-            return
-
-        # Validate filename
-        if not safe_filename(filename):
-            await send_json_response(writer, {
-                'success': False,
-                'error': 'Invalid filename'
-            }, 400)
-            return
-
-        # Delete file
-        filepath = f"{dir_path}/{filename}"
-        try:
-            import os
-            os.remove(filepath)
-            print(f"[Web Server] Deleted file: {filepath}")
-            await send_json_response(writer, {
-                'success': True,
-                'message': f'Deleted {filename}'
-            })
-        except OSError as e:
-            await send_json_response(writer, {
-                'success': False,
-                'error': f'Failed to delete file: {e}'
-            }, 500)
-
-    except Exception as e:
-        print(f"[Web Server] Error deleting file: {e}")
-        await send_json_response(writer, {'success': False, 'error': str(e)}, 500)
+        import os
+        os.remove(filepath)
+        print(f"[Web Server] Deleted file: {filepath}")
+        await send_json_response(writer, {'success': True, 'message': f'Deleted {filename}'})
+    except OSError as e:
+        await send_json_response(writer, {'success': False, 'error': f'Failed to delete file: {e}'}, 500)
 
 async def handle_api_files_upload(writer, directory, filename, reader, content_length):
     """PUT /api/files/<directory>/<filename> - stream the raw request body to disk in 1KB chunks."""
-    is_idle, error = check_idle_state()
-    if not is_idle:
-        await send_json_response(writer, error, 403)
-        return
-
-    is_valid, dir_path, error = validate_directory(directory)
-    if not is_valid:
-        await send_json_response(writer, error, 400)
-        return
-
-    if not safe_filename(filename):
-        await send_json_response(writer, {'success': False, 'error': 'Invalid filename'}, 400)
+    dir_path = await _file_guard(writer, directory, filename)
+    if dir_path is None:
         return
 
     if content_length <= 0:
@@ -809,126 +765,84 @@ async def _supervise_transfer(coro):
         _transfer_tasks.discard(task)
 
 
-async def _route(reader, writer, method, path, headers, body, content_length):
+# Exact-path routes: path -> (required_method, handler, needs_body).
+# required_method None = any method allowed; needs_body True = pass the request body.
+_ROUTES = {
+    '/': (None, handle_index, False),
+    '/index.html': (None, handle_index, False),
+    '/tuning': (None, handle_tuning_page, False),
+    '/tuning.html': (None, handle_tuning_page, False),
+    '/api/status': (None, handle_api_status, False),
+    '/api/shutdown': (None, handle_api_shutdown, False),
+    '/api/run': ('POST', handle_api_run, True),
+    '/api/stop': ('POST', handle_api_stop, False),
+    '/api/clear-error': ('POST', handle_api_clear_error, False),
+    '/api/reboot': ('POST', handle_api_reboot, False),
+    '/api/tuning/start': ('POST', handle_api_tuning_start, True),
+    '/api/tuning/stop': ('POST', handle_api_tuning_stop, False),
+    '/api/tuning/status': ('GET', handle_api_tuning_status, False),
+    '/api/schedule': ('POST', handle_api_schedule, True),
+    '/api/scheduled': ('GET', handle_api_scheduled_status, False),
+    '/api/scheduled/cancel': ('POST', handle_api_cancel_scheduled, False),
+}
+
+
+async def _route_files(reader, writer, method, path, content_length):
+    """Dispatch /api/files/<directory>[/<filename>] (the variable-tail routes)."""
+    parts = path.split('/')
+    if len(parts) == 4:
+        # /api/files/<directory>
+        directory = parts[3]
+        if method == 'GET':
+            await handle_api_files_list(writer, directory)
+        else:
+            await send_response(writer, 405, b'Method not allowed', 'text/plain')
+    elif len(parts) == 5:
+        # /api/files/<directory>/<filename>
+        directory = parts[3]
+        filename = parts[4]
+        if filename == 'all':
+            if method == 'DELETE':
+                await handle_api_files_delete_all(writer, directory)
+            else:
+                await send_response(writer, 405, b'Method not allowed', 'text/plain')
+        elif method == 'GET':
+            # Size-unbounded download: supervised so a firing can abort it.
+            await _supervise_transfer(handle_api_files_get(writer, directory, filename))
+        elif method == 'PUT':
+            # Size-unbounded upload: streamed straight from the socket to disk.
+            await _supervise_transfer(handle_api_files_upload(writer, directory, filename, reader, content_length))
+        elif method == 'DELETE':
+            await handle_api_files_delete(writer, directory, filename)
+        else:
+            await send_response(writer, 405, b'Method not allowed', 'text/plain')
+    else:
+        await send_response(writer, 404, b'Not found', 'text/plain')
+
+
+async def _route(reader, writer, method, path, body, content_length):
     """Dispatch a parsed request to its handler."""
-    # Handle CORS preflight requests
+    # CORS preflight: 200 for any path.
     if method == 'OPTIONS':
         await send_response(writer, 200, b'', 'text/plain')
         return
 
-    if path == '/' or path == '/index.html':
-        await handle_index(writer)
-
-    elif path == '/tuning' or path == '/tuning.html':
-        await handle_tuning_page(writer)
-
-    elif path == '/api/status':
-        await handle_api_status(writer)
-
-    elif path == '/api/shutdown':
-        await handle_api_shutdown(writer)
-
-    # Control commands
-    elif path == '/api/run':
-        if method == 'POST':
-            await handle_api_run(writer, body)
-        else:
+    route = _ROUTES.get(path)
+    if route is not None:
+        req_method, handler, needs_body = route
+        if req_method is not None and method != req_method:
             await send_response(writer, 405, b'Method not allowed', 'text/plain')
-
-    elif path == '/api/stop':
-        if method == 'POST':
-            await handle_api_stop(writer)
+        elif needs_body:
+            await handler(writer, body)
         else:
-            await send_response(writer, 405, b'Method not allowed', 'text/plain')
+            await handler(writer)
+        return
 
-    elif path == '/api/clear-error':
-        if method == 'POST':
-            await handle_api_clear_error(writer)
-        else:
-            await send_response(writer, 405, b'Method not allowed', 'text/plain')
+    if path.startswith('/api/files/'):
+        await _route_files(reader, writer, method, path, content_length)
+        return
 
-    elif path == '/api/reboot':
-        if method == 'POST':
-            await handle_api_reboot(writer)
-        else:
-            await send_response(writer, 405, b'Method not allowed', 'text/plain')
-
-    # Tuning endpoints
-    elif path == '/api/tuning/start':
-        if method == 'POST':
-            await handle_api_tuning_start(writer, body)
-        else:
-            await send_response(writer, 405, b'Method not allowed', 'text/plain')
-
-    elif path == '/api/tuning/stop':
-        if method == 'POST':
-            await handle_api_tuning_stop(writer)
-        else:
-            await send_response(writer, 405, b'Method not allowed', 'text/plain')
-
-    elif path == '/api/tuning/status':
-        if method == 'GET':
-            await handle_api_tuning_status(writer)
-        else:
-            await send_response(writer, 405, b'Method not allowed', 'text/plain')
-
-    # Scheduling endpoints
-    elif path == '/api/schedule':
-        if method == 'POST':
-            await handle_api_schedule(writer, body)
-        else:
-            await send_response(writer, 405, b'Method not allowed', 'text/plain')
-
-    elif path == '/api/scheduled':
-        if method == 'GET':
-            await handle_api_scheduled_status(writer)
-        else:
-            await send_response(writer, 405, b'Method not allowed', 'text/plain')
-
-    elif path == '/api/scheduled/cancel':
-        if method == 'POST':
-            await handle_api_cancel_scheduled(writer)
-        else:
-            await send_response(writer, 405, b'Method not allowed', 'text/plain')
-
-    # File management endpoints
-    elif path.startswith('/api/files/'):
-        # Parse path: /api/files/<directory> or /api/files/<directory>/<filename>
-        parts = path.split('/')
-        if len(parts) == 4:
-            # /api/files/<directory>
-            directory = parts[3]
-            if method == 'GET':
-                await handle_api_files_list(writer, directory)
-            else:
-                await send_response(writer, 405, b'Method not allowed', 'text/plain')
-
-        elif len(parts) == 5:
-            # /api/files/<directory>/<filename>
-            directory = parts[3]
-            filename = parts[4]
-
-            if filename == 'all':
-                # DELETE /api/files/<directory>/all
-                if method == 'DELETE':
-                    await handle_api_files_delete_all(writer, directory)
-                else:
-                    await send_response(writer, 405, b'Method not allowed', 'text/plain')
-            elif method == 'GET':
-                # Size-unbounded download: supervised so a firing can abort it.
-                await _supervise_transfer(handle_api_files_get(writer, directory, filename))
-            elif method == 'PUT':
-                # Size-unbounded upload: streamed straight from the socket to disk.
-                await _supervise_transfer(handle_api_files_upload(writer, directory, filename, reader, content_length))
-            elif method == 'DELETE':
-                await handle_api_files_delete(writer, directory, filename)
-            else:
-                await send_response(writer, 405, b'Method not allowed', 'text/plain')
-        else:
-            await send_response(writer, 404, b'Not found', 'text/plain')
-
-    else:
-        await send_response(writer, 404, b'Not found', 'text/plain')
+    await send_response(writer, 404, b'Not found', 'text/plain')
 
 
 async def handle_client(reader, writer):
@@ -968,7 +882,7 @@ async def handle_client(reader, writer):
                 # Short/aborted body: handlers that need it return 400 on decode.
                 body = b''
 
-        await _route(reader, writer, method, path, headers, body, content_length)
+        await _route(reader, writer, method, path, body, content_length)
 
     except Exception as e:
         print(f"Error handling request: {e}")
