@@ -42,6 +42,10 @@ embedded-hal-bus = "0.3"
 rp-pac = { version = "7", features = ["rp235x"] }
 static_cell = "2"
 heapless = "0.8"
+# embassy-net / cyw43 0.7 use heapless 0.9 internally; this alias lets us build
+# the `StaticConfigV4.dns_servers` Vec in their version. The rest of the crate
+# (and the kiln-app/-core boundary) stays on 0.8.
+heapless_v09 = { package = "heapless", version = "0.9" }
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
 

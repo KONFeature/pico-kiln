@@ -844,10 +844,10 @@ impl Display for LcdDisplay {
 
 use static_cell::StaticCell;
 
-use cyw43::{Control, JoinOptions, PowerManagementMode};
+use cyw43::{Control, JoinOptions, PowerManagementMode, ScanOptions};
 use cyw43_pio::{PioSpi, RM2_CLOCK_DIVIDER};
 use embassy_net::udp::{PacketMetadata, UdpSocket};
-use embassy_net::{IpEndpoint, Stack};
+use embassy_net::{IpEndpoint, Ipv4Address, Ipv4Cidr, Stack, StaticConfigV4};
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::RoscRng;
 use embassy_rp::dma::{self, Channel};
@@ -896,16 +896,68 @@ pub fn web_config() -> &'static picoserve::Config {
     )
 }
 
-/// Bring up cyw43 → an `embassy-net` `Stack`, join WiFi, and run DHCP. Loads the
-/// firmware/CLM/nvram blobs, builds the PIO SPI, spawns the cyw43 + net runner
-/// tasks, then joins **in a retry loop** (wait 2 s → re-join) until the first
-/// association succeeds — `wifi_manager.connect`'s "keep trying" behaviour, which
-/// cyw43's built-in link auto-reconnect (drops only) does not cover. Returns the
-/// `Stack` plus the `Control` handle the [`wifi_monitor_task`] needs to re-join.
+/// The cyw43 GPIO the on-board status LED hangs off (Pico W / 2 W: the LED is on
+/// the wireless chip, not an RP2350 pin), driven via `Control::gpio_set`.
+const STATUS_LED_GPIO: u8 = 0;
+
+/// Build a static `embassy-net` v4 config from `WIFI_STATIC_IP` / `WIFI_SUBNET` /
+/// `WIFI_GATEWAY` / `WIFI_DNS`. `None` if any field is absent or unparseable, so
+/// the caller falls back to DHCP — `wifi_manager.connect` applies a static IP only
+/// when all four are present.
+fn static_config(config: &KilnConfig) -> Option<StaticConfigV4> {
+    let ip: Ipv4Address = config.wifi_static_ip.as_ref()?.as_str().parse().ok()?;
+    let mask: Ipv4Address = config.wifi_subnet.as_ref()?.as_str().parse().ok()?;
+    let gateway: Ipv4Address = config.wifi_gateway.as_ref()?.as_str().parse().ok()?;
+    let dns: Ipv4Address = config.wifi_dns.as_ref()?.as_str().parse().ok()?;
+
+    // Dotted subnet mask (255.255.255.0) → CIDR prefix length.
+    let prefix = mask.octets().iter().map(|b| b.count_ones()).sum::<u32>() as u8;
+    // `StaticConfigV4.dns_servers` is an embassy-net (heapless 0.9) Vec.
+    let mut dns_servers: heapless_v09::Vec<Ipv4Address, 3> = heapless_v09::Vec::new();
+    let _ = dns_servers.push(dns);
+    Some(StaticConfigV4 {
+        address: Ipv4Cidr::new(ip, prefix),
+        gateway: Some(gateway),
+        dns_servers,
+    })
+}
+
+/// Scan for `ssid` and return the strongest matching AP's RSSI (dBm), or `None`
+/// if it is not visible — `wifi_manager.connect`'s scan-for-best-AP. NOTE: cyw43
+/// 0.7's `join` takes no BSSID (`JoinOptions` has no such field), so the strongest
+/// BSSID is *identified, not pinned*; the firmware associates by SSID. The scan
+/// therefore serves as a presence gate (and picks the strongest, as asked).
+async fn scan_strongest(control: &mut Control<'static>, ssid: &str) -> Option<i16> {
+    // Scan all APs and filter by SSID bytes in the loop, rather than setting
+    // `ScanOptions.ssid` — that field is a cyw43-version `heapless::String`, which
+    // differs from this crate's heapless; filtering here avoids the mismatch and
+    // behaves identically.
+    let mut best: Option<i16> = None;
+    let mut scanner = control.scan(ScanOptions::default()).await;
+    while let Some(bss) = scanner.next().await {
+        let len = bss.ssid_len as usize;
+        if len <= bss.ssid.len()
+            && &bss.ssid[..len] == ssid.as_bytes()
+            && best.is_none_or(|r| bss.rssi > r)
+        {
+            best = Some(bss.rssi);
+        }
+    }
+    best
+}
+
+/// Bring up cyw43 → an `embassy-net` `Stack`, join WiFi, and configure IP. Loads
+/// the firmware/CLM/nvram blobs, builds the PIO SPI, spawns the cyw43 + net runner
+/// tasks, scans for the AP (strongest), then joins **in a retry loop** (wait 2 s →
+/// re-join) until the first association succeeds — `wifi_manager.connect`'s "keep
+/// trying" behaviour, which cyw43's link auto-reconnect (drops only) does not
+/// cover. The on-board LED blinks while connecting and goes solid once up. Returns
+/// the `Stack` plus the `Control` handle the [`wifi_monitor_task`] needs to re-join.
 ///
-/// DHCP only: `WIFI_STATIC_IP` is not wired on this target (config defaults to
-/// DHCP). The blobs are vendored under `cyw43-firmware/` (Infineon Permissive
-/// Binary License); `aligned_bytes!` resolves their paths relative to this file.
+/// IP: a static config (`WIFI_STATIC_IP` + subnet/gateway/dns) is honoured when
+/// all four are set, else DHCP. The blobs are vendored under `cyw43-firmware/`
+/// (Infineon Permissive Binary License); `aligned_bytes!` resolves their paths
+/// relative to this file.
 pub async fn init_network(
     spawner: &embassy_executor::Spawner,
     p: Core0Periphs,
@@ -941,10 +993,14 @@ pub async fn init_network(
         .set_power_management(PowerManagementMode::PowerSave)
         .await;
 
-    // embassy-net stack over DHCP. Seed the TCP/UDP RNG from the ring oscillator.
+    // Static IP when WIFI_STATIC_IP+subnet+gateway+dns are all set, else DHCP.
+    // Seed the TCP/UDP RNG from the ring oscillator.
     let mut rng = RoscRng;
     let seed = rng.next_u64();
-    let net_config = embassy_net::Config::dhcpv4(Default::default());
+    let net_config = match static_config(config) {
+        Some(static_v4) => embassy_net::Config::ipv4_static(static_v4),
+        None => embassy_net::Config::dhcpv4(Default::default()),
+    };
     static RES: StaticCell<embassy_net::StackResources<NET_SOCKETS>> = StaticCell::new();
     let (stack, net_runner) = embassy_net::new(
         net_device,
@@ -954,17 +1010,33 @@ pub async fn init_network(
     );
     spawner.spawn(net_task(net_runner).unwrap());
 
-    // Join, retrying until the first association sticks.
     let ssid = config.wifi_ssid.as_str();
     let password = config.wifi_password.as_str();
+
+    // Scan for the AP first (bounded so a flaky scan can't block boot): confirms
+    // it is visible and picks the strongest, blinking the LED while we look.
+    let mut led = false;
+    for _ in 0..5 {
+        if scan_strongest(&mut control, ssid).await.is_some() {
+            break;
+        }
+        led = !led;
+        control.gpio_set(STATUS_LED_GPIO, led).await;
+        embassy_time::Timer::after(Duration::from_secs(1)).await;
+    }
+
+    // Join, blinking, until the first association sticks.
     while control
         .join(ssid, JoinOptions::new(password.as_bytes()))
         .await
         .is_err()
     {
+        led = !led;
+        control.gpio_set(STATUS_LED_GPIO, led).await;
         embassy_time::Timer::after(Duration::from_secs(2)).await;
     }
     stack.wait_config_up().await;
+    control.gpio_set(STATUS_LED_GPIO, true).await; // solid on once connected
 
     (stack, control)
 }
@@ -974,6 +1046,8 @@ pub async fn init_network(
 /// 2 s backoff until it sticks and DHCP reconfigures. cyw43 auto-reconnects a
 /// *dropped* link, but a hard failure (wrong key / AP gone) needs this explicit
 /// re-join — what the reference adds — so a kiln on a flaky AP stays reachable.
+/// Drives the on-board status LED: solid on while connected, off + blink while
+/// reconnecting (`wifi_manager`'s LED feedback).
 #[embassy_executor::task]
 pub async fn wifi_monitor_task(
     mut control: Control<'static>,
@@ -983,12 +1057,18 @@ pub async fn wifi_monitor_task(
 ) -> ! {
     loop {
         stack.wait_link_up().await;
+        control.gpio_set(STATUS_LED_GPIO, true).await; // connected: solid on
         stack.wait_link_down().await;
+        control.gpio_set(STATUS_LED_GPIO, false).await; // dropped: off
+
+        let mut led = false;
         while control
             .join(ssid, JoinOptions::new(password.as_bytes()))
             .await
             .is_err()
         {
+            led = !led;
+            control.gpio_set(STATUS_LED_GPIO, led).await;
             embassy_time::Timer::after(Duration::from_secs(2)).await;
         }
         stack.wait_config_up().await;
