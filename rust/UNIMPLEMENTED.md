@@ -137,11 +137,15 @@ The deliberate "narrower than Python" deltas have since been implemented:
 |---|---|
 | **Static IP** | `init_network` builds `StaticConfigV4` from `WIFI_STATIC_IP`+subnet+gateway+dns (all-four-or-DHCP, like the reference). |
 | **Multi-SSR + configured pins** | `SSR_PIN` (int or list, ≤`MAX_SSR`) selected from a reserved GPIO pool (15/14/…/6, default 15); `ConfiguredSsr` does runtime-N staggered switching. `raw_ssr_off` de-energises all configured pins via an atomic mask. |
-| **WiFi AP scan** | `scan_strongest` scans + picks the strongest matching AP before joining. |
+| **WiFi AP scan** | `scan_visible` scans for the SSID as a presence gate before joining (SSID-only; BSSID not pinned — see below). |
 | **Status LED** | on-board cyw43 LED blinks while connecting, solid when up, off on link-down. |
 
 **Inherent platform limits** (not bugs — RP2350 / cyw43 0.7 constraints):
 - SSR pins are honoured only within the reserved compile-time pool (the RP2350
   pinmux is static); a number outside it falls back to the default.
-- cyw43 0.7's `join` takes no BSSID, so the strongest AP is *identified* by the
-  scan but the firmware still associates by SSID (can't pin the BSSID).
+- cyw43 0.7's `join` takes no BSSID (`JoinOptions` is `#[non_exhaustive]` with no
+  such field; `join` emits a bare `SsidInfo`), so unlike the Python reference
+  (`wlan.connect(..., bssid=)`) we associate by SSID only and let the chip pick the
+  AP. The CYW43439 firmware *does* support it (`cyw43_ll_wifi_join(bssid, channel)`);
+  restoring the pin would mean forking/vendoring cyw43 or upstreaming a join-with-
+  BSSID PR to embassy. Skipped on purpose — only matters for multiple same-SSID APs.

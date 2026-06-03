@@ -921,33 +921,40 @@ fn static_config(config: &KilnConfig) -> Option<StaticConfigV4> {
     })
 }
 
-/// Scan for `ssid` and return the strongest matching AP's RSSI (dBm), or `None`
-/// if it is not visible — `wifi_manager.connect`'s scan-for-best-AP. NOTE: cyw43
-/// 0.7's `join` takes no BSSID (`JoinOptions` has no such field), so the strongest
-/// BSSID is *identified, not pinned*; the firmware associates by SSID. The scan
-/// therefore serves as a presence gate (and picks the strongest, as asked).
-async fn scan_strongest(control: &mut Control<'static>, ssid: &str) -> Option<i16> {
+/// Scan for `ssid` and report whether it is currently visible — the boot-time
+/// presence gate before [`init_network`] attempts to join.
+///
+/// SSID PRESENCE ONLY — does *not* pin a BSSID. The Python reference
+/// (`wifi_manager.py:94-113`) scanned for the strongest matching AP and pinned it
+/// via `wlan.connect(ssid, pw, bssid=...)`. The CYW43439 firmware supports that
+/// (`cyw43_ll_wifi_join` takes `bssid` + `channel`), but embassy's cyw43 0.7
+/// `Control::join` only sends the SSID: `JoinOptions` is `#[non_exhaustive]` with
+/// no BSSID field and `join` emits a bare `SsidInfo`, leaving AP selection to the
+/// chip's firmware. Restoring the Python `bssid=` pin would mean forking/vendoring
+/// cyw43 (or upstreaming a PR to embassy) to emit the long-form `wl_join_params`
+/// (ssid + assoc_params{ bssid, chanspec }). Skipped on purpose: not worth a driver
+/// fork for a single-AP setup — revisit only for multiple same-SSID APs
+/// (mesh/extenders), where the chip's own pick can be suboptimal.
+async fn scan_visible(control: &mut Control<'static>, ssid: &str) -> bool {
     // Scan all APs and filter by SSID bytes in the loop, rather than setting
     // `ScanOptions.ssid` — that field is a cyw43-version `heapless::String`, which
-    // differs from this crate's heapless; filtering here avoids the mismatch and
-    // behaves identically.
-    let mut best: Option<i16> = None;
+    // differs from this crate's heapless; filtering here avoids the mismatch. Drain
+    // the scanner fully (rather than early-return) so the chip-side scan completes
+    // before the join sequence starts.
+    let mut found = false;
     let mut scanner = control.scan(ScanOptions::default()).await;
     while let Some(bss) = scanner.next().await {
         let len = bss.ssid_len as usize;
-        if len <= bss.ssid.len()
-            && &bss.ssid[..len] == ssid.as_bytes()
-            && best.is_none_or(|r| bss.rssi > r)
-        {
-            best = Some(bss.rssi);
+        if len <= bss.ssid.len() && &bss.ssid[..len] == ssid.as_bytes() {
+            found = true;
         }
     }
-    best
+    found
 }
 
 /// Bring up cyw43 → an `embassy-net` `Stack`, join WiFi, and configure IP. Loads
 /// the firmware/CLM/nvram blobs, builds the PIO SPI, spawns the cyw43 + net runner
-/// tasks, scans for the AP (strongest), then joins **in a retry loop** (wait 2 s →
+/// tasks, confirms the AP is visible (presence gate), then joins **in a retry loop** (wait 2 s →
 /// re-join) until the first association succeeds — `wifi_manager.connect`'s "keep
 /// trying" behaviour, which cyw43's link auto-reconnect (drops only) does not
 /// cover. The on-board LED blinks while connecting and goes solid once up. Returns
@@ -1012,11 +1019,12 @@ pub async fn init_network(
     let ssid = config.wifi_ssid.as_str();
     let password = config.wifi_password.as_str();
 
-    // Scan for the AP first (bounded so a flaky scan can't block boot): confirms
-    // it is visible and picks the strongest, blinking the LED while we look.
+    // Confirm the AP is visible first (bounded so a flaky scan can't block boot),
+    // blinking the LED while we look. Presence gate only — see `scan_visible` for
+    // why we can't pin the strongest BSSID like the Python reference did.
     let mut led = false;
     for _ in 0..5 {
-        if scan_strongest(&mut control, ssid).await.is_some() {
+        if scan_visible(&mut control, ssid).await {
             break;
         }
         led = !led;
