@@ -79,7 +79,7 @@ fn main() -> ! {
     // Core 1: the control loop, and nothing else. It receives commands and
     // publishes status; it never touches the network or flash.
     let core1_periphs = Core1Periphs {
-        spi: p.SPI1,
+        spi: p.SPI0,
         sck: p.PIN_18,
         mosi: p.PIN_19,
         miso: p.PIN_16,
@@ -132,7 +132,7 @@ fn main() -> ! {
 /// Peripherals handed to Core 1 (the kiln I/O only). embassy-rp 0.10 hands out
 /// each peripheral as a `Peri<'static, T>` handle rather than the bare singleton.
 struct Core1Periphs {
-    spi: Peri<'static, embassy_rp::peripherals::SPI1>,
+    spi: Peri<'static, embassy_rp::peripherals::SPI0>,
     sck: Peri<'static, embassy_rp::peripherals::PIN_18>,
     mosi: Peri<'static, embassy_rp::peripherals::PIN_19>,
     miso: Peri<'static, embassy_rp::peripherals::PIN_16>,

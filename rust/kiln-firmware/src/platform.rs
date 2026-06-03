@@ -153,71 +153,87 @@ pub fn control_params_from(cfg: &KilnConfig) -> ControlParams {
 
 // === Core 1 kiln I/O ========================================================
 
+use embassy_rp::gpio::{Level, Output};
+use embassy_rp::peripherals::SPI0;
+use embassy_rp::spi::{Config as SpiConfig, Phase, Polarity, Spi};
+use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
+use kiln_hal::max31856::{Averaging, NoiseFilter};
+
+/// The concrete Core 1 SPI device: embassy-rp's blocking **SPI0** with a
+/// GPIO chip-select, wrapped as an `embedded-hal` `SpiDevice` (it owns CS).
+///
+/// SPI0 (not SPI1): the MAX31856 wiring (`MAX31856_SPI_ID = 0` in the reference)
+/// uses PIN_18/19/16 for SCK/MOSI/MISO, which are SPI0 function pins on the
+/// RP2350 — `ClkPin<SPI1>` etc. are not implemented for them. CS (PIN_28) is
+/// bit-banged by `ExclusiveDevice`, so its pin function is irrelevant.
+pub type DeviceSpi =
+    ExclusiveDevice<Spi<'static, SPI0, embassy_rp::spi::Blocking>, Output<'static>, NoDelay>;
+/// The concrete SSR output: a push-pull GPIO (PIN_15).
+pub type DevicePin = Output<'static>;
+
 /// Build the Core 1 sensor / SSR / watchdog from `cfg`, ready for
 /// [`kiln_control::Controller::new`]. The sensor is configured for the
 /// `THERMOCOUPLE_TYPE` / `THERMOCOUPLE_AVERAGING` / `MAINS_FREQUENCY` from config;
 /// the watchdog is [`MaybeWatchdog`] so `ENABLE_WATCHDOG` is honoured.
 ///
-/// DEVICE: the SPI/CS construction and the SSR pin(s). The SPI clock/MISO/MOSI/CS
-/// pins are fixed by the RP2350 pinmux (config carries them for documentation and
-/// validation, not runtime re-routing); the SSR GPIO(s) come from `SSR_PIN` via a
-/// degraded `AnyPin`, and `SSR_STAGGER_DELAY` feeds `MultiSsr` when more than one
-/// is listed.
+/// The SPI clock/MISO/MOSI/CS pins are fixed by the RP2350 pinmux (config carries
+/// their numbers for documentation, not runtime re-routing). Config-write errors
+/// (a transient boot-time SPI glitch) are swallowed rather than panicked: the
+/// control loop's `temp_filter` already treats a faulting/unreadable sensor as a
+/// fault and shuts the SSR, so a panic-reset loop here would be strictly worse.
+///
+/// Single-relay only: the peripheral split (`main.rs`) hands Core 1 exactly one
+/// SSR pin (PIN_15), so `SSR_PIN` lists / `MultiSsr` staggering are not wired on
+/// this target. `SSR_STAGGER_DELAY` is therefore unused here.
 pub fn build_kiln_io(
-    _p: Core1Periphs,
-    _cfg: &KilnConfig,
+    p: Core1Periphs,
+    cfg: &KilnConfig,
 ) -> (
     kiln_hal::Max31856<DeviceSpi>,
     kiln_hal::Ssr<DevicePin>,
     MaybeWatchdog,
 ) {
-    // DEVICE: embassy_rp::spi::Spi::new(SPI1, sck, mosi, miso, cfg{1MHz, mode1});
-    // wrap with embedded_hal_bus ExclusiveDevice(cs); Max31856::new(spi_dev) then
-    // init(cfg.thermocouple_type) + set_averaging(Averaging::from_samples(
-    // cfg.thermocouple_averaging)) + set_noise_filter(NoiseFilter::from_hz(
-    // cfg.mains_frequency)) + start_autoconverting(). The last call is REQUIRED
-    // (hardware.py:84): without it the MAX31856 stays in one-shot mode and the
-    // LTCB registers read 0, so read_temperature() returns a constant 0 °C and the
-    // control loop never sees real temperature (it will read 0 until the first
-    // conversion completes regardless). Ssr::new(Output::new(cfg.ssr_pin[0]
-    // .degrade())). MaybeWatchdog per cfg.enable_watchdog.
-    unimplemented!("DEVICE: construct SPI + CS + SSR pin(s) + watchdog from Core1Periphs + cfg")
-}
+    // SPI0 @ 1 MHz, MAX31856 = SPI mode 1 (CPOL=0 idle-low, CPHA=1 capture on the
+    // second edge).
+    let mut spi_cfg = SpiConfig::default();
+    spi_cfg.frequency = 1_000_000;
+    spi_cfg.polarity = Polarity::IdleLow;
+    spi_cfg.phase = Phase::CaptureOnSecondTransition;
+    let spi = Spi::new_blocking(p.spi, p.sck, p.mosi, p.miso, spi_cfg);
+    // CS idle-high; `ExclusiveDevice` drives it low only for the duration of each
+    // transaction. The pin error is `Infallible`, so `new_no_delay` cannot fail.
+    let cs = Output::new(p.cs, Level::High);
+    let dev = ExclusiveDevice::new_no_delay(spi, cs).unwrap();
 
-/// DEVICE placeholder types for the concrete embassy-rp SPI device / pin the
-/// kiln-hal drivers are generic over. They are uninhabited (no value is ever
-/// constructed — [`build_kiln_io`] is `unimplemented!()`); the trait impls below
-/// exist only so `Max31856<DeviceSpi>` / `Ssr<DevicePin>` satisfy the
-/// `embedded-hal` bounds the `Controller` methods require, keeping the crate
-/// type-checkable until the real SPI/GPIO wiring lands. Every body is
-/// unreachable.
-pub enum DeviceSpi {}
-pub enum DevicePin {}
+    let mut sensor = kiln_hal::Max31856::new(dev);
+    // init: mask off all fault asserts + open-circuit detection + the thermocouple
+    // type; then hardware averaging and the mains notch; then START AUTOCONVERTING
+    // (REQUIRED — hardware.py:84). Without it the chip stays one-shot and the LTCB
+    // registers read 0, so the loop would see a constant 0 °C. Invalid config
+    // values fall back to the kiln defaults (8 samples / 60 Hz), matching the
+    // reference's `unwrap_or_default` behaviour.
+    let _ = sensor.init(cfg.thermocouple_type);
+    let _ = sensor.set_averaging(
+        Averaging::from_samples(cfg.thermocouple_averaging).unwrap_or_default(),
+    );
+    let _ = sensor.set_noise_filter(NoiseFilter::from_hz(cfg.mains_frequency).unwrap_or_default());
+    let _ = sensor.start_autoconverting();
 
-impl embedded_hal::spi::ErrorType for DeviceSpi {
-    type Error = core::convert::Infallible;
-}
+    // SSR on the single wired pin, started de-energised (`Ssr::new` drives it low;
+    // pin error is `Infallible`).
+    let ssr = kiln_hal::Ssr::new(Output::new(p.ssr, Level::Low)).unwrap();
 
-impl embedded_hal::spi::SpiDevice<u8> for DeviceSpi {
-    fn transaction(
-        &mut self,
-        _operations: &mut [embedded_hal::spi::Operation<'_, u8>],
-    ) -> Result<(), Self::Error> {
-        match *self {}
-    }
-}
+    // Watchdog per ENABLE_WATCHDOG. When disabled, `p.watchdog` is simply dropped.
+    let watchdog = if cfg.enable_watchdog {
+        MaybeWatchdog::Enabled(RpWatchdog {
+            inner: embassy_rp::watchdog::Watchdog::new(p.watchdog),
+            timeout: Duration::from_millis(cfg.watchdog_timeout as u64),
+        })
+    } else {
+        MaybeWatchdog::Disabled
+    };
 
-impl embedded_hal::digital::ErrorType for DevicePin {
-    type Error = core::convert::Infallible;
-}
-
-impl embedded_hal::digital::OutputPin for DevicePin {
-    fn set_low(&mut self) -> Result<(), Self::Error> {
-        match *self {}
-    }
-    fn set_high(&mut self) -> Result<(), Self::Error> {
-        match *self {}
-    }
+    (sensor, ssr, watchdog)
 }
 
 // === Wall clock (Oracle Q4) =================================================
