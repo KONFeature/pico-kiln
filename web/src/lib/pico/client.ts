@@ -20,6 +20,15 @@ import type {
 	UploadFileResponse,
 } from "./types";
 
+/**
+ * Client-side fetch-abort deadline for file up/downloads (NOT a server-side
+ * wait). Longer than the 10s default since a transfer outlasts a status poll,
+ * but sized for the server's 500KB cap: ~500KB completes well under 60s even on
+ * weak WiFi (needs only ~8.5KB/s), so a stalled transfer aborts promptly and
+ * frees one of the Pico's 2 connection slots instead of lingering for minutes.
+ */
+const FILE_TRANSFER_TIMEOUT_MS = 60_000;
+
 export class PicoAPIError extends Error {
 	constructor(
 		message: string,
@@ -45,9 +54,10 @@ export class PicoAPIClient {
 	private async fetchWithTimeout(
 		url: string,
 		options: RequestInit = {},
+		timeoutMs: number = this.timeoutMs,
 	): Promise<Response> {
 		const controller = new AbortController();
-		const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+		const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
 		try {
 			const response = await fetch(url, {
@@ -60,7 +70,7 @@ export class PicoAPIClient {
 			clearTimeout(timeoutId);
 			if (error instanceof Error && error.name === "AbortError") {
 				throw new PicoAPIError(
-					`Request timeout after ${this.timeoutMs}ms`,
+					`Request timeout after ${timeoutMs}ms`,
 					undefined,
 					error,
 				);
@@ -72,11 +82,12 @@ export class PicoAPIClient {
 	private async request<T>(
 		endpoint: string,
 		options: RequestInit = {},
+		timeoutMs?: number,
 	): Promise<T> {
 		const url = `${this.baseURL}${endpoint}`;
 
 		try {
-			const response = await this.fetchWithTimeout(url, options);
+			const response = await this.fetchWithTimeout(url, options, timeoutMs);
 
 			if (!response.ok) {
 				const errorText = await response.text().catch(() => "Unknown error");
@@ -245,30 +256,25 @@ export class PicoAPIClient {
 	 * Only works when kiln is IDLE
 	 */
 	async getFile(directory: FileDirectory, filename: string): Promise<string> {
-		// Streaming download from /api/files/<dir>/<file>. The server returns
-		// the raw file body (text/csv or application/json) with no JSON wrapper,
-		// avoiding ~4x RAM amplification on the Pico for large log files.
-		// No AbortController timeout: multi-hundred-KB logs over Pico WiFi can
-		// take much longer than the 10s default used elsewhere.
+		// Raw streaming download from /api/files/<dir>/<file>: the server returns
+		// the file body (text/csv or application/json) with no JSON wrapper,
+		// avoiding ~4x RAM amplification on the Pico. Uses a generous but bounded
+		// timeout instead of none, so a stalled transfer aborts client-side and
+		// frees the Pico's (only 2) connection slots.
 		const url = `${this.baseURL}/api/files/${directory}/${filename}`;
-		try {
-			const response = await fetch(url);
-			if (!response.ok) {
-				const errorText = await response.text().catch(() => "Unknown error");
-				throw new PicoAPIError(
-					`HTTP ${response.status}: ${errorText}`,
-					response.status,
-				);
-			}
-			return await response.text();
-		} catch (error) {
-			if (error instanceof PicoAPIError) throw error;
+		const response = await this.fetchWithTimeout(
+			url,
+			{},
+			FILE_TRANSFER_TIMEOUT_MS,
+		);
+		if (!response.ok) {
+			const errorText = await response.text().catch(() => "Unknown error");
 			throw new PicoAPIError(
-				error instanceof Error ? error.message : "Unknown error",
-				undefined,
-				error,
+				`HTTP ${response.status}: ${errorText}`,
+				response.status,
 			);
 		}
+		return await response.text();
 	}
 
 	/**
@@ -306,13 +312,18 @@ export class PicoAPIClient {
 		filename: string,
 		content: string,
 	): Promise<UploadFileResponse> {
+		// The raw request body IS the file content (no JSON wrapper): the Pico
+		// streams it straight to disk in 1KB chunks, keeping peak RAM ~1KB even
+		// at the 500KB limit. Uses the generous file-transfer timeout, not the
+		// 10s default, since large uploads over Pico WiFi can be slow.
 		return this.request<UploadFileResponse>(
 			`/api/files/${directory}/${filename}`,
 			{
 				method: "PUT",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ content }),
+				headers: { "Content-Type": "text/plain; charset=utf-8" },
+				body: content,
 			},
+			FILE_TRANSFER_TIMEOUT_MS,
 		);
 	}
 }

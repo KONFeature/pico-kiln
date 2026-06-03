@@ -5,7 +5,6 @@
 # between the control thread (Core 1) and the web server thread (Core 2)
 # using a custom ThreadSafeQueue implementation.
 
-import gc
 from micropython import const
 from collections import deque
 
@@ -565,7 +564,7 @@ class StatusCache:
     without blocking on queue operations
 
     MEMORY OPTIMIZED: Added get_fields() method to fetch multiple fields without
-    full dictionary copy, and added periodic GC trigger to clean up old copies.
+    full dictionary copy.
     """
 
     def __init__(self):
@@ -580,7 +579,6 @@ class StatusCache:
             'profile_name': None,
             'error': None
         }
-        self._copy_count = 0  # Track copies for periodic GC
 
     def update(self, status):
         """Update cached status (thread-safe)"""
@@ -593,17 +591,11 @@ class StatusCache:
 
         MEMORY NOTE: Creates a copy for thread safety. For frequently accessed
         fields, consider using get_field() or get_fields() to avoid copying.
+        The interpreter reclaims old copies on its own; forcing gc.collect()
+        here would inject periodic pauses on Core 2 since /api/status is polled.
         """
         with self.lock:
-            copy = self._status.copy()
-
-            # Trigger GC every 10 copies to clean up old dictionaries
-            self._copy_count += 1
-            if self._copy_count >= 10:
-                self._copy_count = 0
-                gc.collect()
-
-            return copy
+            return self._status.copy()
 
     def get_field(self, field, default=None):
         """

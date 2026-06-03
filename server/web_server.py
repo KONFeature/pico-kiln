@@ -1,23 +1,39 @@
 # server/web_server.py
 # HTTP server for monitoring and control interface
 #
-# This module runs on Core 2 and communicates with the control thread (Core 1)
-# via thread-safe queues. It never directly accesses hardware.
+# Runs on Core 2 via asyncio.start_server and talks to the control thread
+# (Core 1) through thread-safe queues. It never touches hardware directly.
+#
+# Native asyncio design notes:
+# - asyncio.start_server() owns the listening socket and the accept loop, so
+#   there is no hand-rolled polling, no EAGAIN handling and no socket-restart
+#   bookkeeping here.
+# - Each connection is driven by a (reader, writer) Stream pair. All socket I/O
+#   is awaited, so a slow client never blocks the Core 2 event loop (status
+#   receiver, LCD, WiFi monitor keep running).
 
 import asyncio
 import json
-import socket
 import gc
+import os
+import time
+import machine
 from micropython import const
 import config
 from kiln.comms import CommandMessage, QueueHelper
 from kiln.tuner import MODE_SAFE, MODE_STANDARD, MODE_THOROUGH, MODE_HIGH_TEMP
 from server.status_receiver import get_status_receiver
+from server.profile_cache import get_profile_cache
+from server.html_cache import get_html_cache
 
-# MEMORY OPTIMIZED: Pre-encoded HTTP headers to avoid f-string allocations
-# Common status lines (pre-encoded as bytes)
+# MEMORY OPTIMIZED: pre-encoded HTTP status lines (bytes, allocated once).
 HTTP_200 = b"HTTP/1.1 200 OK\r\n"
+HTTP_400 = b"HTTP/1.1 400 Bad Request\r\n"
+HTTP_403 = b"HTTP/1.1 403 Forbidden\r\n"
 HTTP_404 = b"HTTP/1.1 404 Not Found\r\n"
+HTTP_405 = b"HTTP/1.1 405 Method Not Allowed\r\n"
+HTTP_408 = b"HTTP/1.1 408 Request Timeout\r\n"
+HTTP_413 = b"HTTP/1.1 413 Payload Too Large\r\n"
 HTTP_500 = b"HTTP/1.1 500 Internal Server Error\r\n"
 
 # Common headers (pre-encoded as bytes)
@@ -28,110 +44,149 @@ HEADER_CONTENT_TYPE_TEXT = b"Content-Type: text/plain\r\n"
 HEADER_CORS = b"Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n"
 HEADER_CONNECTION_CLOSE = b"Connection: close\r\n\r\n"
 
+# Lookup tables built once at import (not rebuilt per response).
+_STATUS_LINES = {
+    200: HTTP_200,
+    400: HTTP_400,
+    403: HTTP_403,
+    404: HTTP_404,
+    405: HTTP_405,
+    408: HTTP_408,
+    413: HTTP_413,
+    500: HTTP_500,
+}
+_CONTENT_TYPES = {
+    'application/json': HEADER_CONTENT_TYPE_JSON,
+    'text/html': HEADER_CONTENT_TYPE_HTML,
+    'text/plain': HEADER_CONTENT_TYPE_TEXT,
+}
+
 # Global communication channels (initialized in start_server)
 command_queue = None
 
 # Module-level constants for connection and request limits
 MAX_CONCURRENT_CONNECTIONS = const(2)      # Limit to 2 concurrent connections on Pico
-MAX_PROFILE_SIZE = const(10240)            # 10KB max for profile uploads
+MAX_UPLOAD_SIZE = const(512000)            # 500KB max upload (long profiles / tuning logs)
+MAX_JSON_BODY = const(4096)                # Cap buffered (non-upload) request bodies; JSON commands are tiny
+FILE_CHUNK_SIZE = const(1024)              # 1 KiB streaming chunk (Microdot-validated)
+FILE_TRANSFER_TIMEOUT = const(60)          # Max seconds for one file transfer before its slot is reclaimed
 
-# Performance: const() declarations for server loop timing
-SERVER_LOOP_INTERVAL = 0.1  # 100ms between accept() calls
-MAX_SOCKET_ERRORS = const(50)  # 5 seconds of errors at 100ms interval
-MAX_SOCKET_ERROR_PRINT = const(3)  # Only print first N errors to reduce USB spam
+# Validation tables built once at import (not rebuilt per request).
+VALID_DIRECTORIES = ('profiles', 'logs')
+VALID_TUNING_MODES = (MODE_SAFE, MODE_STANDARD, MODE_THOROUGH, MODE_HIGH_TEMP)
 
 # Connection tracking
 active_connections = 0
 
-def parse_request(data):
-    """Parse HTTP request and return method, path, headers, and body"""
-    lines = data.split(b'\r\n')
-    request_line = lines[0].decode()
-    parts = request_line.split(' ')
-    method, path = parts[0], parts[1] if len(parts) > 1 else '/'
 
-    # Find body
-    body_start = data.find(b'\r\n\r\n')
-    body = data[body_start + 4:] if body_start != -1 else b''
+async def _close(writer):
+    """Close a connection's writer, swallowing disconnect errors."""
+    try:
+        writer.close()
+        await writer.wait_closed()
+    except Exception:
+        pass
 
-    # Parse headers
-    headers = {}
-    for line in lines[1:]:
-        if line == b'':
+
+async def _read_request(reader):
+    """Read the request line and headers from a stream.
+
+    Reads line-by-line so headers spanning multiple TCP segments are parsed
+    correctly. Only Content-Length is kept (the one header any handler needs);
+    the rest are scanned past, avoiding a throwaway per-request dict. The body
+    is left in the stream for the handler to consume.
+
+    Returns (method, path, content_length), or (None, None, 0) on empty/garbage.
+    """
+    request_line = await reader.readline()
+    if not request_line:
+        return None, None, 0
+
+    try:
+        parts = request_line.decode().split(' ')
+        method = parts[0]
+        path = parts[1] if len(parts) > 1 else '/'
+    except Exception:
+        return None, None, 0
+
+    content_length = 0
+    while True:
+        line = await reader.readline()
+        if not line or line == b'\r\n':
             break
-        try:
-            key, value = line.decode().split(': ', 1)
-            headers[key.lower()] = value
-        except:
-            pass
+        # "Content-Length:" is 15 bytes; match case-insensitively without decoding.
+        if line[:15].lower() == b'content-length:':
+            try:
+                content_length = int(line[15:].strip())
+            except Exception:
+                content_length = 0
 
-    return method, path, headers, body
+    return method, path, content_length
 
-def send_response(conn, status, body=b'', content_type='text/plain'):
-    """Send HTTP response (MEMORY OPTIMIZED: uses pre-encoded headers)"""
-    # Map status codes to pre-encoded status lines
-    status_line = {200: HTTP_200, 404: HTTP_404, 500: HTTP_500}.get(status, HTTP_500)
 
-    # Map content types to pre-encoded headers
-    content_type_header = {
-        'application/json': HEADER_CONTENT_TYPE_JSON,
-        'text/html': HEADER_CONTENT_TYPE_HTML,
-        'text/plain': HEADER_CONTENT_TYPE_TEXT
-    }.get(content_type, HEADER_CONTENT_TYPE_TEXT)
+async def send_response(writer, status, body=b'', content_type='text/plain'):
+    """Send an HTTP response.
 
-    # MEMORY OPTIMIZED: Build headers as single bytes object, then send with body
-    # This reduces from 4 separate send() calls to just 1 sendall() call
-    # Include CORS headers to allow cross-origin requests from web app
-    headers = status_line + content_type_header + HEADER_CORS + HEADER_CONNECTION_CLOSE
-    conn.sendall(headers + body)
+    MEMORY OPTIMIZED: writes pre-encoded headers and the body as separate
+    buffered writes, then a single drain(). Avoids the headers+body
+    concatenation (one fewer allocation than the old sendall path).
+    """
+    writer.write(_STATUS_LINES.get(status, HTTP_500))
+    writer.write(_CONTENT_TYPES.get(content_type, HEADER_CONTENT_TYPE_TEXT))
+    writer.write(HEADER_CORS)
+    writer.write(HEADER_CONNECTION_CLOSE)
+    if body:
+        writer.write(body)
+    await writer.drain()
 
-def send_json_response(conn, data, status=200):
+
+async def send_json_response(writer, data, status=200):
     """Send JSON response"""
-    json_data = json.dumps(data)
-    send_response(conn, status, json_data.encode(), 'application/json')
+    await send_response(writer, status, json.dumps(data).encode(), 'application/json')
 
-def send_html_response(conn, html, status=200):
+
+async def send_html_response(writer, html, status=200):
     """Send HTML response"""
-    send_response(conn, status, html.encode() if isinstance(html, str) else html, 'text/html')
+    await send_response(writer, status, html.encode() if isinstance(html, str) else html, 'text/html')
+
+
+async def _send_command(writer, command, ok_message, ok_log=None):
+    """Queue a bodyless control command with a uniform success / queue-full reply."""
+    if QueueHelper.put_nowait(command_queue, command):
+        if ok_log:
+            print(ok_log)
+        await send_json_response(writer, {'success': True, 'message': ok_message})
+    else:
+        print("[Web Server] Command queue full; command dropped")
+        await send_json_response(writer, {'success': False, 'error': 'Command queue full, please retry'}, 500)
 
 
 # === API Handlers ===
 
-def handle_api_shutdown(conn):
+async def handle_api_shutdown(writer):
     """POST /api/shutdown - Emergency shutdown: turn off SSR and stop program"""
-    # Send shutdown command to control thread
-    command = CommandMessage.shutdown()
-
-    if QueueHelper.put_nowait(command_queue, command):
-        print("[Web Server] Emergency shutdown triggered via API")
-        response = {
-            "success": True,
-            "message": "System shutdown: SSR off, program stopped"
-        }
-        send_json_response(conn, response)
-    else:
-        print("[Web Server] Failed to send shutdown command (queue full)")
-        send_json_response(conn, {
-            "success": False,
-            "error": "Command queue full, please retry"
-        }, 500)
+    await _send_command(
+        writer,
+        CommandMessage.shutdown(),
+        'System shutdown: SSR off, program stopped',
+        '[Web Server] Emergency shutdown triggered via API',
+    )
 
 # === Control Command Handlers ===
 
-def handle_api_run(conn, body):
+async def handle_api_run(writer, body):
     """POST /api/run - Start running a profile"""
     try:
         data = json.loads(body.decode())
         profile_name = data.get('profile')
 
         if not profile_name:
-            send_json_response(conn, {'success': False, 'error': 'Profile name required'}, 400)
+            await send_json_response(writer, {'success': False, 'error': 'Profile name required'}, 400)
             return
 
         # PERFORMANCE: Verify profile exists using cache instead of blocking filesystem check
-        from server.profile_cache import get_profile_cache
         if not get_profile_cache().exists(profile_name):
-            send_json_response(conn, {'success': False, 'error': f'Profile not found: {profile_name}'}, 404)
+            await send_json_response(writer, {'success': False, 'error': f'Profile not found: {profile_name}'}, 404)
             return
 
         # Send command to control thread (Core 1 will load the profile from disk)
@@ -140,128 +195,104 @@ def handle_api_run(conn, body):
 
         if QueueHelper.put_nowait(command_queue, command):
             print(f"[Web Server] Started profile: {profile_name}")
-            send_json_response(conn, {
+            cancel_file_transfers()
+            await send_json_response(writer, {
                 'success': True,
                 'message': f'Started profile: {profile_name}'
             })
         else:
             print("[Web Server] Failed to send run_profile command (queue full)")
-            send_json_response(conn, {
+            await send_json_response(writer, {
                 'success': False,
                 'error': 'Command queue full, please retry'
             }, 500)
 
     except Exception as e:
         print(f"[Web Server] Error starting profile: {e}")
-        send_json_response(conn, {'success': False, 'error': str(e)}, 400)
+        await send_json_response(writer, {'success': False, 'error': str(e)}, 400)
 
-def handle_api_stop(conn):
+async def handle_api_stop(writer):
     """POST /api/stop - Stop current profile"""
-    # Send stop command to control thread
-    command = CommandMessage.stop()
+    await _send_command(writer, CommandMessage.stop(), 'Profile stopped',
+                        '[Web Server] Profile stop requested')
 
-    if QueueHelper.put_nowait(command_queue, command):
-        print("[Web Server] Profile stop requested")
-        send_json_response(conn, {'success': True, 'message': 'Profile stopped'})
-    else:
-        print("[Web Server] Failed to send stop command (queue full)")
-        send_json_response(conn, {
-            'success': False,
-            'error': 'Command queue full, please retry'
-        }, 500)
-
-def handle_api_clear_error(conn):
+async def handle_api_clear_error(writer):
     """POST /api/clear-error - Clear error state and return to idle"""
-    # Send clear_error command to control thread
-    command = CommandMessage.clear_error()
+    await _send_command(writer, CommandMessage.clear_error(), 'Error cleared, returned to idle',
+                        '[Web Server] Clear error requested')
 
-    if QueueHelper.put_nowait(command_queue, command):
-        print("[Web Server] Clear error requested")
-        send_json_response(conn, {'success': True, 'message': 'Error cleared, returned to idle'})
-    else:
-        print("[Web Server] Failed to send clear_error command (queue full)")
-        send_json_response(conn, {
-            'success': False,
-            'error': 'Command queue full, please retry'
-        }, 500)
-
-def handle_api_reboot(conn):
+async def handle_api_reboot(writer):
     """POST /api/reboot - Reboot the Pico"""
-    import machine
-    
     print("[Web Server] Reboot requested via API")
-    
-    # Send success response before rebooting
-    send_json_response(conn, {
+
+    # Send success response (send_response drains the socket buffer) before rebooting.
+    await send_json_response(writer, {
         'success': True,
         'message': 'Rebooting Pico...'
     })
-    
-    # Give client time to receive response
-    import time
-    time.sleep(0.5)
-    
+
+    # Give the client time to receive the response before the reset tears down TCP.
+    await asyncio.sleep(0.5)
+
     # Reboot the device
     machine.reset()
 
-def handle_api_schedule(conn, body):
+async def handle_api_schedule(writer, body):
     """POST /api/schedule - Schedule profile for delayed start"""
     try:
-        import time
         data = json.loads(body.decode())
         profile_name = data.get('profile')
         start_time = data.get('start_time')  # Unix timestamp
-        
+
         if not profile_name or not start_time:
-            send_json_response(conn, {
-                'success': False, 
+            await send_json_response(writer, {
+                'success': False,
                 'error': 'profile and start_time required'
             }, 400)
             return
-        
+
         # Validate start time is in future
         if start_time <= time.time():
-            send_json_response(conn, {
+            await send_json_response(writer, {
                 'success': False,
                 'error': 'start_time must be in the future'
             }, 400)
             return
-        
+
         # Check profile exists
-        from server.profile_cache import get_profile_cache
         if not get_profile_cache().exists(profile_name):
-            send_json_response(conn, {
-                'success': False, 
+            await send_json_response(writer, {
+                'success': False,
                 'error': f'Profile not found: {profile_name}'
             }, 404)
             return
-        
+
         profile_filename = f"{profile_name}.json"
         command = CommandMessage.schedule_profile(profile_filename, start_time)
-        
+
         if QueueHelper.put_nowait(command_queue, command):
             print(f"[Web Server] Scheduled profile: {profile_name}")
-            send_json_response(conn, {
+            await send_json_response(writer, {
                 'success': True,
                 'message': f'Scheduled profile: {profile_name}'
             })
         else:
-            send_json_response(conn, {
+            await send_json_response(writer, {
                 'success': False,
                 'error': 'Command queue full'
             }, 500)
-    
+
     except Exception as e:
         print(f"[Web Server] Error scheduling profile: {e}")
-        send_json_response(conn, {'success': False, 'error': str(e)}, 400)
+        await send_json_response(writer, {'success': False, 'error': str(e)}, 400)
 
-def handle_api_scheduled_status(conn):
+async def handle_api_scheduled_status(writer):
     """GET /api/scheduled - Get status of scheduled profile"""
     status = get_status_receiver().get_status()
     scheduled = status.get('scheduled_profile')
-    
+
     if scheduled:
-        send_json_response(conn, {
+        await send_json_response(writer, {
             'scheduled': True,
             'profile': scheduled['profile_filename'],
             'start_time': scheduled['start_time'],
@@ -269,30 +300,19 @@ def handle_api_scheduled_status(conn):
             'seconds_until_start': scheduled['seconds_until_start']
         })
     else:
-        send_json_response(conn, {'scheduled': False})
+        await send_json_response(writer, {'scheduled': False})
 
-def handle_api_cancel_scheduled(conn):
+async def handle_api_cancel_scheduled(writer):
     """POST /api/scheduled/cancel - Cancel scheduled profile"""
-    command = CommandMessage.cancel_scheduled()
-    
-    if QueueHelper.put_nowait(command_queue, command):
-        print("[Web Server] Cancelled scheduled profile")
-        send_json_response(conn, {
-            'success': True,
-            'message': 'Cancelled scheduled profile'
-        })
-    else:
-        send_json_response(conn, {
-            'success': False,
-            'error': 'Command queue full'
-        }, 500)
+    await _send_command(writer, CommandMessage.cancel_scheduled(), 'Cancelled scheduled profile',
+                        '[Web Server] Cancelled scheduled profile')
 
 # === File Management Helpers ===
 
 def check_idle_state():
     """
     Check if kiln is in IDLE state before file operations
-    
+
     Returns:
         (is_idle, error_response) tuple
         - If idle: (True, None)
@@ -300,135 +320,127 @@ def check_idle_state():
     """
     status = get_status_receiver().get_status()
     state = status.get('state', 'UNKNOWN')
-    
+
     if state != 'IDLE':
         return False, {
             'success': False,
             'error': f'File operations not allowed while kiln is {state}. Stop the kiln first.'
         }
-    
+
     return True, None
 
 def validate_directory(directory):
     """
     Validate that directory is either 'profiles' or 'logs'
-    
+
     Returns:
         (is_valid, path, error_response) tuple
     """
-    if directory not in ['profiles', 'logs']:
+    if directory not in VALID_DIRECTORIES:
         return False, None, {
             'success': False,
             'error': "Invalid directory. Must be 'profiles' or 'logs'"
         }
-    
+
     return True, directory, None
 
 def safe_filename(filename):
     """
     Validate filename to prevent directory traversal
-    
+
     Returns:
         True if safe, False otherwise
     """
     # Disallow path separators and parent directory references
     if '/' in filename or '\\' in filename or '..' in filename:
         return False
-    
+
     # Must have some content
     if not filename or filename.startswith('.'):
         return False
-    
+
     return True
+
+
+def _remove_quietly(filepath):
+    try:
+        os.remove(filepath)
+    except OSError:
+        pass
+
+# Active downloads/uploads, tracked so a starting firing can abort them mid-flight.
+_transfer_tasks = set()
+
+def cancel_file_transfers():
+    for task in list(_transfer_tasks):
+        task.cancel()
+
+
+async def _file_guard(writer, directory, filename=None):
+    """Run the shared file-op preconditions.
+
+    Returns the validated directory path, or None after sending the matching
+    error: 403 if the kiln is not IDLE, 400 for a bad directory or unsafe
+    filename. Pass filename=None for directory-only operations.
+    """
+    is_idle, error = check_idle_state()
+    if not is_idle:
+        await send_json_response(writer, error, 403)
+        return None
+
+    is_valid, dir_path, error = validate_directory(directory)
+    if not is_valid:
+        await send_json_response(writer, error, 400)
+        return None
+
+    if filename is not None and not safe_filename(filename):
+        await send_json_response(writer, {'success': False, 'error': 'Invalid filename'}, 400)
+        return None
+
+    return dir_path
 
 # === File Management Handlers ===
 
-def handle_api_files_list(conn, directory):
+async def handle_api_files_list(writer, directory):
     """GET /api/files/<directory> - List files in directory"""
+    dir_path = await _file_guard(writer, directory)
+    if dir_path is None:
+        return
+
     try:
-        # Check if IDLE
-        is_idle, error = check_idle_state()
-        if not is_idle:
-            send_json_response(conn, error, 403)
-            return
-        
-        # Validate directory
-        is_valid, dir_path, error = validate_directory(directory)
-        if not is_valid:
-            send_json_response(conn, error, 400)
-            return
-        
-        # List files
-        import os
-        try:
-            files = []
-            for filename in os.listdir(dir_path):
-                filepath = f"{dir_path}/{filename}"
-                try:
-                    stat = os.stat(filepath)
-                    files.append({
-                        'name': filename,
-                        'size': stat[6],  # st_size
-                        'modified': stat[8]  # st_mtime
-                    })
-                except:
-                    # If stat fails, just add name
-                    files.append({'name': filename, 'size': 0, 'modified': 0})
-            
-            send_json_response(conn, {
-                'success': True,
-                'directory': directory,
-                'files': files,
-                'count': len(files)
-            })
-        except OSError as e:
-            send_json_response(conn, {
-                'success': False,
-                'error': f'Failed to list directory: {e}'
-            }, 500)
-    
-    except Exception as e:
+        files = []
+        for filename in os.listdir(dir_path):
+            filepath = f"{dir_path}/{filename}"
+            try:
+                stat = os.stat(filepath)
+                files.append({'name': filename, 'size': stat[6], 'modified': stat[8]})
+            except:
+                # If stat fails, just add name
+                files.append({'name': filename, 'size': 0, 'modified': 0})
+
+        await send_json_response(writer, {
+            'success': True,
+            'directory': directory,
+            'files': files,
+            'count': len(files)
+        })
+    except OSError as e:
         print(f"[Web Server] Error listing files: {e}")
-        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+        await send_json_response(writer, {'success': False, 'error': f'Failed to list directory: {e}'}, 500)
 
-def handle_api_files_get(conn, directory, filename):
-    """GET /api/files/<directory>/<filename> - Stream raw file content
-
-    MEMORY OPTIMIZED: streams the file in 1KB chunks. The previous
-    implementation read the whole file with f.read(), wrapped it in JSON,
-    encoded to bytes, and concatenated with headers - holding ~4x the file
-    size in RAM and crashing on multi-hundred-KB log CSVs (Pico ~200KB free heap).
-    """
-    # Check if IDLE
-    is_idle, error = check_idle_state()
-    if not is_idle:
-        send_json_response(conn, error, 403)
+async def handle_api_files_get(writer, directory, filename):
+    """GET /api/files/<directory>/<filename> - stream raw file content in 1KB chunks."""
+    dir_path = await _file_guard(writer, directory, filename)
+    if dir_path is None:
         return
 
-    # Validate directory
-    is_valid, dir_path, error = validate_directory(directory)
-    if not is_valid:
-        send_json_response(conn, error, 400)
-        return
-
-    # Validate filename
-    if not safe_filename(filename):
-        send_json_response(conn, {
-            'success': False,
-            'error': 'Invalid filename'
-        }, 400)
-        return
-
-    # Stat for Content-Length (no in-RAM size measurement)
-    import os
     filepath = f"{dir_path}/{filename}"
     try:
-        size = os.stat(filepath)[6]  # st_size
+        size = os.stat(filepath)[6]
     except OSError:
-        send_response(conn, 404, b'File not found', 'text/plain')
+        await send_response(writer, 404, b'File not found', 'text/plain')
         return
 
-    # Content type from extension - keeps headers small
     if filename.endswith('.csv'):
         content_type = b'text/csv'
     elif filename.endswith('.json'):
@@ -445,181 +457,131 @@ def handle_api_files_get(conn, directory, filename):
         HEADER_CONNECTION_CLOSE
     )
 
-    # Switch to blocking mode for the transfer. Safe because file ops are
-    # gated by IDLE state (kiln not running, no time-critical updates).
+    # Reusable 1KB buffer keeps peak RAM flat regardless of file size.
+    gc.collect()
+    buf = bytearray(FILE_CHUNK_SIZE)
+    mv = memoryview(buf)
     try:
-        conn.setblocking(True)
-        conn.sendall(header)
-
-        gc.collect()
-        buf = bytearray(1024)
-        mv = memoryview(buf)
+        writer.write(header)
+        await writer.drain()
         with open(filepath, 'rb') as f:
             while True:
                 n = f.readinto(buf)
                 if not n:
                     break
-                conn.sendall(mv[:n])
+                writer.write(mv[:n])
+                await writer.drain()
     except Exception as e:
-        # Connection likely closed mid-stream; nothing we can do, just log.
-        print(f"[Web Server] Error streaming file {filename}: {e}")
+        # Real disconnect only; CancelledError (timeout/firing) is a BaseException
+        # and propagates past this handler to the transfer supervisor.
+        print(f"[Web Server] Download {filename} interrupted: {e}")
     finally:
         gc.collect()
 
-def handle_api_files_delete(conn, directory, filename):
+async def handle_api_files_delete(writer, directory, filename):
     """DELETE /api/files/<directory>/<filename> - Delete a file"""
-    try:
-        # Check if IDLE
-        is_idle, error = check_idle_state()
-        if not is_idle:
-            send_json_response(conn, error, 403)
-            return
-        
-        # Validate directory
-        is_valid, dir_path, error = validate_directory(directory)
-        if not is_valid:
-            send_json_response(conn, error, 400)
-            return
-        
-        # Validate filename
-        if not safe_filename(filename):
-            send_json_response(conn, {
-                'success': False,
-                'error': 'Invalid filename'
-            }, 400)
-            return
-        
-        # Delete file
-        filepath = f"{dir_path}/{filename}"
-        try:
-            import os
-            os.remove(filepath)
-            print(f"[Web Server] Deleted file: {filepath}")
-            send_json_response(conn, {
-                'success': True,
-                'message': f'Deleted {filename}'
-            })
-        except OSError as e:
-            send_json_response(conn, {
-                'success': False,
-                'error': f'Failed to delete file: {e}'
-            }, 500)
-    
-    except Exception as e:
-        print(f"[Web Server] Error deleting file: {e}")
-        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+    dir_path = await _file_guard(writer, directory, filename)
+    if dir_path is None:
+        return
 
-def handle_api_files_upload(conn, directory, filename, body):
-    """PUT /api/files/<directory>/<filename> - Upload/create a file"""
+    filepath = f"{dir_path}/{filename}"
     try:
-        # Check if IDLE
-        is_idle, error = check_idle_state()
-        if not is_idle:
-            send_json_response(conn, error, 403)
-            return
-        
-        # Validate directory
-        is_valid, dir_path, error = validate_directory(directory)
-        if not is_valid:
-            send_json_response(conn, error, 400)
-            return
-        
-        # Validate filename
-        if not safe_filename(filename):
-            send_json_response(conn, {
-                'success': False,
-                'error': 'Invalid filename'
-            }, 400)
-            return
-        
-        # Parse JSON body to get content
-        try:
-            print(f"[Web Server] Upload body length: {len(body)} bytes")
-            body_str = body.decode('utf-8')
-            data = json.loads(body_str)
-            content = data.get('content')
-            
-            if content is None:
-                send_json_response(conn, {
-                    'success': False,
-                    'error': 'Missing content field in request body'
-                }, 400)
-                return
-        except UnicodeDecodeError as e:
-            print(f"[Web Server] UTF-8 decode error: {e}")
-            send_json_response(conn, {
-                'success': False,
-                'error': f'Invalid UTF-8 encoding: {e}'
-            }, 400)
-            return
-        except ValueError as e:
-            print(f"[Web Server] JSON parse error: {e}")
-            print(f"[Web Server] Body preview: {body[:200]}")
-            send_json_response(conn, {
-                'success': False,
-                'error': f'Invalid JSON body: {e}'
-            }, 400)
-            return
-        except Exception as e:
-            print(f"[Web Server] Unexpected error parsing body: {e}")
-            send_json_response(conn, {
-                'success': False,
-                'error': f'Error parsing request: {e}'
-            }, 400)
-            return
-        
-        # Write file
-        filepath = f"{dir_path}/{filename}"
-        try:
-            with open(filepath, 'w') as f:
-                f.write(content)
-            
-            print(f"[Web Server] Uploaded file: {filepath} ({len(content)} bytes)")
-            
-            # Update profile cache if it's a profile
-            if directory == 'profiles':
-                from server.profile_cache import get_profile_cache
-                get_profile_cache().refresh()
-            
-            send_json_response(conn, {
-                'success': True,
-                'message': f'Uploaded {filename}',
-                'filename': filename,
-                'size': len(content)
-            })
-        except OSError as e:
-            send_json_response(conn, {
-                'success': False,
-                'error': f'Failed to write file: {e}'
-            }, 500)
-    
-    except Exception as e:
-        print(f"[Web Server] Error uploading file: {e}")
-        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+        os.remove(filepath)
+        print(f"[Web Server] Deleted file: {filepath}")
+        await send_json_response(writer, {'success': True, 'message': f'Deleted {filename}'})
+    except OSError as e:
+        await send_json_response(writer, {'success': False, 'error': f'Failed to delete file: {e}'}, 500)
 
-def handle_api_files_delete_all(conn, directory):
+async def handle_api_files_upload(writer, directory, filename, reader, content_length):
+    """PUT /api/files/<directory>/<filename> - stream the raw request body to disk in 1KB chunks."""
+    dir_path = await _file_guard(writer, directory, filename)
+    if dir_path is None:
+        return
+
+    if content_length <= 0:
+        await send_json_response(writer, {'success': False, 'error': 'Missing or invalid Content-Length'}, 400)
+        return
+    if content_length > MAX_UPLOAD_SIZE:
+        await send_json_response(writer, {
+            'success': False,
+            'error': f'File too large: {content_length} bytes (max {MAX_UPLOAD_SIZE})'
+        }, 413)
+        return
+
+    filepath = f"{dir_path}/{filename}"
+    gc.collect()
+    buf = bytearray(FILE_CHUNK_SIZE)
+    mv = memoryview(buf)
+
+    written = 0
+    try:
+        with open(filepath, 'wb') as f:
+            # The stream's internal buffer already holds any body bytes that
+            # arrived with the headers; readinto() returns those first.
+            while written < content_length:
+                to_read = content_length - written
+                if to_read > FILE_CHUNK_SIZE:
+                    to_read = FILE_CHUNK_SIZE
+                n = await reader.readinto(mv[:to_read])
+                if not n:
+                    break
+                f.write(mv[:n])
+                written += n
+    except asyncio.CancelledError:
+        # Timeout or firing: drop the partial file, let the supervisor see the cancel.
+        _remove_quietly(filepath)
+        raise
+    except Exception as e:
+        _remove_quietly(filepath)
+        try:
+            await send_json_response(writer, {'success': False, 'error': f'Failed to write file: {e}'}, 500)
+        except Exception:
+            pass
+        return
+
+    gc.collect()
+
+    if written < content_length:
+        _remove_quietly(filepath)
+        try:
+            await send_json_response(writer, {'success': False, 'error': 'Upload incomplete: client stopped sending'}, 408)
+        except Exception:
+            pass
+        return
+
+    if directory == 'profiles':
+        get_profile_cache().refresh()
+
+    print(f"[Web Server] Uploaded file: {filepath} ({written} bytes)")
+    await send_json_response(writer, {
+        'success': True,
+        'message': f'Uploaded {filename}',
+        'filename': filename,
+        'size': written
+    })
+
+async def handle_api_files_delete_all(writer, directory):
     """DELETE /api/files/<directory>/all - Delete all files in directory"""
     try:
         # Check if IDLE
         is_idle, error = check_idle_state()
         if not is_idle:
-            send_json_response(conn, error, 403)
+            await send_json_response(writer, error, 403)
             return
-        
+
         # Only allow for logs directory
         if directory != 'logs':
-            send_json_response(conn, {
+            await send_json_response(writer, {
                 'success': False,
                 'error': 'Bulk delete only allowed for logs directory'
             }, 403)
             return
-        
+
         # Delete all files
-        import os
         try:
             deleted = []
             errors = []
-            
+
             for filename in os.listdir(directory):
                 filepath = f"{directory}/{filename}"
                 try:
@@ -627,41 +589,39 @@ def handle_api_files_delete_all(conn, directory):
                     deleted.append(filename)
                 except Exception as e:
                     errors.append(f"{filename}: {e}")
-            
+
             print(f"[Web Server] Deleted {len(deleted)} files from {directory}")
-            
+
             response = {
                 'success': True,
                 'deleted_count': len(deleted),
                 'deleted_files': deleted
             }
-            
+
             if errors:
                 response['errors'] = errors
-            
-            send_json_response(conn, response)
-        
+
+            await send_json_response(writer, response)
+
         except OSError as e:
-            send_json_response(conn, {
+            await send_json_response(writer, {
                 'success': False,
                 'error': f'Failed to delete files: {e}'
             }, 500)
-    
+
     except Exception as e:
         print(f"[Web Server] Error deleting all files: {e}")
-        send_json_response(conn, {'success': False, 'error': str(e)}, 500)
+        await send_json_response(writer, {'success': False, 'error': str(e)}, 500)
 
 # === Status Handlers ===
 
-def handle_api_status(conn):
+async def handle_api_status(writer):
     """GET /api/status - Get detailed kiln status with PID stats"""
-    # Return cached status from control thread
-    status = get_status_receiver().get_status()
-    send_json_response(conn, status)
+    await send_response(writer, 200, get_status_receiver().get_status_json(), 'application/json')
 
 # === Tuning Handlers ===
 
-def handle_api_tuning_start(conn, body):
+async def handle_api_tuning_start(writer, body):
     """POST /api/tuning/start - Start PID auto-tuning"""
     try:
         data = json.loads(body.decode())
@@ -669,18 +629,17 @@ def handle_api_tuning_start(conn, body):
         max_temp = data.get('max_temp')  # None = use mode default
 
         # Validate mode
-        valid_modes = [MODE_SAFE, MODE_STANDARD, MODE_THOROUGH, MODE_HIGH_TEMP]
-        if mode not in valid_modes:
-            send_json_response(conn, {
+        if mode not in VALID_TUNING_MODES:
+            await send_json_response(writer, {
                 'success': False,
-                'error': f'Invalid mode. Must be one of: {", ".join(valid_modes)}'
+                'error': f'Invalid mode. Must be one of: {", ".join(VALID_TUNING_MODES)}'
             }, 400)
             return
 
         # Validate max_temp if provided
         if max_temp is not None:
             if max_temp < 50 or max_temp > 500:
-                send_json_response(conn, {
+                await send_json_response(writer, {
                     'success': False,
                     'error': 'Maximum temperature must be between 50°C and 500°C'
                 }, 400)
@@ -691,255 +650,215 @@ def handle_api_tuning_start(conn, body):
 
         if QueueHelper.put_nowait(command_queue, command):
             print(f"[Web Server] Started tuning (mode: {mode}, max_temp: {max_temp}°C)")
-            send_json_response(conn, {
+            cancel_file_transfers()
+            await send_json_response(writer, {
                 'success': True,
                 'message': f'Tuning started in {mode} mode'
             })
         else:
-            send_json_response(conn, {
+            await send_json_response(writer, {
                 'success': False,
                 'error': 'Command queue full, please retry'
             }, 500)
 
     except Exception as e:
         print(f"[Web Server] Error starting tuning: {e}")
-        send_json_response(conn, {'success': False, 'error': str(e)}, 400)
+        await send_json_response(writer, {'success': False, 'error': str(e)}, 400)
 
-def handle_api_tuning_stop(conn):
+async def handle_api_tuning_stop(writer):
     """POST /api/tuning/stop - Stop PID auto-tuning"""
-    command = CommandMessage.stop_tuning()
+    await _send_command(writer, CommandMessage.stop_tuning(), 'Tuning stopped',
+                        '[Web Server] Tuning stop requested')
 
-    if QueueHelper.put_nowait(command_queue, command):
-        print("[Web Server] Tuning stop requested")
-        send_json_response(conn, {'success': True, 'message': 'Tuning stopped'})
-    else:
-        send_json_response(conn, {
-            'success': False,
-            'error': 'Command queue full, please retry'
-        }, 500)
-
-def handle_api_tuning_status(conn):
+async def handle_api_tuning_status(writer):
     """GET /api/tuning/status - Get tuning status"""
-    # Return cached status (includes tuning info if in TUNING state)
-    status = get_status_receiver().get_status()
-    send_json_response(conn, status)
+    # Same pre-encoded status bytes as /api/status (tuning info is included when TUNING).
+    await send_response(writer, 200, get_status_receiver().get_status_json(), 'application/json')
 
-def handle_tuning_page(conn):
+async def handle_tuning_page(writer):
     """Serve tuning.html page"""
     # MEMORY OPTIMIZED: Force garbage collection before building large response
     gc.collect()
 
     # PERFORMANCE: Use cached HTML instead of blocking file I/O
-    from server.html_cache import get_html_cache
     html = get_html_cache().get('tuning')
 
     if html:
-        send_html_response(conn, html)
+        await send_html_response(writer, html)
     else:
         # Fallback: cache miss
-        send_response(conn, 404, b'Tuning page not found', 'text/plain')
+        await send_response(writer, 404, b'Tuning page not found', 'text/plain')
 
 # === Static File Handlers ===
 
-async def handle_index(conn):
+async def handle_index(writer):
     """Serve pre-rendered index.html (profiles list already included)"""
     # PERFORMANCE: Use pre-rendered HTML from cache (no JSON building, no replacements)
-    from server.html_cache import get_html_cache
     html = get_html_cache().get('index')
 
     if html:
         # Send pre-rendered HTML - client will fetch data via /api/status
-        send_html_response(conn, html)
+        await send_html_response(writer, html)
     else:
         # Fallback: cache miss (shouldn't happen if preload succeeded)
-        send_response(conn, 500, b'HTML cache miss', 'text/plain')
+        await send_response(writer, 500, b'HTML cache miss', 'text/plain')
 
 # === Request Router ===
 
-async def handle_client(conn, addr):
-    """Handle individual client connection"""
-    global active_connections
-    active_connections += 1
+async def _supervise_transfer(coro):
+    """Run a size-unbounded file transfer as a cancellable, timed task.
 
+    The task is tracked in _transfer_tasks so a starting firing can abort it
+    (cancel_file_transfers), and asyncio.wait_for reclaims the slot if a client
+    stalls past FILE_TRANSFER_TIMEOUT.
+    """
+    task = asyncio.create_task(coro)
+    _transfer_tasks.add(task)
     try:
-        # Keep socket non-blocking and add timeout
-        conn.setblocking(False)
-        conn.settimeout(5.0)  # 5 second timeout for recv
+        await asyncio.wait_for(task, FILE_TRANSFER_TIMEOUT)
+    except asyncio.TimeoutError:
+        print(f"[Web Server] File transfer exceeded {FILE_TRANSFER_TIMEOUT}s; slot reclaimed")
+    except asyncio.CancelledError:
+        print("[Web Server] File transfer aborted: kiln started firing")
+    finally:
+        _transfer_tasks.discard(task)
 
-        # Try to receive data with timeout
-        try:
-            req = conn.recv(4096)
-        except OSError as e:
-            # Timeout or no data available
-            print(f"[Web Server] Timeout/error receiving from {addr}: {e}")
-            return
 
-        if not req:
-            # Client disconnected
-            return
+# Exact-path routes: path -> (required_method, handler, needs_body).
+# required_method None = any method allowed; needs_body True = pass the request body.
+_ROUTES = {
+    '/': (None, handle_index, False),
+    '/index.html': (None, handle_index, False),
+    '/tuning': (None, handle_tuning_page, False),
+    '/tuning.html': (None, handle_tuning_page, False),
+    '/api/status': (None, handle_api_status, False),
+    '/api/shutdown': (None, handle_api_shutdown, False),
+    '/api/run': ('POST', handle_api_run, True),
+    '/api/stop': ('POST', handle_api_stop, False),
+    '/api/clear-error': ('POST', handle_api_clear_error, False),
+    '/api/reboot': ('POST', handle_api_reboot, False),
+    '/api/tuning/start': ('POST', handle_api_tuning_start, True),
+    '/api/tuning/stop': ('POST', handle_api_tuning_stop, False),
+    '/api/tuning/status': ('GET', handle_api_tuning_status, False),
+    '/api/schedule': ('POST', handle_api_schedule, True),
+    '/api/scheduled': ('GET', handle_api_scheduled_status, False),
+    '/api/scheduled/cancel': ('POST', handle_api_cancel_scheduled, False),
+}
 
-        print(f"Request from {addr}")
 
-        # Parse request (initial)
-        method, path, headers, body = parse_request(req)
-        print(f"{method} {path}")
-        
-        # For PUT requests with Content-Length, read full body if needed
-        if method == 'PUT' and 'content-length' in headers:
-            content_length = int(headers['content-length'])
-            # Check if we need to read more data
-            header_end = req.find(b'\r\n\r\n')
-            if header_end != -1:
-                received_body_length = len(req) - (header_end + 4)
-                if received_body_length < content_length:
-                    # Need to read more data
-                    remaining = content_length - received_body_length
-                    try:
-                        additional_data = conn.recv(remaining)
-                        body += additional_data
-                    except OSError as e:
-                        print(f"[Web Server] Error reading full body: {e}")
-                        send_response(conn, 400, b'Failed to read request body', 'text/plain')
-                        return
-
-        # Handle CORS preflight requests
-        if method == 'OPTIONS':
-            # Respond to preflight with 200 OK and CORS headers (already included in send_response)
-            send_response(conn, 200, b'', 'text/plain')
-            return
-
-        # Route request
-        if path == '/' or path == '/index.html':
-            await handle_index(conn)
-
-        elif path == '/tuning' or path == '/tuning.html':
-            handle_tuning_page(conn)
-
-        elif path == '/api/status':
-            handle_api_status(conn)
-
-        elif path == '/api/shutdown':
-            handle_api_shutdown(conn)
-
-        # Control commands
-        elif path == '/api/run':
-            if method == 'POST':
-                handle_api_run(conn, body)
-            else:
-                send_response(conn, 405, b'Method not allowed', 'text/plain')
-
-        elif path == '/api/stop':
-            if method == 'POST':
-                handle_api_stop(conn)
-            else:
-                send_response(conn, 405, b'Method not allowed', 'text/plain')
-
-        elif path == '/api/clear-error':
-            if method == 'POST':
-                handle_api_clear_error(conn)
-            else:
-                send_response(conn, 405, b'Method not allowed', 'text/plain')
-
-        elif path == '/api/reboot':
-            if method == 'POST':
-                handle_api_reboot(conn)
-            else:
-                send_response(conn, 405, b'Method not allowed', 'text/plain')
-
-        # Tuning endpoints
-        elif path == '/api/tuning/start':
-            if method == 'POST':
-                handle_api_tuning_start(conn, body)
-            else:
-                send_response(conn, 405, b'Method not allowed', 'text/plain')
-
-        elif path == '/api/tuning/stop':
-            if method == 'POST':
-                handle_api_tuning_stop(conn)
-            else:
-                send_response(conn, 405, b'Method not allowed', 'text/plain')
-
-        elif path == '/api/tuning/status':
-            if method == 'GET':
-                handle_api_tuning_status(conn)
-            else:
-                send_response(conn, 405, b'Method not allowed', 'text/plain')
-
-        # Scheduling endpoints
-        elif path == '/api/schedule':
-            if method == 'POST':
-                handle_api_schedule(conn, body)
-            else:
-                send_response(conn, 405, b'Method not allowed', 'text/plain')
-
-        elif path == '/api/scheduled':
-            if method == 'GET':
-                handle_api_scheduled_status(conn)
-            else:
-                send_response(conn, 405, b'Method not allowed', 'text/plain')
-
-        elif path == '/api/scheduled/cancel':
-            if method == 'POST':
-                handle_api_cancel_scheduled(conn)
-            else:
-                send_response(conn, 405, b'Method not allowed', 'text/plain')
-
-        # File management endpoints
-        elif path.startswith('/api/files/'):
-            # Parse path: /api/files/<directory> or /api/files/<directory>/<filename>
-            parts = path.split('/')
-            if len(parts) == 4:
-                # /api/files/<directory>
-                directory = parts[3]
-                if method == 'GET':
-                    handle_api_files_list(conn, directory)
-                else:
-                    send_response(conn, 405, b'Method not allowed', 'text/plain')
-            
-            elif len(parts) == 5:
-                # /api/files/<directory>/<filename>
-                directory = parts[3]
-                filename = parts[4]
-                
-                if filename == 'all':
-                    # DELETE /api/files/<directory>/all
-                    if method == 'DELETE':
-                        handle_api_files_delete_all(conn, directory)
-                    else:
-                        send_response(conn, 405, b'Method not allowed', 'text/plain')
-                else:
-                    # GET, PUT, or DELETE /api/files/<directory>/<filename>
-                    if method == 'GET':
-                        handle_api_files_get(conn, directory, filename)
-                    elif method == 'PUT':
-                        handle_api_files_upload(conn, directory, filename, body)
-                    elif method == 'DELETE':
-                        handle_api_files_delete(conn, directory, filename)
-                    else:
-                        send_response(conn, 405, b'Method not allowed', 'text/plain')
-            else:
-                send_response(conn, 404, b'Not found', 'text/plain')
-
+async def _route_files(reader, writer, method, path, content_length):
+    """Dispatch /api/files/<directory>[/<filename>] (the variable-tail routes)."""
+    parts = path.split('/')
+    if len(parts) == 4:
+        # /api/files/<directory>
+        directory = parts[3]
+        if method == 'GET':
+            await handle_api_files_list(writer, directory)
         else:
-            send_response(conn, 404, b'Not found', 'text/plain')
+            await send_response(writer, 405, b'Method not allowed', 'text/plain')
+    elif len(parts) == 5:
+        # /api/files/<directory>/<filename>
+        directory = parts[3]
+        filename = parts[4]
+        if filename == 'all':
+            if method == 'DELETE':
+                await handle_api_files_delete_all(writer, directory)
+            else:
+                await send_response(writer, 405, b'Method not allowed', 'text/plain')
+        elif method == 'GET':
+            # Size-unbounded download: supervised so a firing can abort it.
+            await _supervise_transfer(handle_api_files_get(writer, directory, filename))
+        elif method == 'PUT':
+            # Size-unbounded upload: streamed straight from the socket to disk.
+            await _supervise_transfer(handle_api_files_upload(writer, directory, filename, reader, content_length))
+        elif method == 'DELETE':
+            await handle_api_files_delete(writer, directory, filename)
+        else:
+            await send_response(writer, 405, b'Method not allowed', 'text/plain')
+    else:
+        await send_response(writer, 404, b'Not found', 'text/plain')
+
+
+async def _route(reader, writer, method, path, body, content_length):
+    """Dispatch a parsed request to its handler."""
+    # CORS preflight: 200 for any path.
+    if method == 'OPTIONS':
+        await send_response(writer, 200, b'', 'text/plain')
+        return
+
+    route = _ROUTES.get(path)
+    if route is not None:
+        req_method, handler, needs_body = route
+        if req_method is not None and method != req_method:
+            await send_response(writer, 405, b'Method not allowed', 'text/plain')
+        elif needs_body:
+            await handler(writer, body)
+        else:
+            await handler(writer)
+        return
+
+    if path.startswith('/api/files/'):
+        await _route_files(reader, writer, method, path, content_length)
+        return
+
+    await send_response(writer, 404, b'Not found', 'text/plain')
+
+
+async def handle_client(reader, writer):
+    """asyncio.start_server callback: handle one client connection end to end."""
+    global active_connections
+
+    # Cap concurrency: reject (and immediately close) beyond the limit so we
+    # never hold more than MAX_CONCURRENT_CONNECTIONS handler buffers at once.
+    if active_connections >= MAX_CONCURRENT_CONNECTIONS:
+        await _close(writer)
+        return
+
+    active_connections += 1
+    try:
+        method, path, content_length = await _read_request(reader)
+        if not method:
+            return
+
+        # Body policy:
+        # - PUT file uploads are streamed straight to disk by the handler, so we
+        #   pass the live reader through and DO NOT buffer the body here.
+        # - Every other request: read (and thus drain) the declared body so the
+        #   socket is clean before we close it. JSON handlers consume `body`;
+        #   bodyless endpoints simply discard it.
+        is_file_upload = method == 'PUT' and path.startswith('/api/files/')
+
+        # Reject oversized non-upload bodies: buffering a hostile Content-Length
+        # here could exhaust the shared heap (JSON commands are tiny).
+        if content_length > MAX_JSON_BODY and not is_file_upload:
+            await send_response(writer, 413, b'Body too large', 'text/plain')
+            return
+
+        body = b''
+        if content_length > 0 and not is_file_upload:
+            try:
+                body = await reader.readexactly(content_length)
+            except Exception:
+                # Short/aborted body: handlers that need it return 400 on decode.
+                body = b''
+
+        await _route(reader, writer, method, path, body, content_length)
 
     except Exception as e:
         print(f"Error handling request: {e}")
         try:
-            send_response(conn, 500, f'Server error: {e}'.encode(), 'text/plain')
-        except:
+            await send_response(writer, 500, f'Server error: {e}'.encode(), 'text/plain')
+        except Exception:
             pass
 
     finally:
         active_connections -= 1
-        try:
-            conn.close()
-        except:
-            pass
+        await _close(writer)
+
 
 async def start_server(cmd_queue):
     """
-    Start the HTTP server with non-blocking socket
+    Start the HTTP server using the native asyncio TCP server.
 
     Args:
         cmd_queue: ThreadSafeQueue for sending commands to control thread
@@ -951,58 +870,21 @@ async def start_server(cmd_queue):
     global command_queue
     command_queue = cmd_queue
 
+    host = getattr(config, 'WEB_SERVER_HOST', '0.0.0.0')
     print(f"[Web Server] Starting HTTP server on port {config.WEB_SERVER_PORT}")
 
-    # Create server socket
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(('', config.WEB_SERVER_PORT))
-    s.listen(5)
-    s.setblocking(False)
-
-    print("[Web Server] HTTP server listening!")
-
-    socket_error_count = 0
-    max_socket_errors = MAX_SOCKET_ERRORS  # Allow 5 seconds of errors
-
+    # asyncio.start_server owns the socket + accept loop. The outer loop only
+    # re-establishes the listener if start_server itself fails (e.g. transient
+    # bind error); WiFi reconnects are handled by wifi_manager.monitor.
     while True:
         try:
-            # Check if we're at connection limit before accepting
-            if active_connections >= MAX_CONCURRENT_CONNECTIONS:
-                await asyncio.sleep(SERVER_LOOP_INTERVAL)
-                continue
-
-            conn, addr = s.accept()
-            socket_error_count = 0  # Reset on successful accept
-            # Handle each client in a separate task
-            asyncio.create_task(handle_client(conn, addr))
-
-        except OSError as e:
-            # Check if it's a "no connection" error (errno 11 EAGAIN) vs real error
-            if hasattr(e, 'args') and len(e.args) > 0 and e.args[0] == 11:
-                # EAGAIN - no connection available (normal for non-blocking socket)
-                pass
-            else:
-                # Real socket error - count and potentially recover
-                socket_error_count += 1
-                if socket_error_count <= MAX_SOCKET_ERROR_PRINT:  # Only print first few errors to avoid spam
-                    print(f"[Web Server] Socket error ({socket_error_count}/{max_socket_errors}): {e}")
-
-                if socket_error_count >= max_socket_errors:
-                    print("[Web Server] Too many socket errors - attempting server restart...")
-                    try:
-                        # Try to restart the server socket
-                        s.close()
-                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                        s.bind(('', config.WEB_SERVER_PORT))
-                        s.listen(5)
-                        s.setblocking(False)
-                        socket_error_count = 0
-                        print("[Web Server] Server socket restarted successfully")
-                    except Exception as restart_error:
-                        print(f"[Web Server] Server restart failed: {restart_error}")
-                        print("[Web Server] Giving up on web server - Core 1 continues")
-                        return  # Exit web server but let Core 1 continue
-
-        await asyncio.sleep(SERVER_LOOP_INTERVAL)
+            server = await asyncio.start_server(handle_client, host, config.WEB_SERVER_PORT)
+            print("[Web Server] HTTP server listening!")
+            async with server:
+                await server.wait_closed()
+        except asyncio.CancelledError:
+            print("[Web Server] Server task cancelled; stopping")
+            raise
+        except Exception as e:
+            print(f"[Web Server] Server error: {e}; retrying in 1s")
+            await asyncio.sleep(1)

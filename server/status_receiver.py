@@ -6,6 +6,7 @@
 # web server cache, etc.). This provides clean separation of concerns.
 
 import asyncio
+import json
 from kiln.comms import QueueHelper, StatusCache
 from micropython import const
 
@@ -54,6 +55,7 @@ class StatusReceiver:
         self.status_queue = None
         self.status_cache = StatusCache()
         self.listeners = []  # List of callback functions
+        self._status_json = None  # cached pre-encoded status; see get_status_json()
         self._initialized = True
         print("[StatusReceiver] Singleton instance created")
 
@@ -100,6 +102,24 @@ class StatusReceiver:
             Dictionary with current system status
         """
         return self.status_cache.get()
+
+    def get_status_json(self):
+        """
+        Get the latest status pre-encoded as JSON bytes.
+
+        Encoded at most once per status update instead of once per poll: run()
+        clears the cache when a new status arrives and the next caller
+        re-encodes. Lets /api/status (polled faster than the 2 Hz update rate)
+        skip a dict copy + json.dumps + encode on every request.
+
+        Returns:
+            bytes: UTF-8 JSON encoding of the current cached status
+        """
+        cached = self._status_json
+        if cached is None:
+            cached = json.dumps(self.status_cache.get()).encode()
+            self._status_json = cached
+        return cached
 
     def get_cached_status(self):
         """
@@ -162,6 +182,7 @@ class StatusReceiver:
             if status:
                 # Update cached status
                 self.status_cache.update(status)
+                self._status_json = None  # invalidate; re-encoded on next poll
 
                 # Notify all listeners
                 for listener in list(self.listeners):
