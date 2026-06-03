@@ -347,6 +347,8 @@ export function UnifiedRunChart({ logData }: { logData: LogDataPoint[] }) {
 						highlightRowStroke={
 							active.has("rate") ? "var(--chart-rate)" : undefined
 						}
+						highlightRowStrokeDasharray="5,5"
+						highlightRowStrokeOpacity={0.35}
 						highlightRowValues={
 							active.has("rate") ? [model.rateToPlot(0)] : undefined
 						}
