@@ -177,7 +177,6 @@ async def main():
     print("=" * 50)
     print("Pico Kiln Controller - Optimized Boot")
     print("=" * 50)
-    print("[Main] Stdout capture installed - logging to /stdout.log")
     print_memory_info("Boot Start")
 
     try:

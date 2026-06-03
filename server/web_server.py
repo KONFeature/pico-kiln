@@ -15,11 +15,16 @@
 import asyncio
 import json
 import gc
+import os
+import time
+import machine
 from micropython import const
 import config
 from kiln.comms import CommandMessage, QueueHelper
 from kiln.tuner import MODE_SAFE, MODE_STANDARD, MODE_THOROUGH, MODE_HIGH_TEMP
 from server.status_receiver import get_status_receiver
+from server.profile_cache import get_profile_cache
+from server.html_cache import get_html_cache
 
 # MEMORY OPTIMIZED: pre-encoded HTTP status lines (bytes, allocated once).
 HTTP_200 = b"HTTP/1.1 200 OK\r\n"
@@ -62,8 +67,13 @@ command_queue = None
 # Module-level constants for connection and request limits
 MAX_CONCURRENT_CONNECTIONS = const(2)      # Limit to 2 concurrent connections on Pico
 MAX_UPLOAD_SIZE = const(512000)            # 500KB max upload (long profiles / tuning logs)
+MAX_JSON_BODY = const(4096)                # Cap buffered (non-upload) request bodies; JSON commands are tiny
 FILE_CHUNK_SIZE = const(1024)              # 1 KiB streaming chunk (Microdot-validated)
 FILE_TRANSFER_TIMEOUT = const(60)          # Max seconds for one file transfer before its slot is reclaimed
+
+# Validation tables built once at import (not rebuilt per request).
+VALID_DIRECTORIES = ('profiles', 'logs')
+VALID_TUNING_MODES = (MODE_SAFE, MODE_STANDARD, MODE_THOROUGH, MODE_HIGH_TEMP)
 
 # Connection tracking
 active_connections = 0
@@ -81,36 +91,37 @@ async def _close(writer):
 async def _read_request(reader):
     """Read the request line and headers from a stream.
 
-    Reads line-by-line so a request whose headers span multiple TCP segments
-    (or exceed a single recv) is parsed correctly. The body is left in the
-    stream for the handler to consume.
+    Reads line-by-line so headers spanning multiple TCP segments are parsed
+    correctly. Only Content-Length is kept (the one header any handler needs);
+    the rest are scanned past, avoiding a throwaway per-request dict. The body
+    is left in the stream for the handler to consume.
 
-    Returns:
-        (method, path, headers) tuple, or (None, None, None) on empty/garbage.
+    Returns (method, path, content_length), or (None, None, 0) on empty/garbage.
     """
     request_line = await reader.readline()
     if not request_line:
-        return None, None, None
+        return None, None, 0
 
     try:
         parts = request_line.decode().split(' ')
         method = parts[0]
         path = parts[1] if len(parts) > 1 else '/'
     except Exception:
-        return None, None, None
+        return None, None, 0
 
-    headers = {}
+    content_length = 0
     while True:
         line = await reader.readline()
         if not line or line == b'\r\n':
             break
-        try:
-            key, value = line.decode().split(':', 1)
-            headers[key.strip().lower()] = value.strip()
-        except Exception:
-            pass
+        # "Content-Length:" is 15 bytes; match case-insensitively without decoding.
+        if line[:15].lower() == b'content-length:':
+            try:
+                content_length = int(line[15:].strip())
+            except Exception:
+                content_length = 0
 
-    return method, path, headers
+    return method, path, content_length
 
 
 async def send_response(writer, status, body=b'', content_type='text/plain'):
@@ -139,24 +150,27 @@ async def send_html_response(writer, html, status=200):
     await send_response(writer, status, html.encode() if isinstance(html, str) else html, 'text/html')
 
 
+async def _send_command(writer, command, ok_message, ok_log=None):
+    """Queue a bodyless control command with a uniform success / queue-full reply."""
+    if QueueHelper.put_nowait(command_queue, command):
+        if ok_log:
+            print(ok_log)
+        await send_json_response(writer, {'success': True, 'message': ok_message})
+    else:
+        print("[Web Server] Command queue full; command dropped")
+        await send_json_response(writer, {'success': False, 'error': 'Command queue full, please retry'}, 500)
+
+
 # === API Handlers ===
 
 async def handle_api_shutdown(writer):
     """POST /api/shutdown - Emergency shutdown: turn off SSR and stop program"""
-    command = CommandMessage.shutdown()
-
-    if QueueHelper.put_nowait(command_queue, command):
-        print("[Web Server] Emergency shutdown triggered via API")
-        await send_json_response(writer, {
-            "success": True,
-            "message": "System shutdown: SSR off, program stopped"
-        })
-    else:
-        print("[Web Server] Failed to send shutdown command (queue full)")
-        await send_json_response(writer, {
-            "success": False,
-            "error": "Command queue full, please retry"
-        }, 500)
+    await _send_command(
+        writer,
+        CommandMessage.shutdown(),
+        'System shutdown: SSR off, program stopped',
+        '[Web Server] Emergency shutdown triggered via API',
+    )
 
 # === Control Command Handlers ===
 
@@ -171,7 +185,6 @@ async def handle_api_run(writer, body):
             return
 
         # PERFORMANCE: Verify profile exists using cache instead of blocking filesystem check
-        from server.profile_cache import get_profile_cache
         if not get_profile_cache().exists(profile_name):
             await send_json_response(writer, {'success': False, 'error': f'Profile not found: {profile_name}'}, 404)
             return
@@ -200,36 +213,16 @@ async def handle_api_run(writer, body):
 
 async def handle_api_stop(writer):
     """POST /api/stop - Stop current profile"""
-    command = CommandMessage.stop()
-
-    if QueueHelper.put_nowait(command_queue, command):
-        print("[Web Server] Profile stop requested")
-        await send_json_response(writer, {'success': True, 'message': 'Profile stopped'})
-    else:
-        print("[Web Server] Failed to send stop command (queue full)")
-        await send_json_response(writer, {
-            'success': False,
-            'error': 'Command queue full, please retry'
-        }, 500)
+    await _send_command(writer, CommandMessage.stop(), 'Profile stopped',
+                        '[Web Server] Profile stop requested')
 
 async def handle_api_clear_error(writer):
     """POST /api/clear-error - Clear error state and return to idle"""
-    command = CommandMessage.clear_error()
-
-    if QueueHelper.put_nowait(command_queue, command):
-        print("[Web Server] Clear error requested")
-        await send_json_response(writer, {'success': True, 'message': 'Error cleared, returned to idle'})
-    else:
-        print("[Web Server] Failed to send clear_error command (queue full)")
-        await send_json_response(writer, {
-            'success': False,
-            'error': 'Command queue full, please retry'
-        }, 500)
+    await _send_command(writer, CommandMessage.clear_error(), 'Error cleared, returned to idle',
+                        '[Web Server] Clear error requested')
 
 async def handle_api_reboot(writer):
     """POST /api/reboot - Reboot the Pico"""
-    import machine
-
     print("[Web Server] Reboot requested via API")
 
     # Send success response (send_response drains the socket buffer) before rebooting.
@@ -247,7 +240,6 @@ async def handle_api_reboot(writer):
 async def handle_api_schedule(writer, body):
     """POST /api/schedule - Schedule profile for delayed start"""
     try:
-        import time
         data = json.loads(body.decode())
         profile_name = data.get('profile')
         start_time = data.get('start_time')  # Unix timestamp
@@ -268,7 +260,6 @@ async def handle_api_schedule(writer, body):
             return
 
         # Check profile exists
-        from server.profile_cache import get_profile_cache
         if not get_profile_cache().exists(profile_name):
             await send_json_response(writer, {
                 'success': False,
@@ -313,19 +304,8 @@ async def handle_api_scheduled_status(writer):
 
 async def handle_api_cancel_scheduled(writer):
     """POST /api/scheduled/cancel - Cancel scheduled profile"""
-    command = CommandMessage.cancel_scheduled()
-
-    if QueueHelper.put_nowait(command_queue, command):
-        print("[Web Server] Cancelled scheduled profile")
-        await send_json_response(writer, {
-            'success': True,
-            'message': 'Cancelled scheduled profile'
-        })
-    else:
-        await send_json_response(writer, {
-            'success': False,
-            'error': 'Command queue full'
-        }, 500)
+    await _send_command(writer, CommandMessage.cancel_scheduled(), 'Cancelled scheduled profile',
+                        '[Web Server] Cancelled scheduled profile')
 
 # === File Management Helpers ===
 
@@ -356,7 +336,7 @@ def validate_directory(directory):
     Returns:
         (is_valid, path, error_response) tuple
     """
-    if directory not in ['profiles', 'logs']:
+    if directory not in VALID_DIRECTORIES:
         return False, None, {
             'success': False,
             'error': "Invalid directory. Must be 'profiles' or 'logs'"
@@ -384,7 +364,6 @@ def safe_filename(filename):
 
 def _remove_quietly(filepath):
     try:
-        import os
         os.remove(filepath)
     except OSError:
         pass
@@ -428,7 +407,6 @@ async def handle_api_files_list(writer, directory):
     if dir_path is None:
         return
 
-    import os
     try:
         files = []
         for filename in os.listdir(dir_path):
@@ -456,7 +434,6 @@ async def handle_api_files_get(writer, directory, filename):
     if dir_path is None:
         return
 
-    import os
     filepath = f"{dir_path}/{filename}"
     try:
         size = os.stat(filepath)[6]
@@ -509,7 +486,6 @@ async def handle_api_files_delete(writer, directory, filename):
 
     filepath = f"{dir_path}/{filename}"
     try:
-        import os
         os.remove(filepath)
         print(f"[Web Server] Deleted file: {filepath}")
         await send_json_response(writer, {'success': True, 'message': f'Deleted {filename}'})
@@ -532,7 +508,6 @@ async def handle_api_files_upload(writer, directory, filename, reader, content_l
         }, 413)
         return
 
-    import os
     filepath = f"{dir_path}/{filename}"
     gc.collect()
     buf = bytearray(FILE_CHUNK_SIZE)
@@ -575,7 +550,6 @@ async def handle_api_files_upload(writer, directory, filename, reader, content_l
         return
 
     if directory == 'profiles':
-        from server.profile_cache import get_profile_cache
         get_profile_cache().refresh()
 
     print(f"[Web Server] Uploaded file: {filepath} ({written} bytes)")
@@ -604,7 +578,6 @@ async def handle_api_files_delete_all(writer, directory):
             return
 
         # Delete all files
-        import os
         try:
             deleted = []
             errors = []
@@ -644,9 +617,7 @@ async def handle_api_files_delete_all(writer, directory):
 
 async def handle_api_status(writer):
     """GET /api/status - Get detailed kiln status with PID stats"""
-    # Return cached status from control thread
-    status = get_status_receiver().get_status()
-    await send_json_response(writer, status)
+    await send_response(writer, 200, get_status_receiver().get_status_json(), 'application/json')
 
 # === Tuning Handlers ===
 
@@ -658,11 +629,10 @@ async def handle_api_tuning_start(writer, body):
         max_temp = data.get('max_temp')  # None = use mode default
 
         # Validate mode
-        valid_modes = [MODE_SAFE, MODE_STANDARD, MODE_THOROUGH, MODE_HIGH_TEMP]
-        if mode not in valid_modes:
+        if mode not in VALID_TUNING_MODES:
             await send_json_response(writer, {
                 'success': False,
-                'error': f'Invalid mode. Must be one of: {", ".join(valid_modes)}'
+                'error': f'Invalid mode. Must be one of: {", ".join(VALID_TUNING_MODES)}'
             }, 400)
             return
 
@@ -697,22 +667,13 @@ async def handle_api_tuning_start(writer, body):
 
 async def handle_api_tuning_stop(writer):
     """POST /api/tuning/stop - Stop PID auto-tuning"""
-    command = CommandMessage.stop_tuning()
-
-    if QueueHelper.put_nowait(command_queue, command):
-        print("[Web Server] Tuning stop requested")
-        await send_json_response(writer, {'success': True, 'message': 'Tuning stopped'})
-    else:
-        await send_json_response(writer, {
-            'success': False,
-            'error': 'Command queue full, please retry'
-        }, 500)
+    await _send_command(writer, CommandMessage.stop_tuning(), 'Tuning stopped',
+                        '[Web Server] Tuning stop requested')
 
 async def handle_api_tuning_status(writer):
     """GET /api/tuning/status - Get tuning status"""
-    # Return cached status (includes tuning info if in TUNING state)
-    status = get_status_receiver().get_status()
-    await send_json_response(writer, status)
+    # Same pre-encoded status bytes as /api/status (tuning info is included when TUNING).
+    await send_response(writer, 200, get_status_receiver().get_status_json(), 'application/json')
 
 async def handle_tuning_page(writer):
     """Serve tuning.html page"""
@@ -720,7 +681,6 @@ async def handle_tuning_page(writer):
     gc.collect()
 
     # PERFORMANCE: Use cached HTML instead of blocking file I/O
-    from server.html_cache import get_html_cache
     html = get_html_cache().get('tuning')
 
     if html:
@@ -734,7 +694,6 @@ async def handle_tuning_page(writer):
 async def handle_index(writer):
     """Serve pre-rendered index.html (profiles list already included)"""
     # PERFORMANCE: Use pre-rendered HTML from cache (no JSON building, no replacements)
-    from server.html_cache import get_html_cache
     html = get_html_cache().get('index')
 
     if html:
@@ -857,7 +816,7 @@ async def handle_client(reader, writer):
 
     active_connections += 1
     try:
-        method, path, headers = await _read_request(reader)
+        method, path, content_length = await _read_request(reader)
         if not method:
             return
 
@@ -867,12 +826,13 @@ async def handle_client(reader, writer):
         # - Every other request: read (and thus drain) the declared body so the
         #   socket is clean before we close it. JSON handlers consume `body`;
         #   bodyless endpoints simply discard it.
-        try:
-            content_length = int(headers.get('content-length', 0) or 0)
-        except (ValueError, TypeError):
-            content_length = 0
-
         is_file_upload = method == 'PUT' and path.startswith('/api/files/')
+
+        # Reject oversized non-upload bodies: buffering a hostile Content-Length
+        # here could exhaust the shared heap (JSON commands are tiny).
+        if content_length > MAX_JSON_BODY and not is_file_upload:
+            await send_response(writer, 413, b'Body too large', 'text/plain')
+            return
 
         body = b''
         if content_length > 0 and not is_file_upload:
