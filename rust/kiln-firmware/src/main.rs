@@ -25,6 +25,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_executor::Executor;
+use embassy_rp::gpio::{Level, Output};
 use embassy_rp::multicore::{spawn_core1, Stack};
 use embassy_rp::Peri;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -85,7 +86,20 @@ fn main() -> ! {
         mosi: p.PIN_19,
         miso: p.PIN_16,
         cs: p.PIN_28,
-        ssr: p.PIN_15,
+        // Reserved SSR candidate pins, built as de-energised outputs;
+        // `build_kiln_io` keeps the `SSR_PIN`-selected subset.
+        ssr_pool: [
+            (15, Output::new(p.PIN_15, Level::Low)),
+            (14, Output::new(p.PIN_14, Level::Low)),
+            (13, Output::new(p.PIN_13, Level::Low)),
+            (12, Output::new(p.PIN_12, Level::Low)),
+            (11, Output::new(p.PIN_11, Level::Low)),
+            (10, Output::new(p.PIN_10, Level::Low)),
+            (9, Output::new(p.PIN_9, Level::Low)),
+            (8, Output::new(p.PIN_8, Level::Low)),
+            (7, Output::new(p.PIN_7, Level::Low)),
+            (6, Output::new(p.PIN_6, Level::Low)),
+        ],
         watchdog: p.WATCHDOG,
     };
     let cmd_rx = commands.receiver();
@@ -147,7 +161,10 @@ struct Core1Periphs {
     mosi: Peri<'static, embassy_rp::peripherals::PIN_19>,
     miso: Peri<'static, embassy_rp::peripherals::PIN_16>,
     cs: Peri<'static, embassy_rp::peripherals::PIN_28>,
-    ssr: Peri<'static, embassy_rp::peripherals::PIN_15>,
+    /// Reserved candidate SSR outputs (already driven low). `build_kiln_io`
+    /// keeps the ones `SSR_PIN` selects and drops the rest. GPIO
+    /// 15/14/13/12/11/10/9/8/7/6 (PIN_15 = the reference default).
+    ssr_pool: [(u8, Output<'static>); platform::MAX_SSR],
     watchdog: Peri<'static, embassy_rp::peripherals::WATCHDOG>,
 }
 

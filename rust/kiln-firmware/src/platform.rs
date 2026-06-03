@@ -90,26 +90,30 @@ pub fn raw_watchdog_feed() {
     unsafe { core::ptr::write_volatile(load, WATCHDOG_LOAD_MASK) };
 }
 
-/// The SSR GPIO on the Pico 2 W. MUST match `Core1Periphs.ssr` (`main.rs`, the
-/// `p.PIN_15` wiring) and the `SSR_PIN` config. Used only by [`raw_ssr_off`],
-/// which cannot read the runtime config from its RAM-resident context.
-const SSR_PIN: u32 = 15;
+/// Bitmask of the GPIOs (bank 0) wired to SSRs, so the RAM-resident
+/// [`raw_ssr_off`] can de-energise *every* configured relay without reading the
+/// runtime config (which it cannot, from its XIP-down context). Defaults to the
+/// reference's single PIN_15; [`build_kiln_io`] overwrites it once the configured
+/// `SSR_PIN` list is known. A plain `AtomicU32` load is a single `ldr` (no flash
+/// call), so reading it stays safe with XIP down.
+static SSR_PIN_MASK: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1 << 15);
 
-/// RAM-safe emergency SSR de-energise for the panic handler — drives the SSR GPIO
-/// low independent of any driver state.
+/// RAM-safe emergency SSR de-energise for the panic handler — drives every
+/// configured SSR GPIO low independent of any driver state.
 ///
-/// Clears the output bit (de-energise) and asserts the output-enable so the pin
-/// actively drives low even if `OE` was glitched. GPIO 15 lives in bank 0
-/// (GPIO 0..31), so `gpio_out(0)` / `gpio_oe(0)`. Const-address register pokes
-/// only — no flash access, safe to run with XIP down.
+/// Clears the output bits (de-energise) and asserts the output-enables so the
+/// pins actively drive low even if `OE` was glitched. All SSR pins live in bank 0
+/// (GPIO 0..31), so `gpio_out(0)` / `gpio_oe(0)`. Const-address register pokes +
+/// one atomic load only — no flash access, safe to run with XIP down.
 #[link_section = ".data.ram_func"]
 #[inline(never)]
 pub fn raw_ssr_off() {
+    let mask = SSR_PIN_MASK.load(core::sync::atomic::Ordering::Relaxed);
     let out_clr = rp_pac::SIO.gpio_out(0).value_clr().as_ptr();
     let oe_set = rp_pac::SIO.gpio_oe(0).value_set().as_ptr();
     unsafe {
-        core::ptr::write_volatile(out_clr, 1u32 << SSR_PIN);
-        core::ptr::write_volatile(oe_set, 1u32 << SSR_PIN);
+        core::ptr::write_volatile(out_clr, mask);
+        core::ptr::write_volatile(oe_set, mask);
     }
 }
 
@@ -168,8 +172,13 @@ use kiln_hal::max31856::{Averaging, NoiseFilter};
 /// bit-banged by `ExclusiveDevice`, so its pin function is irrelevant.
 pub type DeviceSpi =
     ExclusiveDevice<Spi<'static, SPI0, embassy_rp::spi::Blocking>, Output<'static>, NoDelay>;
-/// The concrete SSR output: a push-pull GPIO (PIN_15).
-pub type DevicePin = Output<'static>;
+/// Maximum simultaneously-driven SSRs (the config `MAX_SSR`). Also the size of
+/// the reserved candidate-pin pool (`main.rs`'s `ssr_pool`: GPIO
+/// 15/14/13/12/11/10/9/8/7/6, PIN_15 = the reference default — chosen to avoid
+/// SPI0 16/18/19/28, I2C0 20/21, and the cyw43 pins 23–25/29). The RP2350 pinmux
+/// is compile-time, so a runtime `SSR_PIN` number is honoured only if it is one
+/// of these.
+pub const MAX_SSR: usize = 10;
 
 /// Build the Core 1 sensor / SSR / watchdog from `cfg`, ready for
 /// [`kiln_control::Controller::new`]. The sensor is configured for the
@@ -182,17 +191,16 @@ pub type DevicePin = Output<'static>;
 /// control loop's `temp_filter` already treats a faulting/unreadable sensor as a
 /// fault and shuts the SSR, so a panic-reset loop here would be strictly worse.
 ///
-/// Single-relay only: the peripheral split (`main.rs`) hands Core 1 exactly one
-/// SSR pin (PIN_15), so `SSR_PIN` lists / `MultiSsr` staggering are not wired on
-/// this target. `SSR_STAGGER_DELAY` is therefore unused here.
+/// SSRs: `SSR_PIN` (a single int or a list, up to [`MAX_SSR`]) is honoured by
+/// selecting the matching pins from the reserved pool (see [`MAX_SSR`]) in
+/// config order; unmatched numbers are skipped, and if none match it falls back
+/// to the default PIN_15. `SSR_STAGGER_DELAY` spaces multi-relay turn-on/off
+/// (inrush limiting). The chosen pins' bitmask is published to [`SSR_PIN_MASK`]
+/// so the panic-handler [`raw_ssr_off`] de-energises exactly them.
 pub fn build_kiln_io(
     p: Core1Periphs,
     cfg: &KilnConfig,
-) -> (
-    kiln_hal::Max31856<DeviceSpi>,
-    kiln_hal::Ssr<DevicePin>,
-    MaybeWatchdog,
-) {
+) -> (kiln_hal::Max31856<DeviceSpi>, ConfiguredSsr, MaybeWatchdog) {
     // SPI0 @ 1 MHz, MAX31856 = SPI mode 1 (CPOL=0 idle-low, CPHA=1 capture on the
     // second edge).
     let mut spi_cfg = SpiConfig::default();
@@ -219,9 +227,35 @@ pub fn build_kiln_io(
     let _ = sensor.set_noise_filter(NoiseFilter::from_hz(cfg.mains_frequency).unwrap_or_default());
     let _ = sensor.start_autoconverting();
 
-    // SSR on the single wired pin, started de-energised (`Ssr::new` drives it low;
-    // pin error is `Infallible`).
-    let ssr = kiln_hal::Ssr::new(Output::new(p.ssr, Level::Low)).unwrap();
+    // Select the configured SSR pins from the reserved pool, in config order.
+    let mut pool: [Option<(u8, Output<'static>)>; MAX_SSR] = p.ssr_pool.map(Some);
+    let mut relays: heapless::Vec<Output<'static>, MAX_SSR> = heapless::Vec::new();
+    let mut mask: u32 = 0;
+    for &want in cfg.ssr_pin.as_slice() {
+        if let Some(slot) = pool
+            .iter_mut()
+            .find(|s| matches!(s, Some((num, _)) if *num == want))
+        {
+            let (num, out) = slot.take().unwrap();
+            let _ = relays.push(out);
+            mask |= 1 << num;
+        }
+    }
+    // Fallback: no configured pin matched the pool → use the default PIN_15.
+    if relays.is_empty() {
+        if let Some(slot) = pool
+            .iter_mut()
+            .find(|s| matches!(s, Some((15, _))))
+        {
+            let (num, out) = slot.take().unwrap();
+            let _ = relays.push(out);
+            mask |= 1 << num;
+        }
+    }
+    // Publish the mask for the RAM-resident panic de-energise. (Unselected pool
+    // `Output`s drop here, releasing their pins.)
+    SSR_PIN_MASK.store(mask, core::sync::atomic::Ordering::Release);
+    let ssr = ConfiguredSsr::new(relays, cfg.ssr_stagger_delay_ms());
 
     // Watchdog per ENABLE_WATCHDOG. When disabled, `p.watchdog` is simply dropped.
     let watchdog = if cfg.enable_watchdog {
@@ -234,6 +268,87 @@ pub fn build_kiln_io(
     };
 
     (sensor, ssr, watchdog)
+}
+
+/// One or more SSRs driven as one logical output with staggered turn-on/off — a
+/// runtime-sized analogue of [`kiln_hal::MultiSsr`] (whose relay count is a const
+/// generic, which we cannot pick from runtime config). Same behaviour: on a
+/// rising/falling edge each relay switches once its `i * stagger_ms` delay has
+/// elapsed (inrush limiting), while [`force_off`](ConfiguredSsr::force_off) — the
+/// emergency path — drops every relay at once. Backs the host-tested
+/// `ssr_schedule` decisions exactly as `MultiSsr` does.
+pub struct ConfiguredSsr {
+    pins: heapless::Vec<Output<'static>, MAX_SSR>,
+    on: [bool; MAX_SSR],
+    stagger_ms: u64,
+    logical_on: bool,
+    rising_edge_ms: u64,
+    falling_edge_ms: u64,
+}
+
+impl ConfiguredSsr {
+    fn new(pins: heapless::Vec<Output<'static>, MAX_SSR>, stagger_ms: u64) -> Self {
+        // `Output::new` already drove every pin low, so the relays start off.
+        Self {
+            pins,
+            on: [false; MAX_SSR],
+            stagger_ms,
+            logical_on: false,
+            rising_edge_ms: 0,
+            falling_edge_ms: 0,
+        }
+    }
+}
+
+impl kiln_hal::platform::SsrOutput for ConfiguredSsr {
+    // embassy-rp `Output` pin writes are infallible.
+    type Error = core::convert::Infallible;
+
+    fn apply(&mut self, on: bool, now_ms: u64) -> Result<(), Self::Error> {
+        if on {
+            if !self.logical_on {
+                self.logical_on = true;
+                self.rising_edge_ms = now_ms;
+            }
+            let elapsed = now_ms.saturating_sub(self.rising_edge_ms);
+            for (i, pin) in self.pins.iter_mut().enumerate() {
+                if !self.on[i] && elapsed >= (i as u64) * self.stagger_ms {
+                    pin.set_high();
+                    self.on[i] = true;
+                }
+            }
+        } else {
+            if self.logical_on {
+                self.logical_on = false;
+                self.falling_edge_ms = now_ms;
+            }
+            let elapsed = now_ms.saturating_sub(self.falling_edge_ms);
+            for (i, pin) in self.pins.iter_mut().enumerate() {
+                if self.on[i] && elapsed >= (i as u64) * self.stagger_ms {
+                    pin.set_low();
+                    self.on[i] = false;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn force_off(&mut self) -> Result<(), Self::Error> {
+        for pin in self.pins.iter_mut() {
+            pin.set_low();
+        }
+        self.logical_on = false;
+        self.on = [false; MAX_SSR];
+        Ok(())
+    }
+}
+
+impl Drop for ConfiguredSsr {
+    fn drop(&mut self) {
+        for pin in self.pins.iter_mut() {
+            pin.set_low();
+        }
+    }
 }
 
 // === Wall clock (Oracle Q4) =================================================
