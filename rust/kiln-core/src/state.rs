@@ -248,7 +248,7 @@ impl KilnController {
             }
             Some(last) => {
                 let mut delta = now - last;
-                if delta < 0.0 || delta > 60.0 {
+                if !(0.0..=60.0).contains(&delta) {
                     delta = 1.0; // NTP jump / stall: assume 1 s passed
                 }
                 self.last_update_time = Some(now);
@@ -332,7 +332,8 @@ impl KilnController {
                     self.last_stall_check = elapsed;
                     let time_in_step = elapsed - self.step_start_time;
                     if time_in_step >= self.cfg.stall_min_step_time {
-                        let actual_rate = self.temp_history.get_rate(self.cfg.rate_measurement_window);
+                        let actual_rate =
+                            self.temp_history.get_rate(self.cfg.rate_measurement_window);
                         if abs(actual_rate) < mr {
                             self.stall_fail_count += 1;
                             if self.stall_fail_count >= self.cfg.stall_consecutive_fails {
@@ -452,13 +453,18 @@ impl KilnController {
         self.last_update_time = None;
         self.error = None;
 
-        let (calc_index, time_in_step, calc_start_temp) = self.find_step_for_elapsed(elapsed_seconds);
+        let (calc_index, time_in_step, calc_start_temp) =
+            self.find_step_for_elapsed(elapsed_seconds);
         self.current_step_index = step_index.unwrap_or(calc_index);
         self.step_start_time = elapsed_seconds - time_in_step;
 
         let current_step = self.profile.as_ref().unwrap().steps()[self.current_step_index];
-        if current_step.kind == StepKind::Ramp && last_logged_temp.is_some() && time_in_step > 0.0 {
-            let llt = last_logged_temp.unwrap();
+        let ramp_llt = if current_step.kind == StepKind::Ramp && time_in_step > 0.0 {
+            last_logged_temp
+        } else {
+            None
+        };
+        if let Some(llt) = ramp_llt {
             let rate = current_step.desired_rate_or_default();
             let hours_in_step = time_in_step / 3600.0;
             let temp_change = rate * hours_in_step;
@@ -560,7 +566,10 @@ mod tests {
         assert_eq!(c.state, KilnState::Error);
         assert_eq!(
             c.error(),
-            Some(KilnError::MaxTempExceeded { temp: 1301.0, max: 1300.0 })
+            Some(KilnError::MaxTempExceeded {
+                temp: 1301.0,
+                max: 1300.0
+            })
         );
     }
 
@@ -601,7 +610,7 @@ mod tests {
         c.update(50.0, 100.0); // first call: elapsed 0, sets last_update_time
         c.update(50.0, 100.5); // delta 0.5 -> elapsed 0.5
         c.update(50.0, 5000.0); // delta huge -> clamped to 1.0 -> elapsed 1.5
-        // Not complete yet (hold is 1000 s), still running.
+                                // Not complete yet (hold is 1000 s), still running.
         assert_eq!(c.state, KilnState::Running);
     }
 

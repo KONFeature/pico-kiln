@@ -61,9 +61,7 @@ impl<P: OutputPin> Drop for Ssr<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_hal_mock::eh1::digital::{
-        Mock as PinMock, State as PinState, Transaction as Pin,
-    };
+    use embedded_hal_mock::eh1::digital::{Mock as PinMock, State as PinState, Transaction as Pin};
 
     #[test]
     fn starts_low_and_tracks_state() {

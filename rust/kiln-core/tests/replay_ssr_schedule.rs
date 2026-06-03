@@ -12,15 +12,20 @@ use std::path::PathBuf;
 const TOL: f64 = 1e-9;
 
 enum Step {
-    SetOutput { percent: f64, duty: f64 },     // S: request -> resulting duty_cycle
+    SetOutput { percent: f64, duty: f64 }, // S: request -> resulting duty_cycle
     Update { now_ms: u64, on: bool, locked: f64 }, // U: should_be_on + duty_cycle_locked
-    ForceOff { locked: f64 },                   // F: locked duty after force_off (0)
+    ForceOff { locked: f64 },              // F: locked duty after force_off (0)
 }
 
 fn fixture_path() -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", "ssr_schedule_golden.csv"]
-        .iter()
-        .collect()
+    [
+        env!("CARGO_MANIFEST_DIR"),
+        "tests",
+        "fixtures",
+        "ssr_schedule_golden.csv",
+    ]
+    .iter()
+    .collect()
 }
 
 fn parse_header(line: &str) -> f64 {
@@ -56,7 +61,10 @@ fn load() -> (f64, Vec<Step>) {
         let on = c[2].trim();
         let duty: f64 = c[3].trim().parse().unwrap();
         let step = match kind {
-            "S" => Step::SetOutput { percent: arg.parse().unwrap(), duty },
+            "S" => Step::SetOutput {
+                percent: arg.parse().unwrap(),
+                duty,
+            },
             "U" => Step::Update {
                 now_ms: arg.parse().unwrap(),
                 on: on == "1",
@@ -73,7 +81,11 @@ fn load() -> (f64, Vec<Step>) {
 #[test]
 fn replay_matches_reference_ssr_schedule() {
     let (cycle_time, steps) = load();
-    assert!(steps.len() >= 20, "fixture too small ({} steps)", steps.len());
+    assert!(
+        steps.len() >= 20,
+        "fixture too small ({} steps)",
+        steps.len()
+    );
 
     // Generator seeds the SSRController's clock at 0 before construction.
     let mut s = SsrSchedule::new(cycle_time, 0);
@@ -94,7 +106,10 @@ fn replay_matches_reference_ssr_schedule() {
             }
             Step::Update { now_ms, on, locked } => {
                 let got_on = s.update(now_ms);
-                assert_eq!(got_on, on, "row {i}: update({now_ms}) on rust={got_on} ref={on}");
+                assert_eq!(
+                    got_on, on,
+                    "row {i}: update({now_ms}) on rust={got_on} ref={on}"
+                );
                 let got_locked = s.duty_cycle_locked();
                 assert!(
                     (got_locked - locked).abs() <= TOL,
@@ -113,13 +128,23 @@ fn replay_matches_reference_ssr_schedule() {
                     (got_locked - locked).abs() <= TOL,
                     "row {i}: force_off locked rust={got_locked} ref={locked}"
                 );
-                assert_eq!(s.duty_cycle(), 0.0, "row {i}: force_off must zero the request");
+                assert_eq!(
+                    s.duty_cycle(),
+                    0.0,
+                    "row {i}: force_off must zero the request"
+                );
                 saw_force_off = true;
             }
         }
     }
 
-    assert!(on_count >= 5, "fixture barely exercised the ON state ({on_count})");
-    assert!(off_count >= 5, "fixture barely exercised the OFF state ({off_count})");
+    assert!(
+        on_count >= 5,
+        "fixture barely exercised the ON state ({on_count})"
+    );
+    assert!(
+        off_count >= 5,
+        "fixture barely exercised the OFF state ({off_count})"
+    );
     assert!(saw_force_off, "fixture never exercised force_off");
 }

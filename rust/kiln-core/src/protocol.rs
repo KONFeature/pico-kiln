@@ -25,8 +25,8 @@
 //!   `scheduled_profile` (the scheduler's status dict — an app-side concern). The
 //!   reference's per-field `round(...)` is presentation too and is not applied.
 
-use crate::state::{KilnError, KilnState};
 use crate::profile::StepKind;
+use crate::state::{KilnError, KilnState};
 use crate::tuner::TuningMode;
 
 /// Maximum profile-filename length carried by a [`Command`], in bytes.
@@ -56,7 +56,10 @@ impl ProfileName {
         }
         let mut bytes = [0u8; MAX_PROFILE_NAME];
         bytes[..src.len()].copy_from_slice(src);
-        Ok(Self { bytes, len: src.len() })
+        Ok(Self {
+            bytes,
+            len: src.len(),
+        })
     }
 
     /// The filename bytes (no trailing padding).
@@ -113,13 +116,19 @@ pub enum Command {
     Shutdown,
     /// Start PID auto-tuning. `max_temp` of `None` uses the mode's default.
     /// (`START_TUNING`)
-    StartTuning { mode: TuningMode, max_temp: Option<f64> },
+    StartTuning {
+        mode: TuningMode,
+        max_temp: Option<f64>,
+    },
     /// Stop auto-tuning. (`STOP_TUNING`)
     StopTuning,
     /// Liveness ping for the cross-core channel. (`PING`)
     Ping,
     /// Schedule a profile to start at `start_time` (Unix seconds). (`SCHEDULE_PROFILE`)
-    ScheduleProfile { profile: ProfileName, start_time: u64 },
+    ScheduleProfile {
+        profile: ProfileName,
+        start_time: u64,
+    },
     /// Cancel a scheduled profile. (`CANCEL_SCHEDULED`)
     CancelScheduled,
     /// Clear an error state and return to idle. (`CLEAR_ERROR`)
@@ -226,13 +235,21 @@ mod tests {
         assert_eq!(Command::Stop.message_type(), 3);
         assert_eq!(Command::Shutdown.message_type(), 4);
         assert_eq!(
-            Command::StartTuning { mode: TuningMode::Standard, max_temp: None }.message_type(),
+            Command::StartTuning {
+                mode: TuningMode::Standard,
+                max_temp: None
+            }
+            .message_type(),
             5
         );
         assert_eq!(Command::StopTuning.message_type(), 6);
         assert_eq!(Command::Ping.message_type(), 7);
         assert_eq!(
-            Command::ScheduleProfile { profile: name, start_time: 0 }.message_type(),
+            Command::ScheduleProfile {
+                profile: name,
+                start_time: 0
+            }
+            .message_type(),
             8
         );
         assert_eq!(Command::CancelScheduled.message_type(), 9);
@@ -266,7 +283,10 @@ mod tests {
 
     #[test]
     fn command_carries_typed_payloads() {
-        let cmd = Command::StartTuning { mode: TuningMode::Safe, max_temp: Some(200.0) };
+        let cmd = Command::StartTuning {
+            mode: TuningMode::Safe,
+            max_temp: Some(200.0),
+        };
         match cmd {
             Command::StartTuning { mode, max_temp } => {
                 assert_eq!(mode, TuningMode::Safe);
@@ -292,7 +312,10 @@ mod tests {
     fn status_carries_typed_state_and_error() {
         let s = Status {
             state: KilnState::Error,
-            error: Some(KilnError::Stall { actual_rate: 1.0, min_rate: 5.0 }),
+            error: Some(KilnError::Stall {
+                actual_rate: 1.0,
+                min_rate: 5.0,
+            }),
             step_kind: Some(StepKind::Ramp),
             ..Status::idle()
         };

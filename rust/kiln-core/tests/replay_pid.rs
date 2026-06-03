@@ -30,9 +30,14 @@ struct Row {
 }
 
 fn fixture_path() -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", "pid_golden.csv"]
-        .iter()
-        .collect()
+    [
+        env!("CARGO_MANIFEST_DIR"),
+        "tests",
+        "fixtures",
+        "pid_golden.csv",
+    ]
+    .iter()
+    .collect()
 }
 
 fn load_rows() -> Vec<Row> {
@@ -110,5 +115,8 @@ fn replay_matches_reference_pid() {
 
     // Guard the fixture actually exercises the hard paths (not a flat curve).
     assert!(saturated > 50, "fixture barely saturates ({saturated})");
-    assert!(neg_error > 20, "fixture lacks negative-error samples ({neg_error})");
+    assert!(
+        neg_error > 20,
+        "fixture lacks negative-error samples ({neg_error})"
+    );
 }

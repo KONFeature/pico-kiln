@@ -17,7 +17,11 @@
 #[inline]
 fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
     let m = if x < hi { x } else { hi }; // min(x, hi)
-    if m > lo { m } else { lo } // max(m, lo)
+    if m > lo {
+        m
+    } else {
+        lo
+    } // max(m, lo)
 }
 
 /// Per-update diagnostics, mirroring the Python `pid.stats` dict fields used
@@ -171,7 +175,7 @@ impl Pid {
         }
 
         if self.ki > 0.0 && old_ki > 0.0 && self.ki != old_ki {
-            self.integral = self.integral * (old_ki / self.ki);
+            self.integral *= old_ki / self.ki;
         } else if self.ki == 0.0 {
             self.integral = 0.0;
         }
@@ -220,7 +224,10 @@ mod tests {
         pid.update(500.0, 20.0, 0.0);
         let frozen = pid.update(500.0, 21.0, 1.0);
         assert!(frozen >= 99.0);
-        assert!(pid.stats().integral_frozen, "integral should be held while saturated high");
+        assert!(
+            pid.stats().integral_frozen,
+            "integral should be held while saturated high"
+        );
     }
 
     #[test]
@@ -241,7 +248,12 @@ mod tests {
         pid.set_gains(None, Some(0.4), None);
         // i_term = ki * integral should be preserved across the ki change.
         let approx = (pid.ki * pid.integral() - i_before).abs() < 1e-9;
-        assert!(approx, "i_term not preserved: {} vs {}", pid.ki * pid.integral(), i_before);
+        assert!(
+            approx,
+            "i_term not preserved: {} vs {}",
+            pid.ki * pid.integral(),
+            i_before
+        );
     }
 
     #[test]

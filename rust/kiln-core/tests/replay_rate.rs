@@ -21,9 +21,14 @@ struct Row {
 }
 
 fn fixture_path() -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", "rate_golden.csv"]
-        .iter()
-        .collect()
+    [
+        env!("CARGO_MANIFEST_DIR"),
+        "tests",
+        "fixtures",
+        "rate_golden.csv",
+    ]
+    .iter()
+    .collect()
 }
 
 fn load_rows() -> Vec<Row> {
@@ -39,7 +44,13 @@ fn load_rows() -> Vec<Row> {
         let c: Vec<&str> = line.split(',').collect();
         assert_eq!(c.len(), 7, "malformed row {i}: {line:?}");
         // time/temp are empty on `clear` rows; default to 0.0 (unused there).
-        let f = |s: &str| -> f64 { if s.trim().is_empty() { 0.0 } else { s.trim().parse().unwrap() } };
+        let f = |s: &str| -> f64 {
+            if s.trim().is_empty() {
+                0.0
+            } else {
+                s.trim().parse().unwrap()
+            }
+        };
         rows.push(Row {
             idx: c[0].trim().parse().unwrap(),
             op: c[1].trim().to_string(),

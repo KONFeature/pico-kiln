@@ -76,7 +76,7 @@ impl<const CAP: usize> TempFilter<CAP> {
     /// temperature, or — if the reading is out of range — the recovered last-good
     /// value (treated as a fault), or an error if the fault budget is exhausted.
     pub fn push_reading(&mut self, raw: f64) -> Result<f64, TempError> {
-        if raw < TEMP_MIN_RANGE || raw > TEMP_MAX_RANGE {
+        if !(TEMP_MIN_RANGE..=TEMP_MAX_RANGE).contains(&raw) {
             return self.fault();
         }
 

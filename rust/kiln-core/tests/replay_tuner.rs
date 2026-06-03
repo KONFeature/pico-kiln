@@ -13,7 +13,9 @@ use std::path::PathBuf;
 const TOL: f64 = 1e-6;
 
 fn fixture(name: &str) -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", name].iter().collect()
+    [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", name]
+        .iter()
+        .collect()
 }
 
 fn parse_mode(s: &str) -> TuningMode {
@@ -28,8 +30,9 @@ fn parse_mode(s: &str) -> TuningMode {
 
 fn run_fixture(name: &str) -> usize {
     let path = fixture(name);
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {path:?}: {e}\nrun: python3 rust/kiln-core/tools/gen_tuner_golden.py"));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!("cannot read {path:?}: {e}\nrun: python3 rust/kiln-core/tools/gen_tuner_golden.py")
+    });
 
     let mut mode = None;
     let mut max_temp = None;
@@ -72,10 +75,25 @@ fn run_fixture(name: &str) -> usize {
         let (ssr, cont) = t.update(temp, now);
 
         let d = (ssr - exp_ssr).abs();
-        assert!(d <= TOL, "{name} row {idx} ssr: rust={ssr} ref={exp_ssr} (|Δ|={d:e})");
-        assert_eq!(cont, exp_cont, "{name} row {idx} continue: rust={cont} ref={exp_cont}");
-        assert_eq!(t.stage().as_u8(), exp_stage, "{name} row {idx} stage: rust={} ref={exp_stage}", t.stage().as_u8());
-        assert_eq!(t.current_step_index(), exp_step, "{name} row {idx} step_index");
+        assert!(
+            d <= TOL,
+            "{name} row {idx} ssr: rust={ssr} ref={exp_ssr} (|Δ|={d:e})"
+        );
+        assert_eq!(
+            cont, exp_cont,
+            "{name} row {idx} continue: rust={cont} ref={exp_cont}"
+        );
+        assert_eq!(
+            t.stage().as_u8(),
+            exp_stage,
+            "{name} row {idx} stage: rust={} ref={exp_stage}",
+            t.stage().as_u8()
+        );
+        assert_eq!(
+            t.current_step_index(),
+            exp_step,
+            "{name} row {idx} step_index"
+        );
     }
 
     data.len()

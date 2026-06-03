@@ -217,7 +217,13 @@ fn build_step_sequence(mode: TuningMode, max_temp: f64) -> StepBuf {
     let mut b = StepBuf::new();
     match mode {
         TuningMode::Safe => {
-            b.push(TuningStep::new(60.0, Some(fmin(100.0, max_temp)), 0.0, 2400.0, false));
+            b.push(TuningStep::new(
+                60.0,
+                Some(fmin(100.0, max_temp)),
+                0.0,
+                2400.0,
+                false,
+            ));
             b.push(TuningStep::new(30.0, None, 0.0, 300.0, false));
             b.push(TuningStep::new(0.0, Some(50.0), 0.0, 1800.0, false));
         }
@@ -244,7 +250,13 @@ fn build_step_sequence(mode: TuningMode, max_temp: f64) -> StepBuf {
             b.push(TuningStep::new(0.0, None, 0.0, 600.0, false));
             b.push(TuningStep::new(80.0, None, 0.0, 1800.0, true));
             b.push(TuningStep::new(0.0, None, 0.0, 600.0, false));
-            b.push(TuningStep::new(100.0, Some(fmin(600.0, max_temp)), 300.0, 1800.0, false));
+            b.push(TuningStep::new(
+                100.0,
+                Some(fmin(600.0, max_temp)),
+                300.0,
+                1800.0,
+                false,
+            ));
             b.push(TuningStep::new(0.0, None, 0.0, 3600.0, false));
         }
     }
@@ -306,7 +318,8 @@ impl ZieglerNicholsTuner {
             self.steps[self.current_step_index].start(current_temp, now);
         }
 
-        let (ssr_output, step_complete) = self.steps[self.current_step_index].update(current_temp, now);
+        let (ssr_output, step_complete) =
+            self.steps[self.current_step_index].update(current_temp, now);
 
         if step_complete {
             self.current_step_index += 1;
@@ -338,16 +351,34 @@ mod tests {
 
     #[test]
     fn mode_step_counts_match_reference() {
-        assert_eq!(ZieglerNicholsTuner::new(TuningMode::Safe, None).total_steps(), 3);
-        assert_eq!(ZieglerNicholsTuner::new(TuningMode::Standard, None).total_steps(), 6);
-        assert_eq!(ZieglerNicholsTuner::new(TuningMode::Thorough, None).total_steps(), 13);
-        assert_eq!(ZieglerNicholsTuner::new(TuningMode::HighTemp, None).total_steps(), 8);
+        assert_eq!(
+            ZieglerNicholsTuner::new(TuningMode::Safe, None).total_steps(),
+            3
+        );
+        assert_eq!(
+            ZieglerNicholsTuner::new(TuningMode::Standard, None).total_steps(),
+            6
+        );
+        assert_eq!(
+            ZieglerNicholsTuner::new(TuningMode::Thorough, None).total_steps(),
+            13
+        );
+        assert_eq!(
+            ZieglerNicholsTuner::new(TuningMode::HighTemp, None).total_steps(),
+            8
+        );
     }
 
     #[test]
     fn safe_default_max_temp_is_200() {
-        assert_eq!(ZieglerNicholsTuner::new(TuningMode::Safe, None).max_temp, 200.0);
-        assert_eq!(ZieglerNicholsTuner::new(TuningMode::Standard, None).max_temp, 900.0);
+        assert_eq!(
+            ZieglerNicholsTuner::new(TuningMode::Safe, None).max_temp,
+            200.0
+        );
+        assert_eq!(
+            ZieglerNicholsTuner::new(TuningMode::Standard, None).max_temp,
+            900.0
+        );
     }
 
     #[test]

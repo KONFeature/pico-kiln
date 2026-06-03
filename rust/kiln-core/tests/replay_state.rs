@@ -16,7 +16,9 @@ use std::path::PathBuf;
 const TOL: f64 = 1e-6;
 
 fn fixture(name: &str) -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", name].iter().collect()
+    [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", name]
+        .iter()
+        .collect()
 }
 
 fn opt(s: &str) -> Option<f64> {
@@ -66,7 +68,10 @@ fn parse_config(rest: &str) -> ControllerConfig {
 /// `run|pre_run_temp|run_now` or
 /// `resume|elapsed|last_logged|current|step_index|now`.
 enum Op {
-    Run { pre_run_temp: f64, run_now: f64 },
+    Run {
+        pre_run_temp: f64,
+        run_now: f64,
+    },
     Resume {
         elapsed: f64,
         last_logged: Option<f64>,
@@ -103,13 +108,17 @@ fn parse_op(rest: &str) -> Op {
 
 fn close(a: f64, b: f64, idx: usize, field: &str, name: &str) {
     let d = (a - b).abs();
-    assert!(d <= TOL, "{name} row {idx} {field}: rust={a} ref={b} (|Δ|={d:e})");
+    assert!(
+        d <= TOL,
+        "{name} row {idx} {field}: rust={a} ref={b} (|Δ|={d:e})"
+    );
 }
 
 fn run_fixture(name: &str) -> usize {
     let path = fixture(name);
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {path:?}: {e}\nrun: python3 rust/kiln-core/tools/gen_state_golden.py"));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!("cannot read {path:?}: {e}\nrun: python3 rust/kiln-core/tools/gen_state_golden.py")
+    });
 
     let mut cfg = None;
     let mut steps = None;
@@ -138,11 +147,20 @@ fn run_fixture(name: &str) -> usize {
 
     let mut c = KilnController::new(cfg);
     match op {
-        Op::Run { pre_run_temp, run_now } => {
+        Op::Run {
+            pre_run_temp,
+            run_now,
+        } => {
             c.current_temp = pre_run_temp;
             c.run_profile(profile, run_now).expect("run_profile");
         }
-        Op::Resume { elapsed, last_logged, current, step_index, now } => {
+        Op::Resume {
+            elapsed,
+            last_logged,
+            current,
+            step_index,
+            now,
+        } => {
             c.resume_profile(profile, elapsed, last_logged, current, step_index, now)
                 .expect("resume_profile");
         }
@@ -162,10 +180,23 @@ fn run_fixture(name: &str) -> usize {
 
         let out = c.update(temp, now);
 
-        assert_eq!(c.state.as_u8(), exp_state, "{name} row {idx} state: rust={} ref={exp_state}", c.state.as_u8());
+        assert_eq!(
+            c.state.as_u8(),
+            exp_state,
+            "{name} row {idx} state: rust={} ref={exp_state}",
+            c.state.as_u8()
+        );
         close(out, exp_target, idx, "target", name);
-        assert_eq!(c.current_step_index(), exp_step, "{name} row {idx} step_index");
-        assert_eq!(c.is_recovering(), exp_recovering, "{name} row {idx} recovering");
+        assert_eq!(
+            c.current_step_index(),
+            exp_step,
+            "{name} row {idx} step_index"
+        );
+        assert_eq!(
+            c.is_recovering(),
+            exp_recovering,
+            "{name} row {idx} recovering"
+        );
         close(c.measured_rate(), exp_rate, idx, "rate", name);
     }
 

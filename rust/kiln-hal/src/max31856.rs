@@ -200,10 +200,7 @@ impl<SPI: SpiDevice> Max31856<SPI> {
     }
 
     /// Set the thermocouple type, preserving the other CR1 bits (averaging).
-    pub fn set_thermocouple_type(
-        &mut self,
-        tc: ThermocoupleType,
-    ) -> Result<(), Error<SPI::Error>> {
+    pub fn set_thermocouple_type(&mut self, tc: ThermocoupleType) -> Result<(), Error<SPI::Error>> {
         let cr1 = self.read_register_u8(REG_CR1)?;
         self.write_register(REG_CR1, (cr1 & 0xF0) | tc.bits())
     }
@@ -240,8 +237,7 @@ impl<SPI: SpiDevice> Max31856<SPI> {
         let mut buf = [0u8; 3];
         self.read_register(REG_LTCBH, &mut buf)?;
 
-        let combined =
-            ((buf[0] as u32) << 11) | ((buf[1] as u32) << 3) | ((buf[2] as u32) >> 5);
+        let combined = ((buf[0] as u32) << 11) | ((buf[1] as u32) << 3) | ((buf[2] as u32) >> 5);
         let mut value = combined as i32;
         if value & 0x0004_0000 != 0 {
             value -= 0x0008_0000; // sign-extend the 19-bit field
@@ -347,12 +343,18 @@ mod tests {
         assert_eq!(Averaging::from_samples(8), Some(Averaging::S8));
         assert_eq!(Averaging::from_samples(16), Some(Averaging::S16));
         assert_eq!(Averaging::from_samples(3), None);
-        assert_eq!(Averaging::from_samples(3).unwrap_or_default(), Averaging::S8);
+        assert_eq!(
+            Averaging::from_samples(3).unwrap_or_default(),
+            Averaging::S8
+        );
 
         assert_eq!(NoiseFilter::from_hz(50), Some(NoiseFilter::Hz50));
         assert_eq!(NoiseFilter::from_hz(60), Some(NoiseFilter::Hz60));
         assert_eq!(NoiseFilter::from_hz(55), None);
-        assert_eq!(NoiseFilter::from_hz(55).unwrap_or_default(), NoiseFilter::Hz60);
+        assert_eq!(
+            NoiseFilter::from_hz(55).unwrap_or_default(),
+            NoiseFilter::Hz60
+        );
     }
 
     #[test]

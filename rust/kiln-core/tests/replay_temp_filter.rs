@@ -24,9 +24,14 @@ struct Row {
 }
 
 fn fixture_path() -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", "temp_filter_golden.csv"]
-        .iter()
-        .collect()
+    [
+        env!("CARGO_MANIFEST_DIR"),
+        "tests",
+        "fixtures",
+        "temp_filter_golden.csv",
+    ]
+    .iter()
+    .collect()
 }
 
 fn parse_header(line: &str) -> (f64, usize) {
@@ -61,13 +66,21 @@ fn load() -> (f64, usize, Vec<Row>) {
         let c: Vec<&str> = line.split(',').collect();
         assert_eq!(c.len(), 3, "malformed row: {line:?}");
         let kind = c[0].trim().chars().next().unwrap();
-        let input = if c[1].trim().is_empty() { 0.0 } else { c[1].trim().parse().unwrap() };
+        let input = if c[1].trim().is_empty() {
+            0.0
+        } else {
+            c[1].trim().parse().unwrap()
+        };
         let expect = match c[2].trim() {
             "ERR:NotInitialized" => Expect::NotInitialized,
             "ERR:EmergencyShutdown" => Expect::EmergencyShutdown,
             v => Expect::Value(v.parse().unwrap()),
         };
-        rows.push(Row { kind, input, expect });
+        rows.push(Row {
+            kind,
+            input,
+            expect,
+        });
     }
     (offset, window, rows)
 }
@@ -93,9 +106,13 @@ fn replay_matches_reference_temp_filter() {
         }
         match &r.expect {
             Expect::Value(want) => {
-                let got = got.unwrap_or_else(|e| panic!("row {i}: expected {want}, got Err({e:?})"));
+                let got =
+                    got.unwrap_or_else(|e| panic!("row {i}: expected {want}, got Err({e:?})"));
                 let diff = (got - want).abs();
-                assert!(diff <= TOL, "row {i}: rust={got} ref={want} (|Δ|={diff:e} > {TOL:e})");
+                assert!(
+                    diff <= TOL,
+                    "row {i}: rust={got} ref={want} (|Δ|={diff:e} > {TOL:e})"
+                );
             }
             Expect::NotInitialized => {
                 assert_eq!(got, Err(TempError::NotInitialized), "row {i}");
@@ -110,5 +127,8 @@ fn replay_matches_reference_temp_filter() {
 
     assert!(saw_not_init, "fixture never exercised NotInitialized");
     assert!(saw_shutdown, "fixture never exercised EmergencyShutdown");
-    assert!(last_good_returns >= 5, "fixture barely exercised last-good recovery");
+    assert!(
+        last_good_returns >= 5,
+        "fixture barely exercised last-good recovery"
+    );
 }

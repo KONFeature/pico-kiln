@@ -237,7 +237,11 @@ mod tests {
             Step::cooling(Some(100.0)),
         ])
         .unwrap();
-        assert!((p.duration() - (0.0 + 600.0 + 18000.0)).abs() < 1e-9, "dur={}", p.duration());
+        assert!(
+            (p.duration() - (0.0 + 600.0 + 18000.0)).abs() < 1e-9,
+            "dur={}",
+            p.duration()
+        );
         assert_eq!(p.step_count(), 3);
     }
 

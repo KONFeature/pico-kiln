@@ -219,7 +219,9 @@ mod tests {
         // A further 0.3 °C step (ΔKp 0.0075 vs the last emit) -> suppressed.
         assert_eq!(g.update(25.8), None);
         // One more 0.3 °C (0.6 total from last emit) -> ΔKp 0.015 > 0.01 -> emit.
-        let b = g.update(26.1).expect("accumulated change exceeds threshold");
+        let b = g
+            .update(26.1)
+            .expect("accumulated change exceeds threshold");
         assert!((b.kp - 25.0 * (1.0 + h * 1.1)).abs() < 1e-9);
     }
 }

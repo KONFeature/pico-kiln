@@ -12,9 +12,14 @@ use std::path::PathBuf;
 const TOL: f64 = 1e-6;
 
 fn fixture_path() -> PathBuf {
-    [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", "profile_golden.csv"]
-        .iter()
-        .collect()
+    [
+        env!("CARGO_MANIFEST_DIR"),
+        "tests",
+        "fixtures",
+        "profile_golden.csv",
+    ]
+    .iter()
+    .collect()
 }
 
 fn opt(s: &str) -> Option<f64> {
@@ -74,16 +79,25 @@ fn replay_matches_reference_profile() {
         let exp_progress: f64 = c[4].trim().parse().unwrap();
         let exp_complete: bool = c[5].trim() == "1";
 
-        let p = Profile::new(&steps).unwrap_or_else(|e| panic!("row {i}: profile build failed: {e:?}"));
+        let p =
+            Profile::new(&steps).unwrap_or_else(|e| panic!("row {i}: profile build failed: {e:?}"));
         profiles_seen.insert(idx);
         rows += 1;
 
         let dd = (p.duration() - exp_duration).abs();
-        assert!(dd <= TOL, "profile {idx} duration: rust={} ref={} (|Δ|={dd:e})", p.duration(), exp_duration);
+        assert!(
+            dd <= TOL,
+            "profile {idx} duration: rust={} ref={} (|Δ|={dd:e})",
+            p.duration(),
+            exp_duration
+        );
 
         let pg = p.progress(elapsed);
         let pd = (pg - exp_progress).abs();
-        assert!(pd <= TOL, "profile {idx} progress@{elapsed}: rust={pg} ref={exp_progress} (|Δ|={pd:e})");
+        assert!(
+            pd <= TOL,
+            "profile {idx} progress@{elapsed}: rust={pg} ref={exp_progress} (|Δ|={pd:e})"
+        );
 
         assert_eq!(
             p.is_complete(elapsed),
@@ -95,5 +109,9 @@ fn replay_matches_reference_profile() {
     }
 
     assert!(rows >= 20, "fixture too small ({rows} rows)");
-    assert!(profiles_seen.len() >= 5, "expected >=5 distinct profiles, saw {}", profiles_seen.len());
+    assert!(
+        profiles_seen.len() >= 5,
+        "expected >=5 distinct profiles, saw {}",
+        profiles_seen.len()
+    );
 }
