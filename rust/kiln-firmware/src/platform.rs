@@ -634,6 +634,44 @@ impl Display for LcdDisplay {
 
 use static_cell::StaticCell;
 
+use cyw43::{Control, JoinOptions, PowerManagementMode};
+use cyw43_pio::{PioSpi, RM2_CLOCK_DIVIDER};
+use embassy_net::udp::{PacketMetadata, UdpSocket};
+use embassy_net::{IpEndpoint, Stack};
+use embassy_rp::bind_interrupts;
+use embassy_rp::clocks::RoscRng;
+use embassy_rp::dma::{self, Channel};
+use embassy_rp::peripherals::{DMA_CH0, PIO0};
+use embassy_rp::pio::{self, Pio};
+use sntpc::{NtpContext, NtpTimestampGenerator, NtpUdpSocket};
+
+// PIO0 drives the cyw43 SPI; one DMA channel moves the transfers. Both their
+// completion interrupts must be bound for the blocking-future drivers to wake.
+bind_interrupts!(struct Irqs {
+    PIO0_IRQ_0 => pio::InterruptHandler<PIO0>;
+    DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
+});
+
+/// Total smoltcp socket slots: the web worker pool (TCP) + the NTP UDP socket +
+/// the stack's internal DHCP and DNS sockets.
+const NET_SOCKETS: usize = kiln_app::server::WEB_TASK_POOL_SIZE + 3;
+
+/// Drives the cyw43 chip (SPI ioctls, event pump). cyw43 0.7: `Runner<'a, BUS>`
+/// — two generics, `BUS = SpiBus<PWR, SPI>` (no third `Cyw43439` param; that is
+/// the newer cyw43 ≥0.8).
+#[embassy_executor::task]
+async fn cyw43_task(
+    runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>>,
+) -> ! {
+    runner.run().await
+}
+
+/// Drives the `embassy-net` stack (smoltcp poll loop, DHCP).
+#[embassy_executor::task]
+async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
+    runner.run().await
+}
+
 /// picoserve timeouts (`web_server.py` connection limits), built once.
 pub fn web_config() -> &'static picoserve::Config {
     static CONFIG: StaticCell<picoserve::Config> = StaticCell::new();
@@ -648,30 +686,102 @@ pub fn web_config() -> &'static picoserve::Config {
     )
 }
 
-/// Bring up cyw43 → an `embassy-net` `Stack`, join WiFi, and run DHCP. DEVICE:
-/// firmware-blob load, PIO SPI, the cyw43 + net runner tasks, then `join_wpa2`
-/// **in a retry loop** (disconnect → wait 2 s → re-join) until it succeeds, so a
-/// transient initial-join failure recovers — `wifi_manager.connect`'s retry,
-/// which cyw43's built-in link auto-reconnect (drops only) does not cover.
+/// Bring up cyw43 → an `embassy-net` `Stack`, join WiFi, and run DHCP. Loads the
+/// firmware/CLM/nvram blobs, builds the PIO SPI, spawns the cyw43 + net runner
+/// tasks, then joins **in a retry loop** (wait 2 s → re-join) until the first
+/// association succeeds — `wifi_manager.connect`'s "keep trying" behaviour, which
+/// cyw43's built-in link auto-reconnect (drops only) does not cover. Returns the
+/// `Stack` plus the `Control` handle the [`wifi_monitor_task`] needs to re-join.
+///
+/// DHCP only: `WIFI_STATIC_IP` is not wired on this target (config defaults to
+/// DHCP). The blobs are vendored under `cyw43-firmware/` (Infineon Permissive
+/// Binary License); `aligned_bytes!` resolves their paths relative to this file.
 pub async fn init_network(
-    _spawner: &embassy_executor::Spawner,
-    _p: &Core0Periphs,
-) -> embassy_net::Stack<'static> {
-    unimplemented!("DEVICE: cyw43 init + embassy_net stack + WiFi join (retry until up)")
+    spawner: &embassy_executor::Spawner,
+    p: Core0Periphs,
+    config: &'static KilnConfig,
+) -> (Stack<'static>, Control<'static>) {
+    let fw = cyw43::aligned_bytes!("../cyw43-firmware/43439A0.bin");
+    let clm = cyw43::aligned_bytes!("../cyw43-firmware/43439A0_clm.bin");
+    let nvram = cyw43::aligned_bytes!("../cyw43-firmware/nvram_rp2040.bin");
+
+    // PIO-driven SPI to the on-board CYW43439 (fixed Pico 2 W wiring). The RM2
+    // module needs the slower `RM2_CLOCK_DIVIDER` (embassy #3960).
+    let pwr = Output::new(p.wl_pwr, Level::Low);
+    let cs = Output::new(p.wl_cs, Level::High);
+    let mut pio = Pio::new(p.pio, Irqs);
+    let spi = PioSpi::new(
+        &mut pio.common,
+        pio.sm0,
+        RM2_CLOCK_DIVIDER,
+        pio.irq0,
+        cs,
+        p.wl_dio,
+        p.wl_clk,
+        Channel::new(p.dma, Irqs),
+    );
+
+    static STATE: StaticCell<cyw43::State> = StaticCell::new();
+    let state = STATE.init(cyw43::State::new());
+    let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
+    spawner.spawn(cyw43_task(runner).unwrap());
+
+    control.init(clm).await;
+    control
+        .set_power_management(PowerManagementMode::PowerSave)
+        .await;
+
+    // embassy-net stack over DHCP. Seed the TCP/UDP RNG from the ring oscillator.
+    let mut rng = RoscRng;
+    let seed = rng.next_u64();
+    let net_config = embassy_net::Config::dhcpv4(Default::default());
+    static RES: StaticCell<embassy_net::StackResources<NET_SOCKETS>> = StaticCell::new();
+    let (stack, net_runner) = embassy_net::new(
+        net_device,
+        net_config,
+        RES.init(embassy_net::StackResources::new()),
+        seed,
+    );
+    spawner.spawn(net_task(net_runner).unwrap());
+
+    // Join, retrying until the first association sticks.
+    let ssid = config.wifi_ssid.as_str();
+    let password = config.wifi_password.as_str();
+    while control
+        .join(ssid, JoinOptions::new(password.as_bytes()))
+        .await
+        .is_err()
+    {
+        embassy_time::Timer::after(Duration::from_secs(2)).await;
+    }
+    stack.wait_config_up().await;
+
+    (stack, control)
 }
 
 /// WiFi reconnect monitor — the steady-state half of `wifi_manager.monitor`
-/// (`wifi_manager.py:139-180`): every few seconds check the link and, if it is
-/// down, re-join. cyw43 auto-reconnects dropped links, but the explicit
-/// disconnect→reconnect on a *failed* state is what the reference adds; mirror it
-/// here so a kiln on a flaky AP keeps its web/NTP reachable. DEVICE: the cyw43
-/// `control` handle for the status read + re-join.
+/// (`wifi_manager.py:139-180`). Parks until the link drops, then re-joins with a
+/// 2 s backoff until it sticks and DHCP reconfigures. cyw43 auto-reconnects a
+/// *dropped* link, but a hard failure (wrong key / AP gone) needs this explicit
+/// re-join — what the reference adds — so a kiln on a flaky AP stays reachable.
 #[embassy_executor::task]
-pub async fn wifi_monitor_task(_stack: embassy_net::Stack<'static>) -> ! {
+pub async fn wifi_monitor_task(
+    mut control: Control<'static>,
+    stack: Stack<'static>,
+    ssid: &'static str,
+    password: &'static str,
+) -> ! {
     loop {
-        // DEVICE: if the link is down (STAT_NO_AP_FOUND/CONNECT_FAIL equivalent),
-        // control.join_wpa2(ssid, pw) again (disconnect → wait 2 s → join).
-        embassy_time::Timer::after(Duration::from_secs(5)).await;
+        stack.wait_link_up().await;
+        stack.wait_link_down().await;
+        while control
+            .join(ssid, JoinOptions::new(password.as_bytes()))
+            .await
+            .is_err()
+        {
+            embassy_time::Timer::after(Duration::from_secs(2)).await;
+        }
+        stack.wait_config_up().await;
     }
 }
 
@@ -812,14 +922,123 @@ pub async fn attempt_recovery(state: &AppState) -> Option<kiln_app::server::Reco
     })
 }
 
-/// NTP task: periodically sync the wall clock via `sntpc`. DEVICE: the UDP
-/// exchange; on success it calls [`NtpClock::set_unix_ms`].
+/// NTP epoch (1900-01-01) → Unix epoch (1970-01-01), in seconds. `sntpc` reports
+/// `NtpResult.seconds` in the NTP era, so subtract this to get Unix time.
+const NTP_UNIX_DELTA: u64 = 2_208_988_800;
+/// Fixed local UDP port for the NTP client (smoltcp rejects binding port 0).
+const NTP_LOCAL_PORT: u16 = 50_123;
+
+/// `sntpc` timestamp source. Seeds from the wall clock once synced (sharpens the
+/// round-trip/offset math); 0 before first sync, which only perturbs the offset
+/// estimate, not the absolute time read back from the server.
+#[derive(Copy, Clone, Default)]
+struct NtpTimestamps {
+    secs: u64,
+    micros: u32,
+}
+
+impl NtpTimestampGenerator for NtpTimestamps {
+    fn init(&mut self) {
+        match NtpClock::unix_ms() {
+            Some(ms) if ms > 0 => {
+                self.secs = (ms / 1000) as u64;
+                self.micros = ((ms % 1000) * 1000) as u32;
+            }
+            _ => {
+                self.secs = 0;
+                self.micros = 0;
+            }
+        }
+    }
+    fn timestamp_sec(&self) -> u64 {
+        self.secs
+    }
+    fn timestamp_subsec_micros(&self) -> u32 {
+        self.micros
+    }
+}
+
+/// An `embassy-net` UDP socket as an `sntpc::NtpUdpSocket`. Both trait methods
+/// take `&self`, matching embassy-net's `send_to`/`recv_from`.
+struct NtpSocket<'a>(UdpSocket<'a>);
+
+impl NtpUdpSocket for NtpSocket<'_> {
+    async fn send_to(&self, buf: &[u8], addr: core::net::SocketAddr) -> sntpc::Result<usize> {
+        // proto-ipv4 only: `IpEndpoint: From<SocketAddr>` needs both protocols,
+        // so convert from the V4 case (which is the ipv4-gated impl). The server
+        // address is always V4 here (resolved A record / V4 fallback).
+        let endpoint = match addr {
+            core::net::SocketAddr::V4(v4) => IpEndpoint::from(v4),
+            core::net::SocketAddr::V6(_) => return Err(sntpc::Error::Network),
+        };
+        self.0
+            .send_to(buf, endpoint)
+            .await
+            .map_err(|_| sntpc::Error::Network)?;
+        Ok(buf.len())
+    }
+
+    async fn recv_from(&self, buf: &mut [u8]) -> sntpc::Result<(usize, core::net::SocketAddr)> {
+        let (n, meta) = self
+            .0
+            .recv_from(buf)
+            .await
+            .map_err(|_| sntpc::Error::Network)?;
+        let ip: core::net::IpAddr = meta.endpoint.addr.into();
+        Ok((n, core::net::SocketAddr::new(ip, meta.endpoint.port)))
+    }
+}
+
+/// One NTP exchange: resolve `pool.ntp.org` (falling back to Cloudflare's anycast
+/// NTP if DNS fails), query it over UDP with a 10 s deadline, and return Unix
+/// seconds. `None` on any failure. Mirrors `wifi_manager.sync_time_ntp`.
+async fn ntp_query(stack: Stack<'static>) -> Option<u64> {
+    use core::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    let server: IpAddr = match stack
+        .dns_query("pool.ntp.org", embassy_net::dns::DnsQueryType::A)
+        .await
+    {
+        Ok(addrs) if !addrs.is_empty() => addrs[0].into(),
+        // Cloudflare anycast NTP — a stable fixed IP for networks without usable
+        // DHCP DNS.
+        _ => IpAddr::V4(Ipv4Addr::new(162, 159, 200, 123)),
+    };
+
+    let mut rx_meta = [PacketMetadata::EMPTY; 8];
+    let mut rx_buf = [0u8; 256];
+    let mut tx_meta = [PacketMetadata::EMPTY; 8];
+    let mut tx_buf = [0u8; 256];
+    let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buf, &mut tx_meta, &mut tx_buf);
+    socket.bind(NTP_LOCAL_PORT).ok()?;
+
+    let ntp = NtpSocket(socket);
+    let ctx = NtpContext::new(NtpTimestamps::default());
+    let server_addr = SocketAddr::new(server, 123);
+    // Bound the recv: a silent server would otherwise wait forever.
+    let result =
+        embassy_time::with_timeout(Duration::from_secs(10), sntpc::get_time(server_addr, &ntp, ctx))
+            .await
+            .ok()?
+            .ok()?;
+    Some((result.seconds as u64).saturating_sub(NTP_UNIX_DELTA))
+}
+
+/// NTP task: sync the wall clock via `sntpc`, then re-sync hourly (retrying
+/// sooner until the first sync lands). On success it calls [`NtpClock::set_unix_ms`],
+/// which unblocks CSV/recovery timestamps.
 #[embassy_executor::task]
-pub async fn ntp_task(_clock: &'static NtpClock, _stack: embassy_net::Stack<'static>) -> ! {
+pub async fn ntp_task(_clock: &'static NtpClock, stack: Stack<'static>) -> ! {
     loop {
-        // DEVICE: sntpc::get_time(pool.ntp.org, socket) → NtpClock::set_unix_ms(unix_ms).
-        let _ = NtpClock::set_unix_ms; // referenced; DEVICE call elided
-        embassy_time::Timer::after(Duration::from_secs(3600)).await;
+        let synced = match ntp_query(stack).await {
+            Some(unix) => {
+                NtpClock::set_unix_ms(unix as i64 * 1000);
+                true
+            }
+            None => false,
+        };
+        let wait_s = if synced { 3600 } else { 60 };
+        embassy_time::Timer::after(Duration::from_secs(wait_s)).await;
     }
 }
 

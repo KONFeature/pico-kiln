@@ -218,9 +218,8 @@ async fn control_task(
 /// flash went to `init_storage` (before the split) and the LCD I2C is omitted
 /// until the LCD driver is ported (U9).
 ///
-/// The `platform::init_network` builder that consumes these is still an
-/// `unimplemented!` DEVICE stub, so the fields are not read yet.
-#[allow(dead_code)]
+/// Consumed by value by `platform::init_network` (the pins are moved into the
+/// cyw43 `Output`s and the PIO SPI).
 struct Core0Periphs {
     // cyw43 WiFi: power-on, the PIO-driven SPI (data/cs/clk), the PIO block, and
     // a DMA channel — all hardwired to the CYW43 on the Pico 2 W.
@@ -251,8 +250,9 @@ async fn core0_main(
     let spawner = unsafe { embassy_executor::Spawner::for_current_executor() }.await;
 
     // WiFi + network stack (cyw43 firmware blobs + PIO SPI), then DHCP. Returns
-    // the `embassy-net` Stack the web workers serve on.
-    let stack = platform::init_network(&spawner, &p).await;
+    // the `embassy-net` Stack the web workers serve on, plus the cyw43 `Control`
+    // handle the WiFi monitor needs to re-join.
+    let (stack, control) = platform::init_network(&spawner, p, config).await;
 
     // WiFi is up — let Core 1 resume publishing status (clear QuietMode).
     QUIET.store(false, Ordering::Release);
@@ -309,7 +309,17 @@ async fn core0_main(
         kiln_app::server::csv_logger_task(status, storage, clock, config, recovery).unwrap(),
     );
     // WiFi reconnect monitor (`wifi_manager.monitor`): re-join on link failure.
-    spawner.spawn(platform::wifi_monitor_task(stack).unwrap());
+    // Takes the `Control` handle (moved here — nothing else uses it) plus the
+    // SSID/password, which live in the `'static` config.
+    spawner.spawn(
+        platform::wifi_monitor_task(
+            control,
+            stack,
+            config.wifi_ssid.as_str(),
+            config.wifi_password.as_str(),
+        )
+        .unwrap(),
+    );
     // NOTE: the LCD task is intentionally NOT spawned — the LCD driver
     // (`lcd1602_i2c` + `lcd_manager`) is not yet ported. See MIGRATION_AUDIT.md U9.
     // TODO(LCD): port the driver, then spawn `lcd_task(status, display)` here.
