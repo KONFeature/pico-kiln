@@ -128,3 +128,20 @@ caveat is unchanged from the start: the `DEVICE`-marked driver bodies
 (cyw43/SPI/I²C register traffic, the sntpc exchange) compile and are
 type-checked but can only be *behaviourally* validated on a physical Pico 2 W
 with the sensor/SSR/LCD wired — there is no host emulation for them.
+
+## Feature-parity pass (Python deltas closed)
+
+The deliberate "narrower than Python" deltas have since been implemented:
+
+| Feature | Status |
+|---|---|
+| **Static IP** | `init_network` builds `StaticConfigV4` from `WIFI_STATIC_IP`+subnet+gateway+dns (all-four-or-DHCP, like the reference). |
+| **Multi-SSR + configured pins** | `SSR_PIN` (int or list, ≤`MAX_SSR`) selected from a reserved GPIO pool (15/14/…/6, default 15); `ConfiguredSsr` does runtime-N staggered switching. `raw_ssr_off` de-energises all configured pins via an atomic mask. |
+| **WiFi AP scan** | `scan_strongest` scans + picks the strongest matching AP before joining. |
+| **Status LED** | on-board cyw43 LED blinks while connecting, solid when up, off on link-down. |
+
+**Inherent platform limits** (not bugs — RP2350 / cyw43 0.7 constraints):
+- SSR pins are honoured only within the reserved compile-time pool (the RP2350
+  pinmux is static); a number outside it falls back to the default.
+- cyw43 0.7's `join` takes no BSSID, so the strongest AP is *identified* by the
+  scan but the firmware still associates by SSID (can't pin the BSSID).
