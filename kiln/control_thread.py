@@ -111,8 +111,14 @@ class ControlThread:
         cs_pin = DigitalInOut(Pin(self.config.MAX31856_CS_PIN, Pin.OUT))
 
         # Initialize temperature sensor
+        # getattr keeps backward compat with config.py files predating these keys
         self.temp_sensor = TemperatureSensor(
-            spi, cs_pin, thermocouple_type=self.config.THERMOCOUPLE_TYPE, offset=self.config.THERMOCOUPLE_OFFSET
+            spi, cs_pin,
+            thermocouple_type=self.config.THERMOCOUPLE_TYPE,
+            offset=self.config.THERMOCOUPLE_OFFSET,
+            mains_frequency=getattr(self.config, 'MAINS_FREQUENCY', 60),
+            averaging=getattr(self.config, 'THERMOCOUPLE_AVERAGING', 8),
+            median_window=getattr(self.config, 'TEMP_MEDIAN_WINDOW', 3),
         )
 
         # Initialize SSR controller

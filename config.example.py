@@ -54,6 +54,25 @@ TEMP_UNITS = "c"
 # Calibration offset added to all readings (°C)
 THERMOCOUPLE_OFFSET = 0.0
 
+# Signal conditioning for the MAX31856 (a Sigma-Delta ADC that already does
+# internal SINC + notch filtering). White-noise rejection is done in hardware;
+# software only rejects spikes. See kiln/hardware.py for the rationale.
+
+# Local AC line frequency for the chip's notch filter (50 or 60 Hz). Set this to
+# match your mains to reject power-line interference on the thermocouple leads.
+# US/Japan/Korea = 60, most of Europe/Asia/Africa/Australia = 50.
+MAINS_FREQUENCY = 60
+
+# Hardware samples the MAX31856 averages per reading (1, 2, 4, 8, or 16). Higher
+# cuts random noise (~1/sqrt(N)) but slows conversions. The chip runs in continuous
+# mode so this never blocks the control loop; 8 is a good kiln default.
+THERMOCOUPLE_AVERAGING = 8
+
+# Software median window for spike rejection (odd number). Discards isolated
+# SSR/EMI transients without the lag of a moving average. 3 rejects an isolated
+# spike with ~1s lag; 5 also rejects 2 consecutive; 1 disables software filtering.
+TEMP_MEDIAN_WINDOW = 3
+
 # ============================================================================
 # CONTROL LOOP TIMING
 # ============================================================================

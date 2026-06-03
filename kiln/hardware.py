@@ -10,8 +10,16 @@ COLD_START_FAULT_LIMIT = const(40)      # Higher tolerance during cold start (S-
 COLD_START_TEMP_THRESHOLD = const(100)  # Below this, use COLD_START_FAULT_LIMIT instead
 TEMP_MIN_RANGE = const(-50)             # Minimum reasonable temperature in °C
 TEMP_MAX_RANGE = const(1500)            # Maximum reasonable temperature in °C
-EMA_ALPHA = 0.3                         # Temp smoothing factor (0=max smooth, 1=none). 90% response in ~7s
 MIN_SSR_OUTPUT = 5.0                    # Floor when PID > 0% (5% × 20s cycle = 1s minimum relay pulse)
+
+# Temperature-sensor signal conditioning defaults.
+# White-noise rejection lives in the chip (AVGSEL hardware averaging + SINC/notch,
+# run in continuous mode); software only median-filters to drop SSR/EMI spikes.
+# Deliberately no EMA — a linear low-pass smears spikes and adds lag here.
+DEFAULT_MAINS_FREQUENCY = const(60)     # Notch filter target (50 or 60 Hz mains)
+DEFAULT_AVERAGING = const(8)            # MAX31856 hardware samples averaged (1,2,4,8,16)
+DEFAULT_MEDIAN_WINDOW = const(3)        # Software median window for spike rejection (odd; 1=off)
+VALID_AVERAGING = (1, 2, 4, 8, 16)
 
 class TemperatureSensor:
     """
@@ -21,15 +29,25 @@ class TemperatureSensor:
     and fault detection.
     """
 
-    def __init__(self, spi, cs_pin, thermocouple_type=None, offset=0.0):
+    def __init__(self, spi, cs_pin, thermocouple_type=None, offset=0.0,
+                 mains_frequency=DEFAULT_MAINS_FREQUENCY,
+                 averaging=DEFAULT_AVERAGING,
+                 median_window=DEFAULT_MEDIAN_WINDOW):
         """
         Initialize temperature sensor
+
+        Configures the MAX31856's internal filtering, then runs it in continuous
+        (auto) conversion mode so the chip free-runs its SINC + notch + averaging
+        filter. Reads become non-blocking register fetches of the latest result.
 
         Args:
             spi: SPI bus instance (wrapped for adafruit library)
             cs_pin: Chip select pin (wrapped for adafruit library)
             thermocouple_type: Type of thermocouple (default: K-type)
             offset: Temperature offset for calibration (°C)
+            mains_frequency: AC line frequency for the notch filter (50 or 60 Hz)
+            averaging: MAX31856 hardware samples averaged per result (1,2,4,8,16)
+            median_window: Software median window for spike rejection (odd; 1=off)
         """
         try:
             import adafruit_max31856
@@ -39,6 +57,15 @@ class TemperatureSensor:
             if thermocouple_type is None:
                 thermocouple_type = ThermocoupleType.K
 
+            if mains_frequency not in (50, 60):
+                print(f"Sensor init: invalid mains_frequency={mains_frequency}, using {DEFAULT_MAINS_FREQUENCY}")
+                mains_frequency = DEFAULT_MAINS_FREQUENCY
+            if averaging not in VALID_AVERAGING:
+                print(f"Sensor init: invalid averaging={averaging}, using {DEFAULT_AVERAGING}")
+                averaging = DEFAULT_AVERAGING
+            if median_window < 1:
+                median_window = 1
+
             self.sensor = adafruit_max31856.MAX31856(
                 spi, cs_pin, thermocouple_type=thermocouple_type
             )
@@ -46,23 +73,37 @@ class TemperatureSensor:
             self.last_good_temp = None  # No fake default - require first valid read
             self.initialized = False  # Track if we've ever had a valid reading
             self.fault_count = 0
-            self.ema_temp = None       # EMA-filtered temperature (None until first reading)
             self.max_recorded_temp = 0.0  # Highest temp seen since boot (for cold-start detection)
+            self.median_window = median_window
+            self._samples = []
 
-            # Perform initial conversion to clear power-up faults
-            # The chip needs ~160ms to complete first conversion
-            print("Temperature sensor initializing...")
-            time.sleep(0.2)  # Wait for first conversion to complete (MAX31856 requirement)
+            # Configure chip filtering BEFORE auto-conversion. Datasheet: the notch
+            # frequency and AVGSEL may only change in "Normally Off" mode (we are).
+            self.sensor.noise_rejection = mains_frequency
+            self.sensor.averaging = averaging
+            self.sensor.start_autoconverting()
 
-            # Attempt initial read (don't block startup on retries - will retry during operation)
+            print(f"Temperature sensor initializing (avg={averaging}, notch={mains_frequency}Hz)...")
+
+            # In auto-conversion mode the temperature registers read exactly 0 until
+            # the first conversion completes. Poll for the first real sample (adapts
+            # to any averaging/notch); the timeout bounds boot if the sensor is stuck.
             try:
-                temp = self.sensor.temperature
-                if temp is not None and TEMP_MIN_RANGE <= temp <= TEMP_MAX_RANGE:
-                    self.last_good_temp = temp + self.offset
+                start = time.ticks_ms()
+                raw = self.sensor.unpack_temperature()
+                while raw == 0.0 and time.ticks_diff(time.ticks_ms(), start) < 1500:
+                    time.sleep_ms(20)
+                    raw = self.sensor.unpack_temperature()
+
+                temp = raw + self.offset
+                if raw != 0.0 and TEMP_MIN_RANGE <= temp <= TEMP_MAX_RANGE:
+                    self._samples.append(temp)
+                    self.last_good_temp = temp
+                    self.max_recorded_temp = temp
                     self.initialized = True
-                    print(f"Temperature sensor ready: {self.last_good_temp:.1f}°C")
+                    print(f"Temperature sensor ready: {temp:.1f}°C")
                 else:
-                    print("Sensor init: Invalid first reading, will retry during operation")
+                    print("Sensor init: no valid first reading yet, will retry during operation")
             except Exception as e:
                 print(f"Sensor init: First read failed ({e}), will retry during operation")
 
@@ -74,53 +115,56 @@ class TemperatureSensor:
     @micropython.native
     def read(self):
         """
-        Read temperature with EMA smoothing and fault checking
+        Read temperature with median spike-rejection and fault checking
 
         Returns:
-            Temperature in Celsius (EMA-filtered)
+            Temperature in Celsius (median-filtered)
 
         Raises:
             Exception if persistent sensor fault detected or sensor not initialized
         """
         try:
-            temp = self.sensor.temperature
-
-            if temp is None:
-                raise Exception("Sensor returned None")
-
             faults = self.sensor.fault
             if any(faults.values()):
                 fault_list = [k for k, v in faults.items() if v]
                 raise Exception(f"Thermocouple faults: {', '.join(fault_list)}")
+
+            # Latest continuous-conversion result: non-blocking register fetch, no
+            # one-shot trigger or ~160ms wait. Already SINC/notch filtered + averaged.
+            temp = self.sensor.unpack_temperature()
 
             if temp < TEMP_MIN_RANGE or temp > TEMP_MAX_RANGE:
                 raise Exception(f"Temperature {temp}°C out of reasonable range")
 
             temp += self.offset
 
-            # EMA smoothing — tames S-type thermocouple noise at low temps
-            # while adding negligible lag (~0.1°C at 100°C/h ramp rates)
-            if self.ema_temp is None:
-                self.ema_temp = temp
-            else:
-                self.ema_temp = EMA_ALPHA * temp + (1.0 - EMA_ALPHA) * self.ema_temp
+            samples = self._samples
+            samples.append(temp)
+            if len(samples) > self.median_window:
+                samples.pop(0)
+            filtered = self._median(samples)
 
-            if self.ema_temp > self.max_recorded_temp:
-                self.max_recorded_temp = self.ema_temp
+            if filtered > self.max_recorded_temp:
+                self.max_recorded_temp = filtered
 
             if not self.initialized:
-                print(f"Temperature sensor initialized: {self.ema_temp:.1f}°C")
+                print(f"Temperature sensor initialized: {filtered:.1f}°C")
                 self.initialized = True
 
             if self.fault_count > 0:
                 print(f"Temperature sensor recovered (after {self.fault_count} faults)")
                 self.fault_count = 0
 
-            self.last_good_temp = self.ema_temp
-            return self.ema_temp
+            self.last_good_temp = filtered
+            return filtered
 
         except Exception as e:
             self.fault_count += 1
+
+            # After a sustained dropout, discard stale samples so the median
+            # re-seeds from fresh readings instead of blending pre-fault values.
+            if self.fault_count >= self.median_window:
+                self._samples = []
 
             if not self.initialized:
                 error_msg = f"Temperature sensor failed to initialize: {e}"
@@ -143,6 +187,14 @@ class TemperatureSensor:
             else:
                 print(f"Using last good temperature: {self.last_good_temp:.1f}°C")
                 return self.last_good_temp
+
+    @staticmethod
+    def _median(values):
+        ordered = sorted(values)
+        mid = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[mid]
+        return 0.5 * (ordered[mid - 1] + ordered[mid])
 
     def get_last_temp(self):
         """Get last successfully read temperature"""
