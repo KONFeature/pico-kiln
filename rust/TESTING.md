@@ -4,9 +4,10 @@ This document explains how to build, test, cross-compile, and (re)validate the
 Rust control-logic crate against the original MicroPython implementation.
 
 > **Current status (verified):** `kiln-core` compiles `no_std` for the RP2350
-> (`thumbv8m.main-none-eabihf`) and the full test suite is **green — 39/39**
-> (30 unit tests + 9 reference-replay tests) across all six ported modules:
-> `pid`, `rate_monitor`, `scheduler`, `profile`, `state`, `tuner`. See
+> (`thumbv8m.main-none-eabihf`) and the full test suite is **green — 46/46**
+> (36 unit tests + 10 reference-replay tests) across all seven ported modules:
+> `pid`, `rate_monitor`, `scheduler`, `profile`, `state`, `tuner`, `temp_filter`.
+> The sibling `kiln-hal` crate (MAX31856 + SSR drivers) adds 9 driver tests. See
 > [Results](#results-snapshot).
 
 ---
@@ -215,13 +216,15 @@ rust/
     │   ├── scheduler.rs
     │   ├── profile.rs
     │   ├── state.rs
-    │   └── tuner.rs
+    │   ├── tuner.rs
+    │   └── temp_filter.rs
     ├── tests/
     │   ├── replay_pid.rs           # equivalence tests (replay fixtures)
     │   ├── replay_rate.rs
     │   ├── replay_profile.rs
     │   ├── replay_state.rs         # run / stall / recovery scenarios
     │   ├── replay_tuner.rs         # safe / standard / error scenarios
+    │   ├── replay_temp_filter.rs   # init / spike / faults / shutdown scenarios
     │   └── fixtures/               # *_golden.csv generated from kiln/*.py
     └── tools/
         └── gen_*_golden.py         # fixture generators (import the real modules)
@@ -240,10 +243,13 @@ All hardware-free modules are ported and equivalence-tested:
 5. ✅ `state` (`kiln/state.py`) — firing state machine (ramp/hold/cooling,
    stall detection, recovery)
 6. ✅ `tuner` (`kiln/tuner.py`) — Ziegler-Nichols auto-tune sequences
+7. ✅ `temp_filter` (`kiln/hardware.py`) — median spike-rejection + fault
+   tolerance (the software half of `TemperatureSensor`, post MAX31856 rework)
 
 What's intentionally **not** in `kiln-core`: the concurrency layer (`comms.py`
-queues, `_thread`) and anything touching hardware — those belong to the future
-`kiln-hal` / `firmware` crates and map to `embassy` primitives.
+queues, `_thread`) and anything touching hardware — the MAX31856 register I/O and
+SSR pins live in `kiln-hal`, the rest maps to `embassy` primitives in the
+firmware crates.
 
 **Pattern for each module (for reference / future tweaks):**
 
@@ -266,19 +272,21 @@ the single biggest risk-reducer for a fire-capable controller.
 Produced with the §5 recipe (this environment has no system linker):
 
 ```
-running 30 tests        # src/lib.rs unit tests
+running 36 tests        # src/lib.rs unit tests
 ... pid::tests (6) ... rate_monitor::tests (4) ... scheduler::tests (5) ...
 ... profile::tests (5) ... state::tests (5) ... tuner::tests (5) ...
-test result: ok. 30 passed; 0 failed; ...
+... temp_filter::tests (6) ...
+test result: ok. 36 passed; 0 failed; ...
 
-   Running tests/replay_pid.rs       test result: ok. 1 passed; ...
-   Running tests/replay_rate.rs      test result: ok. 1 passed; ...
-   Running tests/replay_profile.rs   test result: ok. 1 passed; ...
-   Running tests/replay_state.rs     test result: ok. 3 passed; ...  # run/stall/recovery
-   Running tests/replay_tuner.rs     test result: ok. 3 passed; ...  # safe/standard/error
+   Running tests/replay_pid.rs          test result: ok. 1 passed; ...
+   Running tests/replay_rate.rs         test result: ok. 1 passed; ...
+   Running tests/replay_profile.rs      test result: ok. 1 passed; ...
+   Running tests/replay_state.rs        test result: ok. 3 passed; ...  # run/stall/recovery
+   Running tests/replay_tuner.rs        test result: ok. 3 passed; ...  # safe/standard/error
+   Running tests/replay_temp_filter.rs  test result: ok. 1 passed; ...  # init/spike/faults/shutdown
 ```
 
-Total: 30 unit + 9 replay = 39 tests green.
+Total (kiln-core): 36 unit + 10 replay = 46 tests green. `kiln-hal` adds 9.
 
 Cross-compile for RP2350:
 

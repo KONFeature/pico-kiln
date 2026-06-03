@@ -76,7 +76,7 @@ plus an SSR-off-on-drop guard in `kiln-hal` ensure a fault de-energises the kiln
 
 ## 3. Crate-by-crate, with Python sources
 
-### `kiln-core` — the brain (status: 6/10 modules done)
+### `kiln-core` — the brain (status: 7/10 modules done)
 
 Pure logic, `#![no_std]`, zero deps, time injected as `now: f64`, no strings
 (errors are typed enums). Already ported and equivalence-tested:
@@ -89,28 +89,28 @@ Pure logic, `#![no_std]`, zero deps, time injected as `now: f64`, no strings
 | `profile` ✅ | `kiln/profile.py` | `Profile` |
 | `state` ✅ | `kiln/state.py` | `KilnState`, `KilnController` |
 | `tuner` ✅ | `kiln/tuner.py` | `ZieglerNicholsTuner`, `TuningStage` |
+| `temp_filter` ✅ | `kiln/hardware.py:114-197` | median spike-rejection, consecutive-fault counting, cold-start tolerance, range validation, window re-seed (the software half of `TemperatureSensor.read()`, post MAX31856 rework — **median, not EMA**) |
 
 Still to extract — these are **pure logic currently tangled with I/O** in the
 Python, and belong in core, not the HAL:
 
 | Rust module (planned) | Python source | What moves |
 |-----------------------|---------------|-----------|
-| `temp_filter` | `kiln/hardware.py:96-145` | EMA smoothing, consecutive-fault counting, cold-start tolerance, range validation (everything in `TemperatureSensor.read()` except `self.sensor.temperature`/`.fault`) |
-| `ssr_schedule` | `kiln/hardware.py:206-292` | time-proportional duty calc, mid-cycle duty **lock**, `MIN_SSR_OUTPUT` floor (everything in `SSRController` except `pin.value()`) |
+| `ssr_schedule` | `kiln/hardware.py:209-318` | time-proportional duty calc, mid-cycle duty **lock**, `MIN_SSR_OUTPUT` floor (everything in `SSRController` except `pin.value()`) |
 | `gain_schedule` | `kiln/control_thread.py:586-600` | continuous gain scaling `g(T) = 1 + h·(T − T_ambient)` + change-threshold gate |
 | `protocol` | `kiln/comms.py:191-342` | `MessageType` + `CommandMessage` → `enum Command`; `StatusMessage` templates → `struct Status` (typed, no dicts, no strings) |
 | `recovery` (decision) | `server/recovery.py:131-243` | `RecoveryInfo` / `check_recovery` math: is a resume warranted, at what step/elapsed (operates on already-parsed values) |
 
-### `kiln-hal` — the hands (status: planned)
+### `kiln-hal` — the hands (status: `max31856` + `ssr` built; `lcd` planned)
 
-Thin drivers generic over `embedded-hal` traits (`SpiBus`, `OutputPin`), so they
-run against mocks on the host. Returns raw readings; `kiln-control` wraps the
-core filters around them.
+Thin drivers generic over `embedded-hal` 1.0 traits (`SpiDevice`, `OutputPin`),
+so they run against mocks on the host. Return raw readings; `kiln-control` wraps
+the core filters around them.
 
 | Rust module | Python source | What it does |
 |-------------|---------------|--------------|
-| `max31856` | `kiln/hardware.py:34-94` + `adafruit_max31856` | SPI thermocouple read → raw °C or `Fault` bits |
-| `ssr` | `kiln/hardware.py` (`pin.value()` calls) | GPIO on/off; SSR-off-on-`Drop` safety guard |
+| `max31856` ✅ | `kiln/hardware.py:24-205` + `adafruit_max31856` | configure (notch + averaging), `start_autoconverting`, non-blocking 19-bit read → raw °C, decoded `Faults` |
+| `ssr` ✅ | `kiln/hardware.py:209-318` (`pin.value()` calls) | GPIO on/off; SSR-off-on-`Drop` safety guard |
 | `lcd` (optional) | `server/lcd_manager.py` (hardware init/draw) | display driver |
 
 ### `kiln-control` — Core 1 real-time loop (status: planned)
@@ -243,12 +243,12 @@ covered transitively (it's mostly `kiln-core` calls) and end-to-end by
 
 ## 8. Status & roadmap
 
-- ✅ `kiln-core`: 6 modules ported, 30 unit + 9 replay tests green.
-- ⏭ `kiln-core`: extract `temp_filter`, `ssr_schedule`, `gain_schedule`,
-  `protocol`, `recovery` (all unblock the layers above).
-- ⏭ `kiln-hal`: `max31856`, `ssr` drivers over `embedded-hal`.
+- ✅ `kiln-core`: 7 modules ported, 36 unit + 10 replay tests green.
+- ✅ `kiln-hal`: `max31856` + `ssr` drivers over `embedded-hal`, 9 tests green.
+- ⏭ `kiln-core`: extract `ssr_schedule`, `gain_schedule`, `protocol`, `recovery`
+  (all unblock the layers above).
 - ⏭ `kiln-control` + `kiln-app`: embassy tasks; `kiln-firmware` shim.
 - ⏭ `kiln-sim`: optional host thermal-model harness.
 
-> Workspace `members` in `rust/Cargo.toml` currently lists only `kiln-core`; add
-> each crate as it lands.
+> Workspace `members` in `rust/Cargo.toml` lists `kiln-core` + `kiln-hal`; add
+> each remaining crate as it lands.

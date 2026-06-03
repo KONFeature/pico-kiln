@@ -2,16 +2,20 @@
 //!
 //! Faithful port of the Adafruit CircuitPython MAX31856 driver that
 //! `kiln/hardware.py` builds on: same register map, same init (assert on all
-//! faults, open-circuit detection), same one-shot flow, and the same 19-bit
-//! linearised-temperature unpack (`LSB = 2^-7 °C`). Generic over
-//! `embedded_hal::spi::SpiDevice`, so it runs on the RP2350 and against a mock
-//! bus under `cargo test`.
+//! faults, open-circuit detection), and the same 19-bit linearised-temperature
+//! unpack (`LSB = 2^-7 °C`). Generic over `embedded_hal::spi::SpiDevice`, so it
+//! runs on the RP2350 and against a mock bus under `cargo test`.
 //!
-//! The EMA smoothing, fault tolerance, and range checks that wrap this sensor in
-//! `hardware.py` are *not* here — that is pure decision logic and lives in
-//! `kiln-core` (`temp_filter`). This driver returns raw readings and raw faults.
+//! Matched to how the controller runs the chip after the filtering rework: set
+//! the mains notch and hardware averaging, then [`Max31856::start_autoconverting`]
+//! so the chip free-runs its SINC + notch + AVGSEL filter. Reads are then
+//! non-blocking register fetches of the latest result (no one-shot, no ~160 ms
+//! busy-wait); the registers read `0.0` until the first conversion settles.
+//!
+//! The median spike-rejection, fault tolerance, and range checks that wrap this
+//! sensor in `hardware.py` are *not* here — that is pure decision logic and lives
+//! in `kiln-core` (`temp_filter`). This driver returns raw readings and faults.
 
-use embedded_hal::delay::DelayNs;
 use embedded_hal::spi::{Operation, SpiDevice};
 
 const REG_CR0: u8 = 0x00;
@@ -190,17 +194,14 @@ impl<SPI: SpiDevice> Max31856<SPI> {
         self.write_register(REG_CR0, cr0)
     }
 
-    /// Kick off a single conversion and return immediately. The chip clears the
-    /// 1-shot bit when done (~155 ms); poll [`Max31856::oneshot_pending`] or wait
-    /// the conversion time, then read with [`Max31856::read_temperature`].
-    pub fn initiate_one_shot(&mut self) -> Result<(), Error<SPI::Error>> {
+    /// Put the chip into continuous (auto) conversion: it free-runs a conversion
+    /// every ~100 ms applying its SINC + notch + AVGSEL filter. Configure the
+    /// noise filter and averaging *before* calling this. Afterwards the registers
+    /// read `0.0` until the first conversion settles, then
+    /// [`Max31856::read_temperature`] is a non-blocking fetch of the latest value.
+    pub fn start_autoconverting(&mut self) -> Result<(), Error<SPI::Error>> {
         let cr0 = self.read_register_u8(REG_CR0)?;
-        self.write_register(REG_CR0, (cr0 & !CR0_AUTOCONVERT) | CR0_ONESHOT)
-    }
-
-    /// True while a one-shot conversion is still running.
-    pub fn oneshot_pending(&mut self) -> Result<bool, Error<SPI::Error>> {
-        Ok(self.read_register_u8(REG_CR0)? & CR0_ONESHOT != 0)
+        self.write_register(REG_CR0, (cr0 & !CR0_ONESHOT) | CR0_AUTOCONVERT)
     }
 
     /// Read and decode the linearised thermocouple temperature in °C from the
@@ -223,24 +224,6 @@ impl<SPI: SpiDevice> Max31856<SPI> {
         Ok(Faults::from_sr(self.read_register_u8(REG_SR)?))
     }
 
-    /// Blocking convenience: trigger a one-shot, wait for it to finish (bounded
-    /// poll, as a guard against a stuck bus), and return the temperature. This
-    /// is the equivalent of Adafruit's `.temperature`; on the firmware the
-    /// non-blocking `initiate_one_shot` + `embassy-time` wait is preferred.
-    pub fn temperature<D: DelayNs>(
-        &mut self,
-        delay: &mut D,
-    ) -> Result<f32, Error<SPI::Error>> {
-        self.initiate_one_shot()?;
-        for _ in 0..40 {
-            delay.delay_ms(10);
-            if !self.oneshot_pending()? {
-                break;
-            }
-        }
-        self.read_temperature()
-    }
-
     fn read_register(&mut self, reg: u8, buf: &mut [u8]) -> Result<(), Error<SPI::Error>> {
         self.spi
             .transaction(&mut [Operation::Write(&[reg & 0x7F]), Operation::Read(buf)])
@@ -261,7 +244,6 @@ impl<SPI: SpiDevice> Max31856<SPI> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_hal_mock::eh1::delay::NoopDelay;
     use embedded_hal_mock::eh1::spi::{Mock as SpiMock, Transaction as Spi};
 
     fn read_reg(reg: u8, ret: &[u8]) -> [Spi<u8>; 4] {
@@ -348,16 +330,26 @@ mod tests {
     }
 
     #[test]
-    fn temperature_runs_one_shot_then_reads() {
+    fn start_autoconverting_sets_cmode_and_clears_oneshot() {
         let mut expect = Vec::new();
-        expect.extend(read_reg(REG_CR0, &[CR0_OCFAULT0])); // initiate: read CR0
-        expect.extend(write_reg(REG_CR0, CR0_OCFAULT0 | CR0_ONESHOT)); // initiate: write
-        expect.extend(read_reg(REG_CR0, &[CR0_OCFAULT0])); // poll: 1-shot cleared
-        expect.extend(read_reg(REG_LTCBH, &[0x01, 0x90, 0x00])); // read 25.0
+        expect.extend(read_reg(REG_CR0, &[CR0_OCFAULT0 | CR0_ONESHOT]));
+        expect.extend(write_reg(REG_CR0, CR0_OCFAULT0 | CR0_AUTOCONVERT));
         let mut spi = SpiMock::new(&expect);
         let mut dev = Max31856::new(spi.clone());
 
-        assert_eq!(dev.temperature(&mut NoopDelay).unwrap(), 25.0);
+        dev.start_autoconverting().unwrap();
+        spi.done();
+    }
+
+    #[test]
+    fn registers_read_zero_before_first_conversion() {
+        // In auto mode the LTCB registers read 0 until the first conversion
+        // settles; the driver returns 0.0 and the caller (init) polls for nonzero.
+        let expect = read_reg(REG_LTCBH, &[0x00, 0x00, 0x00]);
+        let mut spi = SpiMock::new(&expect);
+        let mut dev = Max31856::new(spi.clone());
+
+        assert_eq!(dev.read_temperature().unwrap(), 0.0);
         spi.done();
     }
 }

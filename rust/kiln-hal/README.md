@@ -14,13 +14,15 @@ Device drivers for the pico-kiln controller — the thin I/O layer between
 
 | Module | Drives | Ports |
 |--------|--------|-------|
-| `max31856` | MAX31856 thermocouple amplifier (SPI): config, one-shot conversion, 19-bit temperature, fault register | the Adafruit MAX31856 driver `kiln/hardware.py` relies on |
+| `max31856` | MAX31856 thermocouple amplifier (SPI): config, continuous auto-conversion, 19-bit temperature, fault register | the Adafruit MAX31856 driver `kiln/hardware.py` relies on |
 | `ssr` | a solid-state relay (GPIO), active-high, with an off-on-drop safety guard | the pin actuation in `kiln/hardware.py:SSRController` |
 
 The `max31856` register map, init sequence (assert on all faults + open-circuit
-detection), one-shot flow, and temperature unpack (`LSB = 2^-7 °C`) mirror the
+detection), continuous-conversion flow (set the mains notch + hardware averaging,
+then `start_autoconverting`; reads are non-blocking and return `0.0` until the
+first conversion settles), and temperature unpack (`LSB = 2^-7 °C`) mirror the
 Adafruit library exactly, so the Rust readings match what the MicroPython
-controller was calibrated against.
+controller was calibrated against after the thermocouple-filtering rework.
 
 ## Safety posture
 
@@ -37,10 +39,12 @@ cd rust
 cargo test -p kiln-hal
 ```
 
-8 tests using `embedded-hal-mock`: they assert the exact SPI transactions the
+9 tests using `embedded-hal-mock`: they assert the exact SPI transactions the
 driver issues (address byte then read/write, single chip-select per access),
-decode known positive/negative temperatures and fault bits, and verify the SSR
-starts low and the drop guard fires.
+decode known positive/negative temperatures and fault bits, check
+`start_autoconverting` preserves the other config bits and that reads are `0.0`
+before the first conversion, and verify the SSR starts low and the drop guard
+fires.
 
 > No system C linker? See `../TESTING.md §5` for the static-musl + `rust-lld`
 > recipe that runs the suite with only the Rust toolchain.
