@@ -76,10 +76,10 @@ plus an SSR-off-on-drop guard in `kiln-hal` ensure a fault de-energises the kiln
 
 ## 3. Crate-by-crate, with Python sources
 
-### `kiln-core` — the brain (status: 7/10 modules done)
+### `kiln-core` — the brain (status: 10/11 modules done)
 
-Pure logic, `#![no_std]`, zero deps, time injected as `now: f64`, no strings
-(errors are typed enums). Already ported and equivalence-tested:
+Pure logic, `#![no_std]`, zero deps, time injected as `now: f64` / `now_ms: u64`,
+no strings (errors are typed enums). Already ported and equivalence-tested:
 
 | Rust module | Python source | Symbols |
 |-------------|---------------|---------|
@@ -90,15 +90,15 @@ Pure logic, `#![no_std]`, zero deps, time injected as `now: f64`, no strings
 | `state` ✅ | `kiln/state.py` | `KilnState`, `KilnController` |
 | `tuner` ✅ | `kiln/tuner.py` | `ZieglerNicholsTuner`, `TuningStage` |
 | `temp_filter` ✅ | `kiln/hardware.py:114-197` | median spike-rejection, consecutive-fault counting, cold-start tolerance, range validation, window re-seed (the software half of `TemperatureSensor.read()`, post MAX31856 rework — **median, not EMA**) |
+| `ssr_schedule` ✅ | `kiln/hardware.py:209-318` | time-proportional duty calc, mid-cycle duty **lock**, `MIN_SSR_OUTPUT` floor, single-cycle advance (everything in `SSRController` except `pin.value()`); time injected as `now_ms` |
+| `gain_schedule` ✅ | `kiln/control_thread.py:132-160,585-606` | continuous gain scaling `g(T) = 1 + h·(T − T_ambient)`, `h<0`→disabled validation, + change-threshold gate (`Some(Gains)` exactly when the reference calls `pid.set_gains`) |
+| `protocol` ✅ | `kiln/comms.py:191-506` | `MessageType` + `CommandMessage` → `enum Command` (tags 1..=10 preserved); `StatusMessage` templates → `Copy struct Status` (typed `KilnState`/`KilnError`/`StepKind`, no dicts, no heap strings; filenames in a bounded `ProfileName`) |
 
-Still to extract — these are **pure logic currently tangled with I/O** in the
-Python, and belong in core, not the HAL:
+Still to extract — pure logic currently tangled with I/O in the Python, and
+belongs in core, not the HAL:
 
 | Rust module (planned) | Python source | What moves |
 |-----------------------|---------------|-----------|
-| `ssr_schedule` | `kiln/hardware.py:209-318` | time-proportional duty calc, mid-cycle duty **lock**, `MIN_SSR_OUTPUT` floor (everything in `SSRController` except `pin.value()`) |
-| `gain_schedule` | `kiln/control_thread.py:586-600` | continuous gain scaling `g(T) = 1 + h·(T − T_ambient)` + change-threshold gate |
-| `protocol` | `kiln/comms.py:191-342` | `MessageType` + `CommandMessage` → `enum Command`; `StatusMessage` templates → `struct Status` (typed, no dicts, no strings) |
 | `recovery` (decision) | `server/recovery.py:131-243` | `RecoveryInfo` / `check_recovery` math: is a resume warranted, at what step/elapsed (operates on already-parsed values) |
 
 ### `kiln-hal` — the hands (status: `max31856` + `ssr` built; `lcd` planned)
@@ -243,10 +243,9 @@ covered transitively (it's mostly `kiln-core` calls) and end-to-end by
 
 ## 8. Status & roadmap
 
-- ✅ `kiln-core`: 7 modules ported, 36 unit + 10 replay tests green.
+- ✅ `kiln-core`: 10 modules ported, 54 unit + 11 replay tests green.
 - ✅ `kiln-hal`: `max31856` + `ssr` drivers over `embedded-hal`, 12 tests green.
-- ⏭ `kiln-core`: extract `ssr_schedule`, `gain_schedule`, `protocol`, `recovery`
-  (all unblock the layers above).
+- ⏭ `kiln-core`: extract `recovery` (the last decision module).
 - ⏭ `kiln-control` + `kiln-app`: embassy tasks; `kiln-firmware` shim.
 - ⏭ `kiln-sim`: optional host thermal-model harness.
 
