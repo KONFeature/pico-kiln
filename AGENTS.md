@@ -51,7 +51,7 @@ never ship `rust/`, and CI (`.github/workflows/build.yml`) only builds the Tauri
 **nothing runs the Rust tests automatically**. Editing `rust/` does not change device behavior yet.
 
 - **Run cargo from `rust/`** (the workspace root), not the repo root.
-- **Crates today**: `kiln-core` (pure control logic, `#![no_std]`, **zero deps** — keep the empty `[dependencies]` that way) and `kiln-hal` (drivers over `embedded-hal` 1.0). `kiln-control` / `kiln-app` / `kiln-firmware` / `kiln-sim` are planned; add each to workspace `members` as it lands. Full design + Rust↔Python mapping: `rust/ARCHITECTURE.md`.
+- **Crates today**: `kiln-core` (pure control logic, `#![no_std]`, **zero deps** — keep the empty `[dependencies]` that way), `kiln-hal` (drivers over `embedded-hal` 1.0), `kiln-control` (Core 1 loop), `kiln-app` (Core 0 web/log/recovery/**config**), and `kiln-sim` (host harness) are all in `members`; `kiln-firmware` (RP2350 binary) is `exclude`d (device-only, won't host-build). Full design + Rust↔Python mapping: `rust/ARCHITECTURE.md`.
 - **Test**: `cargo test` (or `-p kiln-core` / `-p kiln-hal`). `Cargo.lock` is gitignored (intentional — near-zero deps).
 - **Cross-compile check** (proves `no_std`/no-alloc holds; needs no host linker): `cargo build -p <crate> --lib --target thumbv8m.main-none-eabihf`.
 - **No system C linker?** `cargo test` may fail to *link* (`cc`/`crt1.o`/`-lc`). Use the static-musl + bundled `rust-lld` recipe in `rust/TESTING.md §5` — that is how the suite is actually run in sandboxes here.
@@ -65,6 +65,7 @@ The port is validated against the **real** Python, not hand-written expectations
 ### Porting conventions
 - `kiln-core` mirrors the Python expression-for-expression and branch-for-branch: inject time as `now`/`now_ms`, manual `clamp`/`abs` (no float intrinsics), no `alloc`, no strings/dicts in the core (typed enums + `Copy` structs).
 - `kiln-hal` drivers are generic over `embedded-hal` traits, tested with `embedded-hal-mock` (dev-dep only); `Ssr` drives its pin low on `new` and on `Drop` (de-energise on fault) — preserve that.
+- **Config = `config.json`** (`kiln-app::config::KilnConfig`): the runtime port of `config.py`. JSON keys are the exact `config.py` UPPER_SNAKE names; `KilnConfig::default()` MUST stay equal to `config.example.py`. Parse is hand-rolled (no `serde`, like `profile_json`), partial/forward-compatible (unknown keys ignored, absent keys keep defaults). If you add a `config.py` knob, add it here (parse + `write_json` + a default + a test) and thread it via `kiln-firmware`'s `control_params_from` / `build_kiln_io`. Edits apply on **reboot** (pins/SPI/WiFi/watchdog are bound once at boot).
 - Source-of-truth note: the root `README.md` "Project Structure" list is stale for `kiln/` (no `max31856.py`/`ssr.py`/`pid_scheduler.py`); the real modules are `hardware.py`, `rate_monitor.py`, `scheduler.py`. Trust `rust/ARCHITECTURE.md` for the Rust↔Python mapping.
 
 ## Additional Guidelines

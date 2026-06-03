@@ -27,7 +27,8 @@ use kiln_core::profile::Profile;
 use kiln_core::protocol::{Command, ProfileName, Status};
 
 use crate::api::{self, Directory};
-use crate::{csv, json, profile_json};
+use crate::config::KilnConfig;
+use crate::{config, csv, json, profile_json};
 
 /// Command-queue depth (Core 0 → Core 1) — the reference command queue holds 10.
 pub const COMMAND_DEPTH: usize = 10;
@@ -100,6 +101,12 @@ pub trait Storage {
     fn upload_abort(&self);
     /// A compiled-in static asset (`index.html`, …), if present.
     fn static_asset(&self, name: &str) -> Option<&'static [u8]>;
+    /// Read the whole `config.json` root file into `buf`, returning the byte
+    /// count (0 if absent). A dedicated path, not a [`Directory`] entry, so the
+    /// public `/api/files` routes can never address or overwrite it.
+    fn read_config(&self, buf: &mut [u8]) -> Result<usize, StorageError>;
+    /// Overwrite `config.json` atomically (the `POST /api/config` persist).
+    fn write_config(&self, bytes: &[u8]) -> Result<(), StorageError>;
 }
 
 /// The character LCD status line (`main.py`'s monitor), behind a trait so the
@@ -118,6 +125,9 @@ pub struct AppState {
     pub clock: &'static dyn Clock,
     pub storage: &'static dyn Storage,
     pub reboot: &'static RebootSignal,
+    /// The boot-time config, served by `GET /api/config` and used as the merge
+    /// base for `POST /api/config` (read-only after boot; edits apply on reboot).
+    pub config: &'static KilnConfig,
 }
 
 impl AppState {
@@ -233,12 +243,28 @@ mod web {
             .route("/api/status", get(status_json))
             .route("/api/tuning/status", get(status_json))
             .route("/api/scheduled", get(scheduled_json))
-            .route("/api/stop", post(|s: State<AppState>| async move { enqueue(&s.0, Command::Stop) }))
-            .route("/api/clear-error", post(|s: State<AppState>| async move { enqueue(&s.0, Command::ClearError) }))
-            .route("/api/shutdown", post(|s: State<AppState>| async move { enqueue(&s.0, Command::Shutdown) }))
-            .route("/api/scheduled/cancel", post(|s: State<AppState>| async move { enqueue(&s.0, Command::CancelScheduled) }))
-            .route("/api/tuning/stop", post(|s: State<AppState>| async move { enqueue(&s.0, Command::StopTuning) }))
+            .route(
+                "/api/stop",
+                post(|s: State<AppState>| async move { enqueue(&s.0, Command::Stop) }),
+            )
+            .route(
+                "/api/clear-error",
+                post(|s: State<AppState>| async move { enqueue(&s.0, Command::ClearError) }),
+            )
+            .route(
+                "/api/shutdown",
+                post(|s: State<AppState>| async move { enqueue(&s.0, Command::Shutdown) }),
+            )
+            .route(
+                "/api/scheduled/cancel",
+                post(|s: State<AppState>| async move { enqueue(&s.0, Command::CancelScheduled) }),
+            )
+            .route(
+                "/api/tuning/stop",
+                post(|s: State<AppState>| async move { enqueue(&s.0, Command::StopTuning) }),
+            )
             .route("/api/reboot", post(reboot))
+            .route("/api/config", get(config_get).post(config_post))
             .route("/api/run", post(run))
             .route("/api/schedule", post(schedule))
             .route("/api/tuning/start", post(tuning_start))
@@ -282,6 +308,37 @@ mod web {
         )
     }
 
+    async fn config_get(State(state): State<AppState>) -> impl IntoResponse {
+        let mut body = heapless::String::<2048>::new();
+        let _ = state.config.write_json(&mut body);
+        ApiResponse::json(StatusCode::OK, body)
+    }
+
+    async fn config_post(
+        State(state): State<AppState>,
+        JsonBody(body): JsonBody,
+    ) -> impl IntoResponse {
+        let merged = match config::parse_over(state.config.clone(), body.as_str()) {
+            Ok(c) => c,
+            Err(_) => return ApiResponse::error(StatusCode::BAD_REQUEST, "Invalid configuration"),
+        };
+        let mut canonical = heapless::String::<2048>::new();
+        if merged.write_json(&mut canonical).is_err() {
+            return ApiResponse::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Configuration too large",
+            );
+        }
+        if state.storage.write_config(canonical.as_bytes()).is_ok() {
+            ApiResponse::static_json(
+                StatusCode::OK,
+                "{\"success\":true,\"message\":\"Config saved. Reboot to apply.\"}",
+            )
+        } else {
+            ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to save config")
+        }
+    }
+
     async fn run(State(state): State<AppState>, JsonBody(body): JsonBody) -> impl IntoResponse {
         let name = match api::json_get_str(body.as_str(), "profile") {
             Some(n) if !n.is_empty() => n,
@@ -293,7 +350,10 @@ mod web {
         }
     }
 
-    async fn schedule(State(state): State<AppState>, JsonBody(body): JsonBody) -> impl IntoResponse {
+    async fn schedule(
+        State(state): State<AppState>,
+        JsonBody(body): JsonBody,
+    ) -> impl IntoResponse {
         let name = api::json_get_str(body.as_str(), "profile");
         let start = api::json_get_f64(body.as_str(), "start_time");
         if !api::schedule_fields_present(name, start) {
@@ -306,13 +366,20 @@ mod web {
         match load_profile(&state, name) {
             Ok((profile, parsed)) => enqueue(
                 &state,
-                Command::ScheduleProfile { profile, parsed, start_time: start as u64 },
+                Command::ScheduleProfile {
+                    profile,
+                    parsed,
+                    start_time: start as u64,
+                },
             ),
             Err(resp) => resp,
         }
     }
 
-    async fn tuning_start(State(state): State<AppState>, JsonBody(body): JsonBody) -> impl IntoResponse {
+    async fn tuning_start(
+        State(state): State<AppState>,
+        JsonBody(body): JsonBody,
+    ) -> impl IntoResponse {
         let mode = match api::parse_tuning_mode(
             api::json_get_str(body.as_str(), "mode").unwrap_or("STANDARD"),
         ) {
@@ -332,18 +399,25 @@ mod web {
     fn load_profile(state: &AppState, name: &str) -> Result<(ProfileName, Profile), ApiResponse> {
         let mut path = heapless::String::<80>::new();
         if write!(path, "{}.json", name).is_err() {
-            return Err(ApiResponse::error(StatusCode::BAD_REQUEST, "Profile name too long"));
+            return Err(ApiResponse::error(
+                StatusCode::BAD_REQUEST,
+                "Profile name too long",
+            ));
         }
         if state.storage.size(Directory::Profiles, &path).is_none() {
-            return Err(ApiResponse::error(StatusCode::NOT_FOUND, "Profile not found"));
+            return Err(ApiResponse::error(
+                StatusCode::NOT_FOUND,
+                "Profile not found",
+            ));
         }
         let mut buf = [0u8; PROFILE_READ_CAP];
         let n = state
             .storage
             .read_chunk(Directory::Profiles, &path, 0, &mut buf)
             .map_err(|_| ApiResponse::error(StatusCode::NOT_FOUND, "Profile not found"))?;
-        let text = core::str::from_utf8(&buf[..n])
-            .map_err(|_| ApiResponse::error(StatusCode::BAD_REQUEST, "Profile is not valid UTF-8"))?;
+        let text = core::str::from_utf8(&buf[..n]).map_err(|_| {
+            ApiResponse::error(StatusCode::BAD_REQUEST, "Profile is not valid UTF-8")
+        })?;
         let parsed = profile_json::parse_profile(text)
             .map_err(|_| ApiResponse::error(StatusCode::BAD_REQUEST, "Invalid profile"))?;
         let profile = ProfileName::new(&path)
@@ -353,7 +427,11 @@ mod web {
 
     /// Shared file-op preconditions (`_file_guard`): IDLE (403), valid dir (400),
     /// and — when `file` is given — a safe filename (400).
-    fn file_guard(state: &AppState, dir: &str, file: Option<&str>) -> Result<Directory, ApiResponse> {
+    fn file_guard(
+        state: &AppState,
+        dir: &str,
+        file: Option<&str>,
+    ) -> Result<Directory, ApiResponse> {
         if !api::file_ops_allowed(state.latest().state) {
             return Err(ApiResponse::error(
                 StatusCode::FORBIDDEN,
@@ -361,31 +439,50 @@ mod web {
             ));
         }
         let directory = Directory::parse(dir).ok_or_else(|| {
-            ApiResponse::error(StatusCode::BAD_REQUEST, "Invalid directory. Must be 'profiles' or 'logs'")
+            ApiResponse::error(
+                StatusCode::BAD_REQUEST,
+                "Invalid directory. Must be 'profiles' or 'logs'",
+            )
         })?;
         if let Some(f) = file {
             if !api::safe_filename(f) {
-                return Err(ApiResponse::error(StatusCode::BAD_REQUEST, "Invalid filename"));
+                return Err(ApiResponse::error(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid filename",
+                ));
             }
         }
         Ok(directory)
     }
 
-    async fn files_list(State(state): State<AppState>, dir: heapless::String<16>) -> impl IntoResponse {
+    async fn files_list(
+        State(state): State<AppState>,
+        dir: heapless::String<16>,
+    ) -> impl IntoResponse {
         let directory = match file_guard(&state, &dir, None) {
             Ok(d) => d,
             Err(resp) => return resp,
         };
         let mut body = heapless::String::<2048>::new();
-        let _ = write!(body, "{{\"success\":true,\"directory\":\"{}\",\"files\":[", directory.as_str());
+        let _ = write!(
+            body,
+            "{{\"success\":true,\"directory\":\"{}\",\"files\":[",
+            directory.as_str()
+        );
         let mut count = 0usize;
-        state.storage.for_each(directory, &mut |name, size, modified| {
-            if count > 0 {
-                let _ = body.push(',');
-            }
-            let _ = write!(body, "{{\"name\":\"{}\",\"size\":{},\"modified\":{}}}", name, size, modified);
-            count += 1;
-        });
+        state
+            .storage
+            .for_each(directory, &mut |name, size, modified| {
+                if count > 0 {
+                    let _ = body.push(',');
+                }
+                let _ = write!(
+                    body,
+                    "{{\"name\":\"{}\",\"size\":{},\"modified\":{}}}",
+                    name, size, modified
+                );
+                count += 1;
+            });
         let _ = write!(body, "],\"count\":{}}}", count);
         ApiResponse::json(StatusCode::OK, body)
     }
@@ -469,7 +566,10 @@ mod web {
 
     fn serve_asset(state: &AppState, name: &str) -> ApiResponse {
         match state.storage.static_asset(name) {
-            Some(bytes) => ApiResponse::Asset { bytes, content_type: "text/html" },
+            Some(bytes) => ApiResponse::Asset {
+                bytes,
+                content_type: "text/html",
+            },
             None => ApiResponse::error_text(StatusCode::NOT_FOUND, "Not found"),
         }
     }
@@ -495,10 +595,22 @@ mod web {
     /// Every handler returns one of these; `IntoResponse` is implemented once,
     /// adding the CORS headers the reference attaches to every response.
     pub(super) enum ApiResponse {
-        Json { status: StatusCode, body: heapless::String<2048> },
-        StaticJson { status: StatusCode, body: &'static str },
-        Text { status: StatusCode, body: &'static str },
-        Asset { bytes: &'static [u8], content_type: &'static str },
+        Json {
+            status: StatusCode,
+            body: heapless::String<2048>,
+        },
+        StaticJson {
+            status: StatusCode,
+            body: &'static str,
+        },
+        Text {
+            status: StatusCode,
+            body: &'static str,
+        },
+        Asset {
+            bytes: &'static [u8],
+            content_type: &'static str,
+        },
         Download(Download),
     }
 
@@ -522,12 +634,18 @@ mod web {
 
     const CORS: [(&str, &str); 3] = [
         ("Access-Control-Allow-Origin", "*"),
-        ("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
+        (
+            "Access-Control-Allow-Methods",
+            "GET, POST, PUT, DELETE, OPTIONS",
+        ),
         ("Access-Control-Allow-Headers", "Content-Type"),
     ];
 
     impl IntoResponse for ApiResponse {
-        async fn write_to<R: picoserve::io::Read, W: picoserve::response::ResponseWriter<Error = R::Error>>(
+        async fn write_to<
+            R: picoserve::io::Read,
+            W: picoserve::response::ResponseWriter<Error = R::Error>,
+        >(
             self,
             connection: picoserve::response::Connection<'_, R>,
             response_writer: W,
@@ -553,7 +671,10 @@ mod web {
                         .write_to(connection, response_writer)
                         .await
                 }
-                ApiResponse::Asset { bytes, content_type } => {
+                ApiResponse::Asset {
+                    bytes,
+                    content_type,
+                } => {
                     picoserve::response::Response::new(StatusCode::OK, bytes)
                         .with_headers(CORS)
                         .with_header("Content-Type", content_type)
@@ -578,7 +699,10 @@ mod web {
     struct StorageBody(Download);
 
     impl picoserve::response::Body for StorageBody {
-        async fn write_response_body<W: picoserve::io::Write>(self, mut writer: W) -> Result<(), W::Error> {
+        async fn write_response_body<W: picoserve::io::Write>(
+            self,
+            mut writer: W,
+        ) -> Result<(), W::Error> {
             let d = self.0;
             let mut offset = 0u64;
             let mut buf = [0u8; api::FILE_CHUNK_SIZE];

@@ -21,7 +21,9 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_time::{Duration, Instant};
 use kiln_app::api::Directory;
+use kiln_app::config::KilnConfig;
 use kiln_app::server::{AppState, Clock, Display, RebootSignal, StorageError};
+use kiln_control::ControlParams;
 use kiln_core::protocol::{Command, ProfileName, Status};
 use kiln_core::state::KilnState;
 
@@ -44,6 +46,28 @@ impl kiln_hal::platform::Watchdog for RpWatchdog {
     }
 }
 
+/// Honours `ENABLE_WATCHDOG` at runtime with a single concrete type: the Core 1
+/// `#[task]` cannot be generic, so a config flag can't pick the `W` type. When
+/// disabled this never arms the hardware (`start`/`feed` are no-ops), matching
+/// `ENABLE_WATCHDOG = false` (the reference default).
+pub enum MaybeWatchdog {
+    Enabled(RpWatchdog),
+    Disabled,
+}
+
+impl kiln_hal::platform::Watchdog for MaybeWatchdog {
+    fn start(&mut self, timeout_ms: u32) {
+        if let MaybeWatchdog::Enabled(w) = self {
+            w.start(timeout_ms);
+        }
+    }
+    fn feed(&mut self) {
+        if let MaybeWatchdog::Enabled(w) = self {
+            w.feed();
+        }
+    }
+}
+
 /// RAM-resident raw watchdog feed for [`flash_handshake::park_until_idle`] — it
 /// runs while flash (XIP) is disabled, so it cannot call the flash-resident
 /// `embassy_rp` feed path. DEVICE: writes the watchdog LOAD register directly.
@@ -63,22 +87,71 @@ pub fn raw_ssr_off() {
     // DEVICE: `embassy_rp::pac::SIO.gpio_out_clr(0).write(|w| w.set_gpio_out_clr(1 << SSR_PIN))`.
 }
 
+// === Config (config.json → KilnConfig) ======================================
+
+/// Read `config.json` from flash at boot and parse it — the runtime replacement
+/// for the `config.py` the MicroPython build `import`ed. Any failure (absent
+/// file, malformed JSON, non-UTF-8) falls back to [`KilnConfig::default`] so the
+/// kiln always boots. The parse/fallback is the host-tested `kiln_app::config`;
+/// only the flash read ([`FlashStorage::read_config`]) is device I/O.
+pub fn load_config(storage: &'static FlashStorage) -> &'static KilnConfig {
+    static CONFIG: StaticCell<KilnConfig> = StaticCell::new();
+    let mut buf = [0u8; 4096];
+    let cfg = match storage.read_config(&mut buf) {
+        Ok(n) if n > 0 => core::str::from_utf8(&buf[..n])
+            .ok()
+            .and_then(|text| kiln_app::config::parse(text).ok())
+            .unwrap_or_default(),
+        _ => KilnConfig::default(),
+    };
+    CONFIG.init(cfg)
+}
+
+/// Map the loaded [`KilnConfig`] to the Core 1 [`ControlParams`] — pure data, so
+/// the safety/PID/timing knobs the control loop reads come from one place.
+pub fn control_params_from(cfg: &KilnConfig) -> ControlParams {
+    ControlParams {
+        controller: cfg.controller_config(),
+        pid_base: cfg.pid_base(),
+        thermal_h: cfg.thermal_h,
+        thermal_t_ambient: cfg.thermal_t_ambient,
+        ssr_cycle_time_s: cfg.ssr_cycle_time,
+        thermocouple_offset: cfg.thermocouple_offset,
+        median_window: cfg.temp_median_window,
+        status_update_interval_ms: cfg.status_update_interval_ms(),
+        watchdog_timeout_ms: cfg.watchdog_timeout,
+        temp_read_interval_ms: cfg.temp_read_interval_ms(),
+        ssr_update_interval_ms: cfg.ssr_update_interval_ms(),
+    }
+}
+
 // === Core 1 kiln I/O ========================================================
 
-/// Build the Core 1 sensor / SSR / watchdog from the kiln pins, ready for
-/// [`kiln_control::Controller::new`]. The MAX31856 (SPI1, mode 1, 1 MHz) and the
-/// SSR GPIO match `config.example.py`. DEVICE: the SPI/CS/pin construction.
+/// Build the Core 1 sensor / SSR / watchdog from `cfg`, ready for
+/// [`kiln_control::Controller::new`]. The sensor is configured for the
+/// `THERMOCOUPLE_TYPE` / `THERMOCOUPLE_AVERAGING` / `MAINS_FREQUENCY` from config;
+/// the watchdog is [`MaybeWatchdog`] so `ENABLE_WATCHDOG` is honoured.
+///
+/// DEVICE: the SPI/CS construction and the SSR pin(s). The SPI clock/MISO/MOSI/CS
+/// pins are fixed by the RP2350 pinmux (config carries them for documentation and
+/// validation, not runtime re-routing); the SSR GPIO(s) come from `SSR_PIN` via a
+/// degraded `AnyPin`, and `SSR_STAGGER_DELAY` feeds `MultiSsr` when more than one
+/// is listed.
 pub fn build_kiln_io(
     _p: Core1Periphs,
+    _cfg: &KilnConfig,
 ) -> (
     kiln_hal::Max31856<DeviceSpi>,
     kiln_hal::Ssr<DevicePin>,
-    RpWatchdog,
+    MaybeWatchdog,
 ) {
     // DEVICE: embassy_rp::spi::Spi::new(SPI1, sck, mosi, miso, cfg{1MHz, mode1});
-    // wrap with embedded_hal_bus ExclusiveDevice(cs); Max31856::new(spi_dev).
-    // Ssr::new(Output::new(PIN_15)); RpWatchdog{ Watchdog::new(WATCHDOG) }.
-    unimplemented!("DEVICE: construct SPI + CS + SSR pin + watchdog from Core1Periphs")
+    // wrap with embedded_hal_bus ExclusiveDevice(cs); Max31856::new(spi_dev) then
+    // init(cfg.thermocouple_type) + set_averaging(Averaging::from_samples(
+    // cfg.thermocouple_averaging)) + set_noise_filter(NoiseFilter::from_hz(
+    // cfg.mains_frequency)). Ssr::new(Output::new(cfg.ssr_pin[0].degrade())).
+    // MaybeWatchdog per cfg.enable_watchdog.
+    unimplemented!("DEVICE: construct SPI + CS + SSR pin(s) + watchdog from Core1Periphs + cfg")
 }
 
 /// DEVICE placeholder types for the concrete embassy-rp SPI device / pin the
@@ -174,7 +247,13 @@ impl kiln_app::server::Storage for FlashStorage {
         // DEVICE: littlefs dir iter → f(name, size, mtime-attr) (XIP read).
     }
 
-    fn append(&self, _dir: Directory, _name: &str, _bytes: &[u8], _create: bool) -> Result<(), StorageError> {
+    fn append(
+        &self,
+        _dir: Directory,
+        _name: &str,
+        _bytes: &[u8],
+        _create: bool,
+    ) -> Result<(), StorageError> {
         self.with_flash_paused(|| {
             // DEVICE: littlefs open (truncate if create else append), write, sync.
             Err(StorageError)
@@ -199,7 +278,8 @@ impl kiln_app::server::Storage for FlashStorage {
         self.with_flash_paused(|| Err(StorageError)) // DEVICE: rename scratch → dir/name
     }
     fn upload_abort(&self) {
-        let _ = self.with_flash_paused(|| -> Result<(), StorageError> { Ok(()) }); // DEVICE: remove scratch
+        let _ = self.with_flash_paused(|| -> Result<(), StorageError> { Ok(()) });
+        // DEVICE: remove scratch
     }
 
     fn static_asset(&self, name: &str) -> Option<&'static [u8]> {
@@ -209,6 +289,16 @@ impl kiln_app::server::Storage for FlashStorage {
             "tuning.html" => Some(include_bytes!("../../../static/tuning.html")),
             _ => None,
         }
+    }
+
+    fn read_config(&self, _buf: &mut [u8]) -> Result<usize, StorageError> {
+        // DEVICE: littlefs open "/config.json" + read into buf (XIP read; no handshake).
+        Err(StorageError)
+    }
+
+    fn write_config(&self, _bytes: &[u8]) -> Result<(), StorageError> {
+        // DEVICE: littlefs write "/config.json" via a temp file + atomic rename.
+        self.with_flash_paused(|| Err(StorageError))
     }
 }
 
@@ -253,9 +343,10 @@ pub async fn init_network(
     unimplemented!("DEVICE: cyw43 init + embassy_net stack + WiFi join")
 }
 
-/// Mount littlefs and return the shared [`FlashStorage`]. DEVICE: flash driver +
-/// littlefs mount (format on first boot).
-pub fn init_storage(_p: &Core0Periphs) -> &'static FlashStorage {
+/// Mount littlefs and return the shared [`FlashStorage`]. Called at boot before
+/// the core split so [`load_config`] can read `config.json` and hand both cores
+/// their config. DEVICE: flash driver + littlefs mount (format on first boot).
+pub fn init_storage() -> &'static FlashStorage {
     static STORAGE: StaticCell<FlashStorage> = StaticCell::new();
     STORAGE.init(FlashStorage { _private: () })
 }
@@ -291,47 +382,78 @@ pub async fn attempt_recovery(state: &AppState) {
     // Most recent non-tuning .csv by mtime (DEVICE: the listdir + mtime sort;
     // the candidate filter is `recovery_io::is_recovery_candidate`).
     let mut newest: Option<(heapless::String<64>, u64)> = None;
-    state.storage.for_each(Directory::Logs, &mut |name, _size, modified| {
-        if recovery_io::is_recovery_candidate(name) {
-            let newer = newest.as_ref().map(|(_, m)| modified > *m).unwrap_or(true);
-            if newer {
-                let mut n = heapless::String::new();
-                if n.push_str(name).is_ok() {
-                    newest = Some((n, modified));
+    state
+        .storage
+        .for_each(Directory::Logs, &mut |name, _size, modified| {
+            if recovery_io::is_recovery_candidate(name) {
+                let newer = newest.as_ref().map(|(_, m)| modified > *m).unwrap_or(true);
+                if newer {
+                    let mut n = heapless::String::new();
+                    if n.push_str(name).is_ok() {
+                        newest = Some((n, modified));
+                    }
                 }
             }
-        }
-    });
+        });
     let Some((log_name, _)) = newest else { return };
 
     // Read the tail and decide.
     let mut buf = [0u8; 4096];
-    let read = state.storage.size(Directory::Logs, &log_name).and_then(|size| {
-        let start = size.saturating_sub(buf.len() as u64);
-        state.storage.read_chunk(Directory::Logs, &log_name, start, &mut buf).ok()
-    });
+    let read = state
+        .storage
+        .size(Directory::Logs, &log_name)
+        .and_then(|size| {
+            let start = size.saturating_sub(buf.len() as u64);
+            state
+                .storage
+                .read_chunk(Directory::Logs, &log_name, start, &mut buf)
+                .ok()
+        });
     let Some(n) = read else { return };
-    let Ok(text) = core::str::from_utf8(&buf[..n]) else { return };
-    let Some(entry) = recovery_io::last_log_entry_from_csv(text) else { return };
+    let Ok(text) = core::str::from_utf8(&buf[..n]) else {
+        return;
+    };
+    let Some(entry) = recovery_io::last_log_entry_from_csv(text) else {
+        return;
+    };
 
-    let decision = kiln_core::recovery::check_recovery(&entry, current_temp, 30.0);
+    let decision = kiln_core::recovery::check_recovery(
+        &entry,
+        current_temp,
+        state.config.max_recovery_temp_delta,
+    );
     if !decision.can_recover {
         return;
     }
 
     // Profile name from the log filename (lowercased), then parse profiles/{name}.json.
-    let Some(stem) = recovery_io::profile_stem(&log_name) else { return };
+    let Some(stem) = recovery_io::profile_stem(&log_name) else {
+        return;
+    };
     let mut fname = heapless::String::<80>::new();
     if recovery_io::write_lowercase(&mut fname, stem).is_err() || fname.push_str(".json").is_err() {
         return;
     }
     let mut pbuf = [0u8; 8192];
-    let Some(size) = state.storage.size(Directory::Profiles, &fname) else { return };
+    let Some(size) = state.storage.size(Directory::Profiles, &fname) else {
+        return;
+    };
     let _ = size;
-    let Ok(pn) = state.storage.read_chunk(Directory::Profiles, &fname, 0, &mut pbuf) else { return };
-    let Ok(ptext) = core::str::from_utf8(&pbuf[..pn]) else { return };
-    let Ok(parsed) = kiln_app::profile_json::parse_profile(ptext) else { return };
-    let Ok(profile) = ProfileName::new(&fname) else { return };
+    let Ok(pn) = state
+        .storage
+        .read_chunk(Directory::Profiles, &fname, 0, &mut pbuf)
+    else {
+        return;
+    };
+    let Ok(ptext) = core::str::from_utf8(&pbuf[..pn]) else {
+        return;
+    };
+    let Ok(parsed) = kiln_app::profile_json::parse_profile(ptext) else {
+        return;
+    };
+    let Ok(profile) = ProfileName::new(&fname) else {
+        return;
+    };
 
     let _ = state.commands.try_send(Command::ResumeProfile {
         profile,

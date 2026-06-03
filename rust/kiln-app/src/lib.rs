@@ -15,6 +15,7 @@
 )]
 
 pub mod api;
+pub mod config;
 pub mod csv;
 pub mod errors;
 pub mod json;

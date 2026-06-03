@@ -28,13 +28,14 @@ use embassy_rp::peripherals::CORE1;
 use embassy_time::{Duration, Instant, Timer};
 use static_cell::StaticCell;
 
+use kiln_app::config::KilnConfig;
 use kiln_app::server::{AppState, CommandChannel, RebootSignal, StatusWatch};
-use kiln_control::{ControlParams, Controller};
+use kiln_control::Controller;
 
 mod flash_handshake;
 mod platform;
 
-use platform::{FlashStorage, LcdDisplay, NtpClock, RpWatchdog};
+use platform::{FlashStorage, LcdDisplay, NtpClock};
 
 /// Core 1 ↔ Core 0 channels and shared signals. `CriticalSectionRawMutex` is
 /// mandatory: these are touched from both cores.
@@ -55,6 +56,12 @@ fn main() -> ! {
     let status = STATUS.init(StatusWatch::new());
     let reboot = REBOOT.init(RebootSignal::new());
 
+    // Config is global, read once at boot from flash — the runtime replacement
+    // for the `config.py` the MicroPython build imported. Mount storage and parse
+    // `config.json` before the split so both cores share the same `KilnConfig`.
+    let storage = platform::init_storage();
+    let config = platform::load_config(storage);
+
     // Core 1: the control loop, and nothing else. It receives commands and
     // publishes status; it never touches the network or flash.
     let core1_periphs = Core1Periphs {
@@ -73,7 +80,7 @@ fn main() -> ! {
         let executor1 = EXECUTOR1.init(Executor::new());
         executor1.run(|spawner| {
             spawner
-                .spawn(control_task(core1_periphs, cmd_rx, status_tx))
+                .spawn(control_task(core1_periphs, config, cmd_rx, status_tx))
                 .unwrap()
         });
     });
@@ -84,6 +91,8 @@ fn main() -> ! {
         spawner
             .spawn(core0_main(
                 Core0Periphs::from(p),
+                storage,
+                config,
                 commands.sender(),
                 status,
                 reboot,
@@ -111,6 +120,7 @@ struct Core1Periphs {
 #[embassy_executor::task]
 async fn control_task(
     p: Core1Periphs,
+    config: &'static KilnConfig,
     commands: embassy_sync::channel::Receiver<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
@@ -124,12 +134,12 @@ async fn control_task(
         { kiln_app::server::STATUS_CONSUMERS },
     >,
 ) -> ! {
-    let (sensor, ssr, watchdog) = platform::build_kiln_io(p);
+    let (sensor, ssr, watchdog) = platform::build_kiln_io(p, config);
     let mut controller = Controller::new(
         sensor,
         ssr,
         watchdog,
-        ControlParams::default(),
+        platform::control_params_from(config),
         Instant::now().as_millis(),
     );
 
@@ -181,6 +191,8 @@ impl From<embassy_rp::Peripherals> for Core0Periphs {
 #[embassy_executor::task]
 async fn core0_main(
     p: Core0Periphs,
+    storage: &'static FlashStorage,
+    config: &'static KilnConfig,
     commands: kiln_app::server::CommandSender,
     status: &'static StatusWatch,
     reboot: &'static RebootSignal,
@@ -191,10 +203,9 @@ async fn core0_main(
     // the `embassy-net` Stack the web workers serve on.
     let stack = platform::init_network(&spawner, &p).await;
 
-    // The world, behind the kiln_app traits. Storage routes flash writes through
-    // the flash handshake; the clock is sntpc-disciplined; the LCD is the
-    // firmware driver.
-    let storage: &'static FlashStorage = platform::init_storage(&p);
+    // The world, behind the kiln_app traits. Storage (mounted in `main`) routes
+    // flash writes through the flash handshake; the clock is sntpc-disciplined;
+    // the LCD is the firmware driver.
     let clock: &'static NtpClock = platform::init_clock();
     let display: &'static mut LcdDisplay = platform::init_display(&p);
 
@@ -204,6 +215,7 @@ async fn core0_main(
         clock,
         storage,
         reboot,
+        config,
     };
 
     // Crash recovery: parse the most recent log and, if interrupted mid-firing

@@ -156,7 +156,7 @@ what lets `kiln-sim` run the real loop — see below.)
 | watchdog feed | `kiln/control_thread.py:373-381` (`WDT`) |
 | thread entry | `kiln/control_thread.py` `start_control_thread` (679-694) |
 
-### `kiln-app` — Core 2 application layer (status: pure modules done ✅ — json/csv/recovery_io/api/profile_json/timefmt/errors/tuning_names host-tested; embassy glue `server.rs` written, device-only)
+### `kiln-app` — Core 2 application layer (status: pure modules done ✅ — json/csv/recovery_io/api/profile_json/config/timefmt/errors/tuning_names host-tested; embassy glue `server.rs` written, device-only)
 
 Everything user-facing and best-effort. Multiple `embassy` tasks on Core 0.
 
@@ -173,9 +173,23 @@ WiFi-chip bring-up (the cyw43 firmware blob, PIO+DMA) and hands the finished
 | status fan-out to listeners | `server/status_receiver.py` (`StatusReceiver`) |
 | CSV data logging (→ flash) | `server/data_logger.py` (`DataLogger`) |
 | recovery I/O (read last log) | `server/recovery.py` `_find_most_recent_log` / `_parse_last_log_entry` (244-330) |
+| runtime config (`config.json`) | `config.py` (the module the build `import`ed) → `config.rs` `KilnConfig` |
 | WiFi connect / monitor / NTP | `server/wifi_manager.py` + `main.py` `wifi_connect_background` / `ntp_sync_background` |
 | LCD render loop | `server/lcd_manager.py` (`LCDManager.run`) |
 | HTML / profile caches | `server/html_cache.py`, `server/profile_cache.py` |
+
+**Config loading (`config.py` → `config.json`).** The MicroPython build read
+`config.py` (Python module globals) at import. The device has no module system, so
+`kiln-app::config` ports every `config.py` knob to a flat `KilnConfig` whose JSON
+keys are the *same UPPER_SNAKE names*; `kiln-firmware` reads `config.json` from
+littlefs at boot ([`load_config`]) and parses it with the host-tested hand-rolled
+reader (no `serde`), falling back to `KilnConfig::default()` (the
+`config.example.py` values) on any error so the kiln always boots. `KilnConfig` is
+the single source of truth: `main` derives Core 1's `ControlParams` from it
+(`control_params_from`), selects `MaybeWatchdog` for `ENABLE_WATCHDOG`, and threads
+the recovery delta / sensor / SSR settings through. `GET/POST /api/config` serve
+and `PATCH`-merge it (`parse_over`); edits persist to flash and apply on reboot
+(pins/SPI/WiFi/watchdog are bound once at boot, so live re-pointing is not offered).
 
 ### `kiln-firmware` — the shim (status: written, device-only — excluded from the host workspace; compiles on thumbv8m with `memory.x` + cyw43 blobs)
 
