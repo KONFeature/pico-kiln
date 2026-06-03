@@ -29,7 +29,10 @@ import {
 	computeSeriesBarWidth,
 } from "./series-bar-layout";
 import { useStaticChartPreview } from "./static-chart-preview-context";
-import { useChartInteraction } from "./use-chart-interaction";
+import {
+	type ChartSelection,
+	useChartInteraction,
+} from "./use-chart-interaction";
 
 function collectNumericExtents(
 	data: Record<string, unknown>[],
@@ -133,6 +136,8 @@ export interface TimeSeriesChartInnerProps {
 	composedStackGap?: number;
 	/** When set, drives the y-axis max instead of scanning `lines` (e.g. stacked bar totals). */
 	yScaleDomainMax?: number;
+	/** Forwarded to the interaction hook so a parent can commit drag/pinch ranges (brush-to-zoom). */
+	onSelectionCommit?: (selection: ChartSelection) => void;
 }
 
 export function TimeSeriesChartInner(props: TimeSeriesChartInnerProps) {
@@ -165,6 +170,7 @@ const TimeSeriesChartCore = memo(function TimeSeriesChartCore({
 	composedStackOffsets,
 	composedStackGap,
 	yScaleDomainMax,
+	onSelectionCommit,
 }: TimeSeriesChartInnerProps) {
 	const staticPreview = useStaticChartPreview();
 	const [isLoaded, setIsLoaded] = useState(staticPreview);
@@ -262,6 +268,7 @@ const TimeSeriesChartCore = memo(function TimeSeriesChartCore({
 		xAccessor,
 		bisectDate,
 		canInteract,
+		onSelectionCommit,
 	});
 
 	const defsChildren: ReactElement[] = [];

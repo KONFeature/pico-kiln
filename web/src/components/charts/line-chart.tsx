@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import type { LineConfig, Margin } from "./chart-context";
 import { Line, type LineProps } from "./line";
 import { TimeSeriesChartInner } from "./time-series-chart-shell";
+import type { ChartSelection } from "./use-chart-interaction";
 
 export interface LineChartProps {
 	/** Data array - each item should have a date field and numeric values */
@@ -34,6 +35,10 @@ export interface LineChartProps {
 	className?: string;
 	/** Inline style merged over the container defaults (e.g. override touch-action). */
 	style?: React.CSSProperties;
+	/** Pins the y-domain to `[0, max * 1.1]` instead of scanning series values. */
+	yScaleDomainMax?: number;
+	/** Fired when a drag/pinch selection ends with a meaningful range (brush-to-zoom). */
+	onSelectionCommit?: (selection: ChartSelection) => void;
 	/** Child components (Line, Grid, ChartTooltip, etc.) */
 	children: ReactNode;
 }
@@ -118,6 +123,8 @@ interface ChartInnerProps {
 	animationEasing?: string;
 	enterTransition?: Transition;
 	revealSignature?: string;
+	yScaleDomainMax?: number;
+	onSelectionCommit?: (selection: ChartSelection) => void;
 	children: ReactNode;
 	containerRef: React.RefObject<HTMLDivElement | null>;
 }
@@ -132,6 +139,8 @@ function ChartInner({
 	animationEasing,
 	enterTransition,
 	revealSignature,
+	yScaleDomainMax,
+	onSelectionCommit,
 	children,
 	containerRef,
 }: ChartInnerProps) {
@@ -148,9 +157,11 @@ function ChartInner({
 			height={height}
 			lines={lines}
 			margin={margin}
+			onSelectionCommit={onSelectionCommit}
 			revealSignature={revealSignature}
 			width={width}
 			xDataKey={xDataKey}
+			yScaleDomainMax={yScaleDomainMax}
 		>
 			{children}
 		</TimeSeriesChartInner>
@@ -168,6 +179,8 @@ export function LineChart({
 	aspectRatio = "2 / 1",
 	className = "",
 	style,
+	yScaleDomainMax,
+	onSelectionCommit,
 	children,
 }: LineChartProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
@@ -189,9 +202,11 @@ export function LineChart({
 						enterTransition={enterTransition}
 						height={height}
 						margin={margin}
+						onSelectionCommit={onSelectionCommit}
 						revealSignature={revealSignature}
 						width={width}
 						xDataKey={xDataKey}
+						yScaleDomainMax={yScaleDomainMax}
 					>
 						{children}
 					</ChartInner>

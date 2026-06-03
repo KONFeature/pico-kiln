@@ -11,6 +11,8 @@ export interface YAxisProps {
 	formatLargeNumbers?: boolean;
 	/** Custom formatter for tick labels (e.g. USD). Overrides formatLargeNumbers when set. */
 	formatValue?: (value: number) => string;
+	/** Short unit caption shown above the topmost tick (e.g. "°C"). */
+	label?: string;
 }
 
 function formatLabel(
@@ -47,6 +49,7 @@ const YAxisInner = memo(function YAxisInner({
 	numTicks = 5,
 	formatLargeNumbers = true,
 	formatValue,
+	label,
 	container,
 }: YAxisProps & { container: HTMLDivElement }) {
 	const { yScale, margin } = useChartStable();
@@ -59,6 +62,8 @@ const YAxisInner = memo(function YAxisInner({
 			label: formatLabel(value, formatLargeNumbers, formatValue),
 		}));
 	}, [yScale, margin.top, numTicks, formatLargeNumbers, formatValue]);
+
+	const topTickY = ticks.length ? ticks[ticks.length - 1].y : margin.top;
 
 	return createPortal(
 		<div
@@ -74,6 +79,14 @@ const YAxisInner = memo(function YAxisInner({
 					<span className="text-chart-label text-xs">{tick.label}</span>
 				</div>
 			))}
+			{label ? (
+				<div
+					className="absolute right-0 pr-2 font-medium text-[10px] text-chart-label leading-none"
+					style={{ top: topTickY - 8, transform: "translateY(-100%)" }}
+				>
+					{label}
+				</div>
+			) : null}
 		</div>,
 		container,
 	);
