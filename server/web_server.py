@@ -65,7 +65,10 @@ _CONTENT_TYPES = {
 command_queue = None
 
 # Module-level constants for connection and request limits
-MAX_CONCURRENT_CONNECTIONS = const(2)      # Limit to 2 concurrent connections on Pico
+# Kept below lwIP's hard cap of 5 active TCP PCBs (MEMP_NUM_TCP_PCB, lwIP default,
+# not overridden in the rp2 port). 3 = a file transfer + a status poll + 1 spare,
+# with slack left for TIME_WAIT churn so we never hit lwIP-level connection drops.
+MAX_CONCURRENT_CONNECTIONS = const(3)
 MAX_UPLOAD_SIZE = const(512000)            # 500KB max upload (long profiles / tuning logs)
 MAX_JSON_BODY = const(4096)                # Cap buffered (non-upload) request bodies; JSON commands are tiny
 FILE_CHUNK_SIZE = const(1024)              # 1 KiB streaming chunk (Microdot-validated)
@@ -195,7 +198,6 @@ async def handle_api_run(writer, body):
 
         if QueueHelper.put_nowait(command_queue, command):
             print(f"[Web Server] Started profile: {profile_name}")
-            cancel_file_transfers()
             await send_json_response(writer, {
                 'success': True,
                 'message': f'Started profile: {profile_name}'
@@ -368,13 +370,6 @@ def _remove_quietly(filepath):
     except OSError:
         pass
 
-# Active downloads/uploads, tracked so a starting firing can abort them mid-flight.
-_transfer_tasks = set()
-
-def cancel_file_transfers():
-    for task in list(_transfer_tasks):
-        task.cancel()
-
 
 async def _file_guard(writer, directory, filename=None):
     """Run the shared file-op preconditions.
@@ -471,10 +466,15 @@ async def handle_api_files_get(writer, directory, filename):
                     break
                 writer.write(mv[:n])
                 await writer.drain()
+    except OSError as e:
+        # A client dropping the connection mid-stream (navigate-away, refetch,
+        # timeout) is routine, not an error: stay quiet on the disconnect errnos
+        # and only surface genuinely unexpected failures. The timeout's
+        # CancelledError is a BaseException and propagates past this handler.
+        if (e.args[0] if e.args else None) not in (104, 32, 113, 5):  # ECONNRESET/EPIPE/ECONNABORTED/EIO
+            print(f"[Web Server] Download {filename} error: {e}")
     except Exception as e:
-        # Real disconnect only; CancelledError (timeout/firing) is a BaseException
-        # and propagates past this handler to the transfer supervisor.
-        print(f"[Web Server] Download {filename} interrupted: {e}")
+        print(f"[Web Server] Download {filename} error: {e}")
     finally:
         gc.collect()
 
@@ -528,7 +528,7 @@ async def handle_api_files_upload(writer, directory, filename, reader, content_l
                 f.write(mv[:n])
                 written += n
     except asyncio.CancelledError:
-        # Timeout or firing: drop the partial file, let the supervisor see the cancel.
+        # Timeout cancel: drop the partial file, let the supervisor see the cancel.
         _remove_quietly(filepath)
         raise
     except Exception as e:
@@ -650,7 +650,6 @@ async def handle_api_tuning_start(writer, body):
 
         if QueueHelper.put_nowait(command_queue, command):
             print(f"[Web Server] Started tuning (mode: {mode}, max_temp: {max_temp}°C)")
-            cancel_file_transfers()
             await send_json_response(writer, {
                 'success': True,
                 'message': f'Tuning started in {mode} mode'
@@ -706,22 +705,18 @@ async def handle_index(writer):
 # === Request Router ===
 
 async def _supervise_transfer(coro):
-    """Run a size-unbounded file transfer as a cancellable, timed task.
+    """Run a size-unbounded file transfer under a wall-clock cap.
 
-    The task is tracked in _transfer_tasks so a starting firing can abort it
-    (cancel_file_transfers), and asyncio.wait_for reclaims the slot if a client
-    stalls past FILE_TRANSFER_TIMEOUT.
+    asyncio.wait_for reclaims the connection slot if a client stalls past
+    FILE_TRANSFER_TIMEOUT: it cancels the transfer (raising CancelledError into
+    the handler, which closes its file and drops any partial upload) and waits
+    for it to unwind before we return. An external cancel of the connection
+    propagates out untouched so handle_client can close cleanly.
     """
-    task = asyncio.create_task(coro)
-    _transfer_tasks.add(task)
     try:
-        await asyncio.wait_for(task, FILE_TRANSFER_TIMEOUT)
+        await asyncio.wait_for(coro, FILE_TRANSFER_TIMEOUT)
     except asyncio.TimeoutError:
         print(f"[Web Server] File transfer exceeded {FILE_TRANSFER_TIMEOUT}s; slot reclaimed")
-    except asyncio.CancelledError:
-        print("[Web Server] File transfer aborted: kiln started firing")
-    finally:
-        _transfer_tasks.discard(task)
 
 
 # Exact-path routes: path -> (required_method, handler, needs_body).
@@ -766,7 +761,7 @@ async def _route_files(reader, writer, method, path, content_length):
             else:
                 await send_response(writer, 405, b'Method not allowed', 'text/plain')
         elif method == 'GET':
-            # Size-unbounded download: supervised so a firing can abort it.
+            # Size-unbounded download: supervised with a wall-clock timeout.
             await _supervise_transfer(handle_api_files_get(writer, directory, filename))
         elif method == 'PUT':
             # Size-unbounded upload: streamed straight from the socket to disk.
