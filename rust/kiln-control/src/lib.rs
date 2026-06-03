@@ -140,7 +140,10 @@ mod tests {
                 assert_eq!(c.watchdog().feeds, feeds_before + 1);
             }
         }
-        assert!(faulted, "sustained sensor faults must trigger the emergency path");
+        assert!(
+            faulted,
+            "sustained sensor faults must trigger the emergency path"
+        );
     }
 
     #[test]
@@ -160,7 +163,10 @@ mod tests {
         let off_before = c.ssr().force_off_count;
         c.iterate(Some(Command::Shutdown), 2_000, 2.0);
         assert_eq!(c.state(), KilnState::Idle);
-        assert!(c.ssr().force_off_count > off_before, "Shutdown must force the SSR off");
+        assert!(
+            c.ssr().force_off_count > off_before,
+            "Shutdown must force the SSR off"
+        );
         assert!(c.snapshot(2_000, 2.0).profile_name.is_none());
     }
 

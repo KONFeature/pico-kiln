@@ -194,10 +194,7 @@ state,step_name,step_index,total_steps,measured_rate_c_per_hour\n\
             profile_stem("logs/Biscuit_Faience_2025-11-02_13-28-09.csv"),
             Some("Biscuit_Faience")
         );
-        assert_eq!(
-            profile_stem("cone6_2023-11-14_22-13-20.csv"),
-            Some("cone6")
-        );
+        assert_eq!(profile_stem("cone6_2023-11-14_22-13-20.csv"), Some("cone6"));
         // Fewer than two underscores → None.
         assert_eq!(profile_stem("noprofile.csv"), None);
         assert_eq!(profile_stem("a_b.csv"), None);

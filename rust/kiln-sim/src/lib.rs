@@ -139,7 +139,11 @@ mod tests {
         let r = simulate("holdtest", profile, 8_000, ThermalModel::kiln());
 
         let last = r.samples.last().unwrap();
-        assert_eq!(last.state, KilnState::Running, "hold step must keep running");
+        assert_eq!(
+            last.state,
+            KilnState::Running,
+            "hold step must keep running"
+        );
         assert!(
             (last.temp - 150.0).abs() < 10.0,
             "closed loop should settle near the 150C setpoint, got {:.1}",

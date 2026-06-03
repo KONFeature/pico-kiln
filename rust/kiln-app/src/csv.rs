@@ -38,7 +38,7 @@ pub fn write_row<W: Write>(w: &mut W, s: &Status) -> fmt::Result {
         // `total_steps or ''`: None *and* 0 render empty (0 is falsy in Python).
         w.write_str("RECOVERY,-1,")?;
         write_total_steps(w, s.total_steps)?;
-        return write!(w, ",{:.1}\n", 0.0);
+        return writeln!(w, ",{:.1}", 0.0);
     }
 
     // step_name: the step type, or empty (no active profile, or past the last
@@ -54,7 +54,7 @@ pub fn write_row<W: Write>(w: &mut W, s: &Status) -> fmt::Result {
     }
     w.write_char(',')?;
     write_total_steps(w, s.total_steps)?;
-    write!(w, ",{:.1}\n", s.measured_rate)
+    writeln!(w, ",{:.1}", s.measured_rate)
 }
 
 /// Write a one-shot recovery *event* row (`data_logger.log_recovery_event`):
@@ -70,9 +70,9 @@ pub fn write_recovery_event_row<W: Write>(
     measured_rate: f64,
 ) -> fmt::Result {
     write_iso(w, timestamp as i64)?;
-    write!(
+    writeln!(
         w,
-        ",{:.1},{:.2},{:.2},{:.2},RECOVERY,,,,{:.1}\n",
+        ",{:.1},{:.2},{:.2},{:.2},RECOVERY,,,,{:.1}",
         elapsed, current_temp, target_temp, ssr_output, measured_rate
     )
 }
@@ -87,7 +87,11 @@ fn write_total_steps<W: Write>(w: &mut W, total_steps: Option<usize>) -> fmt::Re
 /// Write the log filename `{safe_profile}_{YYYY-MM-DD_HH-MM-SS}.csv` (no
 /// directory prefix). `safe_profile` replaces spaces and `/` with `_`, matching
 /// `start_logging`.
-pub fn write_log_filename<W: Write>(w: &mut W, profile_name: &str, unix_seconds: i64) -> fmt::Result {
+pub fn write_log_filename<W: Write>(
+    w: &mut W,
+    profile_name: &str,
+    unix_seconds: i64,
+) -> fmt::Result {
     write_safe_profile(w, profile_name)?;
     w.write_char('_')?;
     write_filename_stamp(w, unix_seconds)?;
@@ -199,7 +203,8 @@ mod tests {
     #[test]
     fn recovery_event_row_has_empty_step_fields() {
         let mut out = String::new();
-        write_recovery_event_row(&mut out, 1_700_000_000.0, 1234.5, 250.0, 300.0, 80.0, 90.0).unwrap();
+        write_recovery_event_row(&mut out, 1_700_000_000.0, 1234.5, 250.0, 300.0, 80.0, 90.0)
+            .unwrap();
         assert_eq!(
             out,
             "2023-11-14 22:13:20,1234.5,250.00,300.00,80.00,RECOVERY,,,,90.0\n"

@@ -57,9 +57,15 @@ impl KilnState {
 /// Typed fault reason (replaces the reference's error strings).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum KilnError {
-    MaxTempExceeded { temp: f64, max: f64 },
+    MaxTempExceeded {
+        temp: f64,
+        max: f64,
+    },
     NoActiveProfile,
-    Stall { actual_rate: f64, min_rate: f64 },
+    Stall {
+        actual_rate: f64,
+        min_rate: f64,
+    },
     /// Emergency shutdown: too many consecutive sensor faults
     /// (`temp_filter::TempError::EmergencyShutdown`). Mirrors the reference's
     /// control-loop `except` path raising out of `TemperatureSensor.read()`.

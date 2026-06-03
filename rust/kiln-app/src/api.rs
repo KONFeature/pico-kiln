@@ -291,7 +291,10 @@ mod tests {
         assert!(!profile_present(Some("")));
         assert!(!profile_present(None));
 
-        assert!(schedule_fields_present(Some("cone6"), Some(1_700_000_000.0)));
+        assert!(schedule_fields_present(
+            Some("cone6"),
+            Some(1_700_000_000.0)
+        ));
         assert!(!schedule_fields_present(Some("cone6"), Some(0.0)));
         assert!(!schedule_fields_present(None, Some(1.0)));
 
@@ -340,7 +343,10 @@ mod tests {
             let _ = json_get_str(body, "profile");
             let _ = json_get_f64(body, "max_temp");
         }
-        assert_eq!(json_get_str("{\"profile\": \"unterminated", "profile"), None);
+        assert_eq!(
+            json_get_str("{\"profile\": \"unterminated", "profile"),
+            None
+        );
         assert_eq!(json_get_str("{\"a\":\"b\"}", "profile"), None);
     }
 

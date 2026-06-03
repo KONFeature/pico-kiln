@@ -75,11 +75,7 @@ fn write_scheduled<W: Write>(w: &mut W, sc: &ScheduledSnapshot) -> fmt::Result {
 }
 
 fn write_normal<W: Write>(w: &mut W, s: &Status) -> fmt::Result {
-    write!(
-        w,
-        "{{\"timestamp\":{:.1},\"state\":",
-        s.timestamp
-    )?;
+    write!(w, "{{\"timestamp\":{:.1},\"state\":", s.timestamp)?;
     write_json_str(w, state_str(s.state))?;
     write!(
         w,
@@ -128,7 +124,11 @@ fn write_normal<W: Write>(w: &mut W, s: &Status) -> fmt::Result {
         Some(t) => write!(w, "{:.2}", t)?,
         None => w.write_str("null")?,
     }
-    write!(w, ",\"measured_rate\":{:.1},\"scheduled_profile\":", s.measured_rate)?;
+    write!(
+        w,
+        ",\"measured_rate\":{:.1},\"scheduled_profile\":",
+        s.measured_rate
+    )?;
     match &s.scheduled {
         Some(sc) => write_scheduled(w, sc)?,
         None => w.write_str("null")?,
@@ -208,11 +208,7 @@ pub fn write_scheduled_endpoint<W: Write>(w: &mut W, s: &Status) -> fmt::Result 
             write_json_str(w, sc.profile.as_str())?;
             write!(w, ",\"start_time\":{},\"start_time_iso\":\"", sc.start_time)?;
             write_iso(w, sc.start_time as i64)?;
-            write!(
-                w,
-                "\",\"seconds_until_start\":{}}}",
-                sc.seconds_until_start
-            )
+            write!(w, "\",\"seconds_until_start\":{}}}", sc.seconds_until_start)
         }
     }
 }

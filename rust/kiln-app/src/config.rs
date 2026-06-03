@@ -877,9 +877,11 @@ mod tests {
 
     #[test]
     fn parse_over_patches_a_running_config() {
-        let mut base = KilnConfig::default();
-        base.pid_kp_base = 30.0;
-        base.max_temp = 1250.0;
+        let base = KilnConfig {
+            pid_kp_base: 30.0,
+            max_temp: 1250.0,
+            ..Default::default()
+        };
         // A sparse PATCH touches only MAX_TEMP; the prior KP edit survives.
         let patched = parse_over(base, r#"{"MAX_TEMP": 1100}"#).unwrap();
         assert_eq!(patched.max_temp, 1100.0);

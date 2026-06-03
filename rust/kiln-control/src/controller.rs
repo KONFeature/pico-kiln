@@ -262,14 +262,21 @@ where
 
         let (ssr_output, continue_tuning) = self.tuner.as_mut().unwrap().update(temp, mono_s);
         self.state.ssr_output = ssr_output;
-        self.state.target_temp = self.tuner.as_ref().unwrap().step_target_temp().unwrap_or(0.0);
+        self.state.target_temp = self
+            .tuner
+            .as_ref()
+            .unwrap()
+            .step_target_temp()
+            .unwrap_or(0.0);
         self.ssr_sched.set_output(ssr_output);
 
         if !continue_tuning {
             let max = self.tuner.as_ref().unwrap().max_temp;
             match self.tuner.as_ref().unwrap().stage() {
                 TuningStage::Complete => self.state.state = KilnState::Idle,
-                TuningStage::Error => self.state.set_error(KilnError::MaxTempExceeded { temp, max }),
+                TuningStage::Error => self
+                    .state
+                    .set_error(KilnError::MaxTempExceeded { temp, max }),
                 TuningStage::Running => {}
             }
             self.tuner = None;
