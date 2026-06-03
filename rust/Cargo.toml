@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kiln-core"]
+members = ["kiln-core", "kiln-hal"]
 
 # Standalone Rust workspace for the kiln-controller port.
 # Lives under rust/ so it never collides with the MicroPython deploy paths
