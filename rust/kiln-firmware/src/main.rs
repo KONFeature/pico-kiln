@@ -22,10 +22,14 @@
 #![no_std]
 #![no_main]
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use embassy_executor::Executor;
 use embassy_rp::multicore::{spawn_core1, Stack};
 use embassy_rp::peripherals::CORE1;
-use embassy_time::{Duration, Instant, Timer};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
+use embassy_time::{with_timeout, Duration, Instant, Timer};
 use static_cell::StaticCell;
 
 use kiln_app::config::KilnConfig;
@@ -35,13 +39,23 @@ use kiln_control::Controller;
 mod flash_handshake;
 mod platform;
 
-use platform::{FlashStorage, LcdDisplay, NtpClock};
+use platform::{FlashStorage, NtpClock};
 
 /// Core 1 ↔ Core 0 channels and shared signals. `CriticalSectionRawMutex` is
 /// mandatory: these are touched from both cores.
 static COMMANDS: StaticCell<CommandChannel> = StaticCell::new();
 static STATUS: StaticCell<StatusWatch> = StaticCell::new();
 static REBOOT: StaticCell<RebootSignal> = StaticCell::new();
+
+/// Core 1 → Core 0 "hardware ready" handshake (`main.py`'s `ReadyFlag`): Core 1
+/// signals once its sensor/SSR/watchdog are built; Core 0 refuses to bring up the
+/// app until then, and resets if it never comes — "unsafe to operate".
+static READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Status-publish suppression during the WiFi-connect phase (`main.py`'s
+/// `QuietMode`). Starts quiet so Core 1 doesn't publish while WiFi bring-up needs
+/// the CPU; cleared once the network is up. Read on Core 1, written on Core 0.
+static QUIET: AtomicBool = AtomicBool::new(true);
 
 /// Core 1's dedicated stack and executor (kept off Core 0's executor entirely).
 static CORE1_STACK: StaticCell<Stack<8192>> = StaticCell::new();
@@ -134,6 +148,10 @@ async fn control_task(
         { kiln_app::server::STATUS_CONSUMERS },
     >,
 ) -> ! {
+    // Power/hardware settle before touching the thermocouple (`boot.py:26`) —
+    // "especially important when the thermocouple is connected at boot".
+    Timer::after(Duration::from_millis(500)).await;
+
     let (sensor, ssr, watchdog) = platform::build_kiln_io(p, config);
     let mut controller = Controller::new(
         sensor,
@@ -143,14 +161,20 @@ async fn control_task(
         Instant::now().as_millis(),
     );
 
+    // Core 1 hardware is constructed — release Core 0's boot gate (ReadyFlag).
+    READY.signal(());
+
     let (sub_ticks, sub_ms) = controller.timing();
     loop {
         let cmd = commands.try_receive().ok();
         let now_ms = Instant::now().as_millis();
         let outcome = controller.iterate(cmd, now_ms, NtpClock::unix_seconds_f64());
 
+        // QuietMode: suppress status sends during the WiFi-connect phase.
         if let Some(snapshot) = outcome.publish {
-            status.send(snapshot);
+            if !QUIET.load(Ordering::Acquire) {
+                status.send(snapshot);
+            }
         }
 
         if outcome.faulted {
@@ -185,9 +209,10 @@ impl From<embassy_rp::Peripherals> for Core0Periphs {
 }
 
 /// Core 0 setup task: bring up cyw43 → an `embassy-net` `Stack`, mount flash,
-/// build the picoserve app with shared state, and spawn the worker pool plus the
-/// CSV-logging, LCD, WiFi-join, NTP, and reboot tasks. Mirrors `main.py`'s
-/// asyncio startup, minus the control thread (now Core 1).
+/// wait for Core 1's ready handshake, run crash recovery, build the picoserve app
+/// with shared state, and spawn the worker pool plus the CSV-logging,
+/// WiFi-monitor, NTP, and reboot tasks. Mirrors `main.py`'s asyncio startup, minus
+/// the control thread (now Core 1) and the LCD task (deferred — see U9).
 #[embassy_executor::task]
 async fn core0_main(
     p: Core0Periphs,
@@ -203,11 +228,12 @@ async fn core0_main(
     // the `embassy-net` Stack the web workers serve on.
     let stack = platform::init_network(&spawner, &p).await;
 
+    // WiFi is up — let Core 1 resume publishing status (clear QuietMode).
+    QUIET.store(false, Ordering::Release);
+
     // The world, behind the kiln_app traits. Storage (mounted in `main`) routes
-    // flash writes through the flash handshake; the clock is sntpc-disciplined;
-    // the LCD is the firmware driver.
+    // flash writes through the flash handshake; the clock is sntpc-disciplined.
     let clock: &'static NtpClock = platform::init_clock();
-    let display: &'static mut LcdDisplay = platform::init_display(&p);
 
     let state = AppState {
         commands,
@@ -218,30 +244,47 @@ async fn core0_main(
         config,
     };
 
+    // Gate on Core 1 hardware-ready (`main.py:235-242`, ReadyFlag). If Core 1
+    // never signals within 20 s the kiln is unsafe to operate — reset and retry
+    // the boot rather than serving the web/recovery stack against a dead control
+    // core.
+    if with_timeout(Duration::from_secs(20), READY.wait())
+        .await
+        .is_err()
+    {
+        cortex_m::peripheral::SCB::sys_reset();
+    }
+
     // Crash recovery: parse the most recent log and, if interrupted mid-firing
     // within the safe temperature delta, resume. Uses kiln_app::recovery_io +
-    // kiln_core::recovery (both host-tested); the resume Command is parsed here
-    // on Core 0 and shipped to Core 1.
-    platform::attempt_recovery(&state).await;
+    // kiln_core::recovery (both host-tested); the resume Command is parsed here on
+    // Core 0 and shipped to Core 1. Returns the interrupted run's log file (if
+    // any) so the CSV logger continues it (append + RECOVERY row) rather than
+    // starting a fresh file.
+    let recovery = platform::attempt_recovery(&state).await;
 
     // `AppRouter` (TAIT) names the router type so it stores in a StaticCell and
     // keeps the `#[task]` web_task non-generic.
     static APP: StaticCell<picoserve::Router<kiln_app::server::AppRouter, AppState>> =
         StaticCell::new();
     let app: &'static _ = APP.init(kiln_app::server::make_app());
-    let config = platform::web_config();
+    let web_cfg = platform::web_config();
 
     for id in 0..kiln_app::server::WEB_TASK_POOL_SIZE {
         spawner
-            .spawn(kiln_app::server::web_task(id, stack, app, config, state))
+            .spawn(kiln_app::server::web_task(id, stack, app, web_cfg, state))
             .unwrap();
     }
     spawner
-        .spawn(kiln_app::server::csv_logger_task(status, storage, clock))
+        .spawn(kiln_app::server::csv_logger_task(
+            status, storage, clock, config, recovery,
+        ))
         .unwrap();
-    spawner
-        .spawn(kiln_app::server::lcd_task(status, display))
-        .unwrap();
+    // WiFi reconnect monitor (`wifi_manager.monitor`): re-join on link failure.
+    spawner.spawn(platform::wifi_monitor_task(stack)).unwrap();
+    // NOTE: the LCD task is intentionally NOT spawned — the LCD driver
+    // (`lcd1602_i2c` + `lcd_manager`) is not yet ported. See MIGRATION_AUDIT.md U9.
+    // TODO(LCD): port the driver, then spawn `lcd_task(status, display)` here.
     spawner.spawn(platform::ntp_task(clock, stack)).unwrap();
     spawner.spawn(platform::reboot_task(reboot)).unwrap();
 }

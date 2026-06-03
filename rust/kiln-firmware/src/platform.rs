@@ -149,8 +149,12 @@ pub fn build_kiln_io(
     // wrap with embedded_hal_bus ExclusiveDevice(cs); Max31856::new(spi_dev) then
     // init(cfg.thermocouple_type) + set_averaging(Averaging::from_samples(
     // cfg.thermocouple_averaging)) + set_noise_filter(NoiseFilter::from_hz(
-    // cfg.mains_frequency)). Ssr::new(Output::new(cfg.ssr_pin[0].degrade())).
-    // MaybeWatchdog per cfg.enable_watchdog.
+    // cfg.mains_frequency)) + start_autoconverting(). The last call is REQUIRED
+    // (hardware.py:84): without it the MAX31856 stays in one-shot mode and the
+    // LTCB registers read 0, so read_temperature() returns a constant 0 °C and the
+    // control loop never sees real temperature (it will read 0 until the first
+    // conversion completes regardless). Ssr::new(Output::new(cfg.ssr_pin[0]
+    // .degrade())). MaybeWatchdog per cfg.enable_watchdog.
     unimplemented!("DEVICE: construct SPI + CS + SSR pin(s) + watchdog from Core1Periphs + cfg")
 }
 
@@ -335,12 +339,30 @@ pub fn web_config() -> &'static picoserve::Config<Duration> {
 }
 
 /// Bring up cyw43 → an `embassy-net` `Stack`, join WiFi, and run DHCP. DEVICE:
-/// firmware-blob load, PIO SPI, the cyw43 + net runner tasks, `join_wpa2`.
+/// firmware-blob load, PIO SPI, the cyw43 + net runner tasks, then `join_wpa2`
+/// **in a retry loop** (disconnect → wait 2 s → re-join) until it succeeds, so a
+/// transient initial-join failure recovers — `wifi_manager.connect`'s retry,
+/// which cyw43's built-in link auto-reconnect (drops only) does not cover.
 pub async fn init_network(
     _spawner: &embassy_executor::Spawner,
     _p: &Core0Periphs,
 ) -> embassy_net::Stack<'static> {
-    unimplemented!("DEVICE: cyw43 init + embassy_net stack + WiFi join")
+    unimplemented!("DEVICE: cyw43 init + embassy_net stack + WiFi join (retry until up)")
+}
+
+/// WiFi reconnect monitor — the steady-state half of `wifi_manager.monitor`
+/// (`wifi_manager.py:139-180`): every few seconds check the link and, if it is
+/// down, re-join. cyw43 auto-reconnects dropped links, but the explicit
+/// disconnect→reconnect on a *failed* state is what the reference adds; mirror it
+/// here so a kiln on a flaky AP keeps its web/NTP reachable. DEVICE: the cyw43
+/// `control` handle for the status read + re-join.
+#[embassy_executor::task]
+pub async fn wifi_monitor_task(_stack: embassy_net::Stack<'static>) -> ! {
+    loop {
+        // DEVICE: if the link is down (STAT_NO_AP_FOUND/CONNECT_FAIL equivalent),
+        // control.join_wpa2(ssid, pw) again (disconnect → wait 2 s → join).
+        embassy_time::Timer::after(Duration::from_secs(5)).await;
+    }
 }
 
 /// Mount littlefs and return the shared [`FlashStorage`]. Called at boot before
@@ -367,7 +389,7 @@ pub fn init_display(_p: &Core0Periphs) -> &'static mut LcdDisplay {
 /// `recovery_io` + `kiln_core::recovery`; only the directory scan and the file
 /// read are device I/O. The resume profile is parsed here on Core 0 and shipped
 /// to Core 1, like every other run.
-pub async fn attempt_recovery(state: &AppState) {
+pub async fn attempt_recovery(state: &AppState) -> Option<kiln_app::server::RecoveryLog> {
     use kiln_app::recovery_io;
 
     // Wait for the first valid (>= 20°C) temperature, as the reference does.
@@ -395,7 +417,7 @@ pub async fn attempt_recovery(state: &AppState) {
                 }
             }
         });
-    let Some((log_name, _)) = newest else { return };
+    let (log_name, _) = newest?;
 
     // Read the tail and decide.
     let mut buf = [0u8; 4096];
@@ -409,13 +431,9 @@ pub async fn attempt_recovery(state: &AppState) {
                 .read_chunk(Directory::Logs, &log_name, start, &mut buf)
                 .ok()
         });
-    let Some(n) = read else { return };
-    let Ok(text) = core::str::from_utf8(&buf[..n]) else {
-        return;
-    };
-    let Some(entry) = recovery_io::last_log_entry_from_csv(text) else {
-        return;
-    };
+    let n = read?;
+    let text = core::str::from_utf8(&buf[..n]).ok()?;
+    let entry = recovery_io::last_log_entry_from_csv(text)?;
 
     let decision = kiln_core::recovery::check_recovery(
         &entry,
@@ -423,37 +441,24 @@ pub async fn attempt_recovery(state: &AppState) {
         state.config.max_recovery_temp_delta,
     );
     if !decision.can_recover {
-        return;
+        return None;
     }
 
     // Profile name from the log filename (lowercased), then parse profiles/{name}.json.
-    let Some(stem) = recovery_io::profile_stem(&log_name) else {
-        return;
-    };
+    let stem = recovery_io::profile_stem(&log_name)?;
     let mut fname = heapless::String::<80>::new();
     if recovery_io::write_lowercase(&mut fname, stem).is_err() || fname.push_str(".json").is_err() {
-        return;
+        return None;
     }
     let mut pbuf = [0u8; 8192];
-    let Some(size) = state.storage.size(Directory::Profiles, &fname) else {
-        return;
-    };
-    let _ = size;
-    let Ok(pn) = state
+    state.storage.size(Directory::Profiles, &fname)?;
+    let pn = state
         .storage
         .read_chunk(Directory::Profiles, &fname, 0, &mut pbuf)
-    else {
-        return;
-    };
-    let Ok(ptext) = core::str::from_utf8(&pbuf[..pn]) else {
-        return;
-    };
-    let Ok(parsed) = kiln_app::profile_json::parse_profile(ptext) else {
-        return;
-    };
-    let Ok(profile) = ProfileName::new(&fname) else {
-        return;
-    };
+        .ok()?;
+    let ptext = core::str::from_utf8(&pbuf[..pn]).ok()?;
+    let parsed = kiln_app::profile_json::parse_profile(ptext).ok()?;
+    let profile = ProfileName::new(&fname).ok()?;
 
     let _ = state.commands.try_send(Command::ResumeProfile {
         profile,
@@ -463,6 +468,15 @@ pub async fn attempt_recovery(state: &AppState) {
         current_temp: Some(current_temp),
         step_index: decision.step_index,
     });
+
+    // Hand the CSV logger the interrupted run's file so it appends (no new header)
+    // and writes the one-shot RECOVERY event row — data_logger.set_recovery_context.
+    let mut filename = heapless::String::<96>::new();
+    let _ = filename.push_str(&log_name); // String<64> always fits in String<96>
+    Some(kiln_app::server::RecoveryLog {
+        filename,
+        elapsed_seconds: decision.elapsed_seconds,
+    })
 }
 
 /// NTP task: periodically sync the wall clock via `sntpc`. DEVICE: the UDP

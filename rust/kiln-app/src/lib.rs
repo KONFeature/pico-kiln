@@ -18,6 +18,7 @@ pub mod api;
 pub mod config;
 pub mod csv;
 pub mod errors;
+pub mod html;
 pub mod json;
 pub mod profile_json;
 pub mod recovery_io;

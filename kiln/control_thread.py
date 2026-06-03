@@ -131,7 +131,7 @@ class ControlThread:
 
         # Get base PID gains and thermal parameters
         self.pid_kp_base = getattr(self.config, 'PID_KP_BASE', 25.0)
-        self.pid_ki_base = getattr(self.config, 'PID_KI_BASE', 0.18)
+        self.pid_ki_base = getattr(self.config, 'PID_KI_BASE', 0.14)
         self.pid_kd_base = getattr(self.config, 'PID_KD_BASE', 160.0)
         self.thermal_h = getattr(self.config, 'THERMAL_H', 0.0)
         self.thermal_t_ambient = getattr(self.config, 'THERMAL_T_AMBIENT', 25.0)

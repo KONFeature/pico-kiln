@@ -28,7 +28,7 @@ use kiln_core::protocol::{Command, ProfileName, Status};
 
 use crate::api::{self, Directory};
 use crate::config::KilnConfig;
-use crate::{config, csv, json, profile_json};
+use crate::{config, csv, html, json, profile_json};
 
 /// Command-queue depth (Core 0 → Core 1) — the reference command queue holds 10.
 pub const COMMAND_DEPTH: usize = 10;
@@ -146,16 +146,33 @@ impl AppState {
 
 // === Tasks ==================================================================
 
+/// A crash-recovery resume hand-off for the CSV logger: the *existing* log file
+/// to continue (append to, no new header) and the resume elapsed for the one-shot
+/// `RECOVERY` event row. Built by `kiln-firmware`'s `attempt_recovery` and passed
+/// once into [`csv_logger_task`]; `None` for a normal boot. Mirrors
+/// `data_logger.set_recovery_context` + `log_recovery_event`.
+pub struct RecoveryLog {
+    /// The interrupted run's log filename (no directory prefix).
+    pub filename: heapless::String<96>,
+    /// `recovery_info.elapsed_seconds` — the elapsed written in the RECOVERY row.
+    pub elapsed_seconds: f64,
+}
+
 /// CSV logging — the `data_logger.py` half that owns timing and the file handle.
 /// Subscribes to the status broadcast and writes a row through [`Storage`] when
-/// the interval has elapsed (30 s normally, 2 s while TUNING), using the verified
-/// [`csv`] formatters. Starts a new file (header) on the IDLE→RUNNING/TUNING edge
-/// and forces a final terminal-state row on the way out — `data_logger.update`.
+/// the interval has elapsed (`LOGGING_INTERVAL` normally, 2 s while TUNING), using
+/// the verified [`csv`] formatters. On the IDLE→RUNNING/TUNING edge it starts a
+/// new file (header) — or, for a crash-recovery resume, **appends** to the
+/// interrupted run's file (no header) and writes a one-shot `RECOVERY` event row
+/// (`data_logger.log_recovery_event`). Forces a final terminal-state row on the
+/// way out — `data_logger.update`.
 #[embassy_executor::task]
 pub async fn csv_logger_task(
     status: &'static StatusWatch,
     storage: &'static dyn Storage,
     clock: &'static dyn Clock,
+    config: &'static KilnConfig,
+    mut recovery: Option<RecoveryLog>,
 ) -> ! {
     use kiln_core::state::KilnState;
     let mut rx = status.receiver().unwrap();
@@ -170,7 +187,30 @@ pub async fn csv_logger_task(
         let active = matches!(s.state, KilnState::Running | KilnState::Tuning);
 
         if active && !logging {
-            if let Some(name) = s.profile_name {
+            if let Some(rec) = recovery.take() {
+                // Recovery resume: continue the interrupted run's file (append,
+                // no header) and write the one-shot RECOVERY marker row using the
+                // resume elapsed + live temps/SSR/rate (data_logger.py 201-264).
+                filename.clear();
+                let _ = filename.push_str(&rec.filename);
+                let mut row = heapless::String::<256>::new();
+                let _ = csv::write_recovery_event_row(
+                    &mut row,
+                    s.timestamp,
+                    rec.elapsed_seconds,
+                    s.current_temp,
+                    s.target_temp,
+                    s.ssr_output,
+                    s.measured_rate,
+                );
+                if storage
+                    .append(Directory::Logs, &filename, row.as_bytes(), false)
+                    .is_ok()
+                {
+                    logging = true;
+                    last_log = 0;
+                }
+            } else if let Some(name) = s.profile_name {
                 filename.clear();
                 let _ = csv::write_log_filename(&mut filename, name.as_str(), now);
                 if storage
@@ -184,7 +224,11 @@ pub async fn csv_logger_task(
         }
 
         if logging {
-            let interval = if s.state == KilnState::Tuning { 2 } else { 30 };
+            let interval = if s.state == KilnState::Tuning {
+                2
+            } else {
+                config.logging_interval as i64
+            };
             let leaving = matches!(prev_state, KilnState::Running | KilnState::Tuning) && !active;
             if leaving || (now - last_log) >= interval {
                 let mut row = heapless::String::<256>::new();
@@ -227,6 +271,11 @@ mod web {
     const BODY_CAP: usize = api::MAX_JSON_BODY;
     /// Working buffer for reading a profile file to parse (profiles are a few KB).
     const PROFILE_READ_CAP: usize = 8192;
+    /// Max profiles rendered into the index `{profiles_list}` / collected for a
+    /// bulk log delete. The flash holds far fewer; extras are silently dropped.
+    const MAX_PROFILES: usize = 32;
+    /// Max length of a profile/log filename held on the stack.
+    const NAME_CAP: usize = 64;
 
     /// The concrete router type, named via TAIT so it can live in a `StaticCell`
     /// and so [`web_task`] stays non-generic (an `#[embassy_executor::task]`
@@ -235,44 +284,72 @@ mod web {
 
     /// Build the picoserve router; the path set and methods match `web_server.py`.
     pub fn make_app() -> picoserve::Router<AppRouter, AppState> {
+        // Every `/api/*` route also answers `OPTIONS` with 200 + CORS so the
+        // browser's cross-origin preflight succeeds — the reference returned
+        // 200/CORS for any OPTIONS (`web_server.py:780-782`); without it the
+        // hosted web app's POST/PUT/DELETE-with-JSON would fail at preflight.
         picoserve::Router::new()
             .route("/", get(page_index))
             .route("/index.html", get(page_index))
             .route("/tuning", get(page_tuning))
             .route("/tuning.html", get(page_tuning))
-            .route("/api/status", get(status_json))
-            .route("/api/tuning/status", get(status_json))
-            .route("/api/scheduled", get(scheduled_json))
+            .route("/api/status", get(status_json).options(cors_preflight))
+            .route("/api/tuning/status", get(status_json).options(cors_preflight))
+            .route("/api/scheduled", get(scheduled_json).options(cors_preflight))
             .route(
                 "/api/stop",
-                post(|s: State<AppState>| async move { enqueue(&s.0, Command::Stop) }),
+                post(|s: State<AppState>| async move { enqueue(&s.0, Command::Stop) })
+                    .options(cors_preflight),
             )
             .route(
                 "/api/clear-error",
-                post(|s: State<AppState>| async move { enqueue(&s.0, Command::ClearError) }),
+                post(|s: State<AppState>| async move { enqueue(&s.0, Command::ClearError) })
+                    .options(cors_preflight),
             )
             .route(
                 "/api/shutdown",
-                post(|s: State<AppState>| async move { enqueue(&s.0, Command::Shutdown) }),
+                post(|s: State<AppState>| async move { enqueue(&s.0, Command::Shutdown) })
+                    .options(cors_preflight),
             )
             .route(
                 "/api/scheduled/cancel",
-                post(|s: State<AppState>| async move { enqueue(&s.0, Command::CancelScheduled) }),
+                post(|s: State<AppState>| async move { enqueue(&s.0, Command::CancelScheduled) })
+                    .options(cors_preflight),
             )
             .route(
                 "/api/tuning/stop",
-                post(|s: State<AppState>| async move { enqueue(&s.0, Command::StopTuning) }),
+                post(|s: State<AppState>| async move { enqueue(&s.0, Command::StopTuning) })
+                    .options(cors_preflight),
             )
-            .route("/api/reboot", post(reboot))
-            .route("/api/config", get(config_get).post(config_post))
-            .route("/api/run", post(run))
-            .route("/api/schedule", post(schedule))
-            .route("/api/tuning/start", post(tuning_start))
-            .route(("/api/files", parse_path_segment()), get(files_list))
+            .route("/api/reboot", post(reboot).options(cors_preflight))
+            .route(
+                "/api/config",
+                get(config_get).post(config_post).options(cors_preflight),
+            )
+            .route("/api/run", post(run).options(cors_preflight))
+            .route("/api/schedule", post(schedule).options(cors_preflight))
+            .route(
+                "/api/tuning/start",
+                post(tuning_start).options(cors_preflight),
+            )
+            .route(
+                ("/api/files", parse_path_segment()),
+                get(files_list).options(cors_preflight),
+            )
             .route(
                 ("/api/files", parse_path_segment(), parse_path_segment()),
-                get(file_get).put(file_put).delete(file_delete),
+                get(file_get)
+                    .put(file_put)
+                    .delete(file_delete)
+                    .options(cors_preflight),
             )
+    }
+
+    /// CORS preflight responder: 200 with an empty body; the CORS headers are
+    /// added by [`ApiResponse`]'s `IntoResponse` (the `Text` arm), matching the
+    /// reference's blanket OPTIONS handler.
+    async fn cors_preflight() -> impl IntoResponse {
+        ApiResponse::error_text(StatusCode::OK, "")
     }
 
     async fn status_json(State(state): State<AppState>) -> impl IntoResponse {
@@ -545,6 +622,12 @@ mod web {
         dir: heapless::String<16>,
         file: heapless::String<64>,
     ) -> impl IntoResponse {
+        // The web app's "delete all logs" maps to DELETE /api/files/logs/all
+        // (`handle_api_files_delete_all`). Route it before the single-file path so
+        // "all" is never treated as a filename.
+        if file == "all" {
+            return file_delete_all(&state, &dir);
+        }
         let directory = match file_guard(&state, &dir, Some(&file)) {
             Ok(d) => d,
             Err(resp) => return resp,
@@ -556,8 +639,80 @@ mod web {
         }
     }
 
+    /// `DELETE /api/files/logs/all` — bulk-delete every log (`web_server.py`
+    /// `handle_api_files_delete_all`). Idle-gated and logs-only; returns
+    /// `{success, deleted_count, deleted_files:[...]}`. The file list is capped at
+    /// `MAX_PROFILES` for the response, but `remove_all` clears the whole dir.
+    fn file_delete_all(state: &AppState, dir: &str) -> ApiResponse {
+        let directory = match file_guard(state, dir, None) {
+            Ok(d) => d,
+            Err(resp) => return resp,
+        };
+        if !api::bulk_delete_allowed(directory) {
+            return ApiResponse::error(
+                StatusCode::FORBIDDEN,
+                "Bulk delete only allowed for logs directory",
+            );
+        }
+        // Snapshot names (capped) for the response, count all, then clear the dir.
+        let mut names: heapless::Vec<heapless::String<NAME_CAP>, MAX_PROFILES> =
+            heapless::Vec::new();
+        let mut total = 0usize;
+        state.storage.for_each(directory, &mut |name, _size, _modified| {
+            total += 1;
+            if names.len() < names.capacity() {
+                let mut s = heapless::String::<NAME_CAP>::new();
+                if s.push_str(name).is_ok() {
+                    let _ = names.push(s);
+                }
+            }
+        });
+        if state.storage.remove_all(directory).is_err() {
+            return ApiResponse::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to delete files",
+            );
+        }
+        let mut body = heapless::String::<2048>::new();
+        let _ = write!(body, "{{\"success\":true,\"deleted_count\":{},\"deleted_files\":[", total);
+        for (i, name) in names.iter().enumerate() {
+            if i > 0 {
+                let _ = body.push(',');
+            }
+            let _ = write!(body, "\"{}\"", name);
+        }
+        let _ = body.push_str("]}");
+        ApiResponse::json(StatusCode::OK, body)
+    }
+
     async fn page_index(State(state): State<AppState>) -> impl IntoResponse {
-        serve_asset(&state, "index.html")
+        let bytes = match state.storage.static_asset("index.html") {
+            Some(b) => b,
+            None => return ApiResponse::error_text(StatusCode::NOT_FOUND, "Not found"),
+        };
+        // Fill the `{profiles_list}` placeholder the way `main.py` prerendered it.
+        // If absent (unexpected), fall back to serving the bytes verbatim.
+        match html::split_profiles_placeholder(bytes) {
+            None => ApiResponse::Asset {
+                bytes,
+                content_type: "text/html",
+            },
+            Some((pre, post)) => {
+                let mut names: heapless::Vec<heapless::String<NAME_CAP>, MAX_PROFILES> =
+                    heapless::Vec::new();
+                state
+                    .storage
+                    .for_each(Directory::Profiles, &mut |name, _size, _modified| {
+                        if let Some(stem) = html::profile_display_name(name) {
+                            let mut s = heapless::String::<NAME_CAP>::new();
+                            if s.push_str(stem).is_ok() {
+                                let _ = names.push(s);
+                            }
+                        }
+                    });
+                ApiResponse::Index(IndexBody { pre, post, names })
+            }
+        }
     }
 
     async fn page_tuning(State(state): State<AppState>) -> impl IntoResponse {
@@ -612,6 +767,7 @@ mod web {
             content_type: &'static str,
         },
         Download(Download),
+        Index(IndexBody),
     }
 
     impl ApiResponse {
@@ -689,7 +845,55 @@ mod web {
                         .write_to(connection, response_writer)
                         .await
                 }
+                ApiResponse::Index(body) => {
+                    picoserve::response::Response::new(StatusCode::OK, body)
+                        .with_headers(CORS)
+                        .with_header("Content-Type", "text/html")
+                        .write_to(connection, response_writer)
+                        .await
+                }
             }
+        }
+    }
+
+    /// `index.html` with its `{profiles_list}` placeholder filled in at request
+    /// time (the boot-time prerender in `main.py` + `html_cache.py`). The static
+    /// prefix/suffix bracket the rendered profile list, which is streamed in.
+    pub(super) struct IndexBody {
+        pre: &'static [u8],
+        post: &'static [u8],
+        names: heapless::Vec<heapless::String<NAME_CAP>, MAX_PROFILES>,
+    }
+
+    impl picoserve::response::Body for IndexBody {
+        async fn write_response_body<W: picoserve::io::Write>(
+            self,
+            mut writer: W,
+        ) -> Result<(), W::Error> {
+            // Streams `html::render_profiles_list` (the host-tested spec)
+            // fragment-for-fragment, so no full-page buffer is needed. Keep these
+            // byte fragments in lockstep with that function.
+            writer.write_all(self.pre).await?;
+            if self.names.is_empty() {
+                writer
+                    .write_all(b"<ul><li>No profiles found</li></ul>")
+                    .await?;
+            } else {
+                writer.write_all(b"<ul>").await?;
+                for name in &self.names {
+                    let n = name.as_bytes();
+                    writer.write_all(b"<li>").await?;
+                    writer.write_all(n).await?;
+                    writer
+                        .write_all(b" <button onclick=\"startProfile('")
+                        .await?;
+                    writer.write_all(n).await?;
+                    writer.write_all(b"')\">Start</button></li>").await?;
+                }
+                writer.write_all(b"</ul>").await?;
+            }
+            writer.write_all(self.post).await?;
+            Ok(())
         }
     }
 

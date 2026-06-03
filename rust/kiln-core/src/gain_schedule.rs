@@ -139,7 +139,7 @@ mod tests {
 
     // Realistic base gains from config.example.py defaults.
     fn base() -> Gains {
-        Gains::new(25.0, 0.18, 160.0)
+        Gains::new(25.0, 0.14, 160.0)
     }
 
     #[test]
@@ -172,7 +172,7 @@ mod tests {
         let out = g.update(t).expect("large ΔT must emit new gains");
         assert!((g.gain_scale(t) - 1.5).abs() < 1e-12);
         assert!((out.kp - 25.0 * 1.5).abs() < 1e-9);
-        assert!((out.ki - 0.18 * 1.5).abs() < 1e-9);
+        assert!((out.ki - 0.14 * 1.5).abs() < 1e-9);
         assert!((out.kd - 160.0 * 1.5).abs() < 1e-9);
         assert_eq!(g.current(), out); // current tracks what was emitted
     }
@@ -185,7 +185,7 @@ mod tests {
         let _ = g.update(525.0).unwrap();
         let after_jump = g.current();
         // A 0.0001 °C nudge changes Kp by 25*0.001*1e-4 = 2.5e-6 « 0.01,
-        // Ki by 1.8e-8 « 1e-4, Kd by 1.6e-5 « 0.01 -> all under threshold.
+        // Ki by 1.4e-8 « 1e-4, Kd by 1.6e-5 « 0.01 -> all under threshold.
         assert_eq!(g.update(525.0001), None);
         assert_eq!(g.current(), after_jump); // unchanged
     }

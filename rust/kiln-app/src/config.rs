@@ -876,6 +876,38 @@ mod tests {
     }
 
     #[test]
+    fn device_overrides_including_thermocouple_apply() {
+        // The shape of the shipped (gitignored) config.json device overrides:
+        // the keys must be recognised (values take effect) and absent keys keep
+        // their defaults. Guards the UPPER_SNAKE key names + the enum mapping.
+        let c = parse(
+            r#"{"THERMOCOUPLE_TYPE":"S","MAINS_FREQUENCY":50,
+               "PID_KP_BASE":6.11,"PID_KI_BASE":0.0037,"PID_KD_BASE":42.534,
+               "THERMAL_T_AMBIENT":10,"MAX_RECOVERY_TEMP_DELTA":60}"#,
+        )
+        .unwrap();
+        assert_eq!(c.thermocouple_type, ThermocoupleType::S);
+        assert_eq!(c.mains_frequency, 50);
+        assert_eq!(c.pid_base(), Gains::new(6.11, 0.0037, 42.534));
+        assert_eq!(c.thermal_t_ambient, 10.0);
+        assert_eq!(c.max_recovery_temp_delta, 60.0);
+        // Absent keys keep their defaults (sparse merge).
+        assert_eq!(c.max_temp, 1300.0);
+        assert_eq!(c.logging_interval, 30);
+    }
+
+    #[test]
+    fn config_example_json_is_valid() {
+        // The committed template must parse (the `_comment` key is skipped) and
+        // its keys must be recognised — verified via the WiFi placeholder taking
+        // effect; the rest of its values equal the built-in defaults.
+        let c = parse(include_str!("../../config.example.json")).unwrap();
+        assert_eq!(c.wifi_ssid.as_str(), "your_wifi_ssid");
+        assert_eq!(c.mains_frequency, 60);
+        assert_eq!(c.pid_base(), Gains::new(25.0, 0.14, 160.0));
+    }
+
+    #[test]
     fn parse_over_patches_a_running_config() {
         let base = KilnConfig {
             pid_kp_base: 30.0,

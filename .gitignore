@@ -137,3 +137,5 @@ config.py
 
 # Debug tool backups
 .debug_backups/
+
+.omo/
