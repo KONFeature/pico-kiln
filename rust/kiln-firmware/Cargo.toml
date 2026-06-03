@@ -1,0 +1,47 @@
+[package]
+name = "kiln-firmware"
+version = "0.1.0"
+edition = "2021"
+description = "RP2350 (Pico 2 W) binary shim for the pico-kiln controller: embassy_rp init, the Core 1 / Core 0 split, the cross-core flash-write handshake, and the concrete drivers (MAX31856 SPI, SSR GPIO, cyw43 WiFi, littlefs flash, LCD, sntpc clock) wired to kiln-control + kiln-app."
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+# BUILD NOTE. This crate targets thumbv8m.main-none-eabihf only and needs a
+# memory.x linker script + a probe-rs/elf2uf2 runner + the cyw43 firmware blobs.
+# It is excluded from the host workspace (see ../Cargo.toml) because embassy-rp
+# cannot build for the host. It is the one crate that names embassy-rp/cyw43.
+
+[dependencies]
+kiln-core = { path = "../kiln-core" }
+kiln-hal = { path = "../kiln-hal" }
+kiln-control = { path = "../kiln-control", features = ["embassy"] }
+kiln-app = { path = "../kiln-app", features = ["embassy"] }
+
+embassy-executor = { version = "0.10", features = ["arch-cortex-m", "executor-thread", "executor-interrupt"] }
+embassy-rp = { version = "0.9", features = ["rp235xa", "time-driver", "critical-section-impl"] }
+embassy-time = "0.5"
+embassy-sync = "0.8"
+embassy-net = { version = "0.9", features = ["tcp", "udp", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
+embassy-futures = "0.1"
+
+cyw43 = { version = "0.5", features = ["firmware-logs"] }
+cyw43-pio = "0.7"
+
+picoserve = { version = "0.18", features = ["embassy"] }
+
+embedded-hal = "1.0"
+embedded-hal-bus = "0.3"
+static_cell = "2"
+heapless = "0.8"
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+
+# NTP wall clock (Oracle Q4) and the flash filesystem (Oracle Q2). The exact
+# crate APIs are device-verified; pinned here as the intended dependencies.
+sntpc = { version = "0.5", default-features = false }
+littlefs2 = "0.5"
+
+panic-halt = "1"
+
+[features]
+default = []

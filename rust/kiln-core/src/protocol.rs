@@ -19,15 +19,25 @@
 //!   [`StepKind`].
 //! - A profile *filename* is unavoidably text, so it rides in a fixed-capacity
 //!   [`ProfileName`] (no allocation), capped at [`MAX_PROFILE_NAME`] bytes.
-//! - Two presentation-only fields from the Python template are intentionally
-//!   dropped: `profile_name` (the human profile name — `profile.rs` deliberately
-//!   has none; the app already knows which profile it started) and
-//!   `scheduled_profile` (the scheduler's status dict — an app-side concern). The
-//!   reference's per-field `round(...)` is presentation too and is not applied.
+//! - The reference's per-field `round(...)` is presentation and is not applied
+//!   here; `kiln-app` formats numbers at the web boundary.
+//!
+//! Three reference status fields ride along as typed `Copy` snapshots because the
+//! scheduler and the tuner both live on **Core 1** (the control loop owns the
+//! active profile, drains the scheduler each tick, and runs the tuner), so the
+//! application layer (Core 0) can only learn them from the status message — it
+//! cannot reconstruct them:
+//!
+//! - `profile_name` → [`Status::profile_name`] (Core 1 tracks the running
+//!   profile's filename; `kiln-app` echoes it to `/api/status` and names the CSV).
+//! - `scheduled_profile` → [`Status::scheduled`] ([`ScheduledSnapshot`]).
+//! - the tuning `tuning` sub-dict → [`Status::tuning`] ([`TuningSnapshot`]).
+//!   The presentation-only step *name* string and human error message are
+//!   reconstructed in `kiln-app` from `(mode, step_index)` / `stage`.
 
-use crate::profile::StepKind;
+use crate::profile::{Profile, StepKind};
 use crate::state::{KilnError, KilnState};
-use crate::tuner::TuningMode;
+use crate::tuner::{TuningMode, TuningStage};
 
 /// Maximum profile-filename length carried by a [`Command`], in bytes.
 pub const MAX_PROFILE_NAME: usize = 64;
@@ -98,13 +108,24 @@ impl Eq for ProfileName {}
 /// for the preserved integer tags.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    /// Start running a firing profile by filename. (`RUN_PROFILE`)
-    RunProfile { profile: ProfileName },
+    /// Start running a firing profile. (`RUN_PROFILE`)
+    ///
+    /// Unlike the reference — where Core 1 reads `profiles/{name}` from disk —
+    /// the platform-generic control loop never touches the filesystem, so
+    /// `kiln-app` (Core 0, the single flash owner) parses the JSON and ships the
+    /// ready-to-run [`Profile`] across the channel. `profile` is the filename,
+    /// kept for status, CSV naming, and recovery.
+    RunProfile {
+        profile: ProfileName,
+        parsed: Profile,
+    },
     /// Resume a previously interrupted profile, with recovery context. The
     /// optional fields mirror `CommandMessage.resume_profile`'s defaults of
-    /// `None` (let the controller recompute). (`RESUME_PROFILE`)
+    /// `None` (let the controller recompute). `parsed` is the Core-0-parsed
+    /// profile (see [`Command::RunProfile`]). (`RESUME_PROFILE`)
     ResumeProfile {
         profile: ProfileName,
+        parsed: Profile,
         elapsed_seconds: f64,
         last_logged_temp: Option<f64>,
         current_temp: Option<f64>,
@@ -124,9 +145,12 @@ pub enum Command {
     StopTuning,
     /// Liveness ping for the cross-core channel. (`PING`)
     Ping,
-    /// Schedule a profile to start at `start_time` (Unix seconds). (`SCHEDULE_PROFILE`)
+    /// Schedule a profile to start at `start_time` (Unix seconds). `parsed` is
+    /// the Core-0-parsed profile (see [`Command::RunProfile`]), held by the
+    /// control loop's scheduler until it fires. (`SCHEDULE_PROFILE`)
     ScheduleProfile {
         profile: ProfileName,
+        parsed: Profile,
         start_time: u64,
     },
     /// Cancel a scheduled profile. (`CANCEL_SCHEDULED`)
@@ -152,6 +176,46 @@ impl Command {
             Command::ClearError => 10,
         }
     }
+}
+
+/// The delayed-start scheduler's status, mirroring `scheduler.get_status()`
+/// (`kiln/scheduler.py`) minus its presentation-only ISO string, which
+/// `kiln-app` formats from `start_time` at the web boundary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScheduledSnapshot {
+    /// The queued profile's filename.
+    pub profile: ProfileName,
+    /// Unix seconds the profile is scheduled to start.
+    pub start_time: u64,
+    /// Whole seconds remaining until start (`max(0, start_time − now)`).
+    pub seconds_until_start: u64,
+}
+
+/// The auto-tuner's status, the typed half of `tuner.get_status()`
+/// (`kiln/tuner.py:492-516`). Carries everything `/api/tuning/status` renders
+/// except the step *name* string and human error message, which `kiln-app`
+/// reconstructs from `(mode, step_index)` and `stage` respectively (the only
+/// error path is over-max-temp), keeping this `Copy` and `kiln-core` text-free.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TuningSnapshot {
+    pub stage: TuningStage,
+    pub mode: TuningMode,
+    pub max_temp: f64,
+    /// Current step index (0-based).
+    pub step_index: usize,
+    pub total_steps: usize,
+    /// Seconds elapsed in the current step (the reference's merged `elapsed`).
+    pub step_elapsed: f64,
+    /// Fixed SSR output the current step holds (%).
+    pub ssr_percent: f64,
+    /// The current step's temperature target, if any.
+    pub target_temp: Option<f64>,
+    /// The current step's timeout (seconds).
+    pub timeout: f64,
+    /// Whether the current step has detected a plateau.
+    pub plateau_detected: bool,
+    /// Peak temperature seen during the current step (°C).
+    pub peak_temp: f64,
 }
 
 /// A status snapshot from the control loop (Core 1) to the application layer
@@ -181,6 +245,12 @@ pub struct Status {
     pub recovery_target_temp: Option<f64>,
     /// Measured rate over the controller's window (°C/h).
     pub measured_rate: f64,
+    /// The active (running or just-completed) profile's filename, if any.
+    pub profile_name: Option<ProfileName>,
+    /// The delayed-start scheduler's snapshot, if a profile is queued.
+    pub scheduled: Option<ScheduledSnapshot>,
+    /// The auto-tuner's snapshot, present while [`KilnState::Tuning`].
+    pub tuning: Option<TuningSnapshot>,
 }
 
 impl Status {
@@ -202,6 +272,9 @@ impl Status {
             is_recovering: false,
             recovery_target_temp: None,
             measured_rate: 0.0,
+            profile_name: None,
+            scheduled: None,
+            tuning: None,
         }
     }
 }
@@ -216,14 +289,26 @@ impl Default for Status {
 mod tests {
     use super::*;
 
+    fn sample_profile() -> Profile {
+        Profile::new(&[crate::profile::Step::hold(100.0, 10.0)]).unwrap()
+    }
+
     #[test]
     fn message_types_match_comms_py_constants() {
         // Exact integers from kiln/comms.py MessageType (1..=10).
         let name = ProfileName::new("cone6.json").unwrap();
-        assert_eq!(Command::RunProfile { profile: name }.message_type(), 1);
+        assert_eq!(
+            Command::RunProfile {
+                profile: name,
+                parsed: sample_profile(),
+            }
+            .message_type(),
+            1
+        );
         assert_eq!(
             Command::ResumeProfile {
                 profile: name,
+                parsed: sample_profile(),
                 elapsed_seconds: 0.0,
                 last_logged_temp: None,
                 current_temp: None,
@@ -247,6 +332,7 @@ mod tests {
         assert_eq!(
             Command::ScheduleProfile {
                 profile: name,
+                parsed: sample_profile(),
                 start_time: 0
             }
             .message_type(),
@@ -322,5 +408,52 @@ mod tests {
         assert_eq!(s.state, KilnState::Error);
         assert_eq!(s.step_kind, Some(StepKind::Ramp));
         assert!(matches!(s.error, Some(KilnError::Stall { .. })));
+    }
+
+    #[test]
+    fn idle_status_has_no_profile_scheduler_or_tuning() {
+        let s = Status::idle();
+        assert_eq!(s.profile_name, None);
+        assert_eq!(s.scheduled, None);
+        assert_eq!(s.tuning, None);
+    }
+
+    #[test]
+    fn status_carries_profile_scheduler_and_tuning_snapshots() {
+        let name = ProfileName::new("cone6.json").unwrap();
+        let s = Status {
+            state: KilnState::Tuning,
+            profile_name: Some(name),
+            scheduled: Some(ScheduledSnapshot {
+                profile: ProfileName::new("bisque.json").unwrap(),
+                start_time: 1_700_000_000,
+                seconds_until_start: 3599,
+            }),
+            tuning: Some(TuningSnapshot {
+                stage: TuningStage::Running,
+                mode: TuningMode::Standard,
+                max_temp: 900.0,
+                step_index: 2,
+                total_steps: 6,
+                step_elapsed: 42.5,
+                ssr_percent: 50.0,
+                target_temp: None,
+                timeout: 1800.0,
+                plateau_detected: false,
+                peak_temp: 310.0,
+            }),
+            ..Status::idle()
+        };
+        assert_eq!(s.profile_name.unwrap().as_str(), "cone6.json");
+        let sched = s.scheduled.unwrap();
+        assert_eq!(sched.profile.as_str(), "bisque.json");
+        assert_eq!(sched.seconds_until_start, 3599);
+        let t = s.tuning.unwrap();
+        assert_eq!(t.mode, TuningMode::Standard);
+        assert_eq!(t.stage, TuningStage::Running);
+        assert_eq!(t.step_index, 2);
+        assert_eq!(t.peak_temp, 310.0);
+        let s2 = s;
+        assert_eq!(s, s2);
     }
 }

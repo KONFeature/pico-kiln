@@ -116,7 +116,7 @@ columns), which belongs in `kiln-app`, not core:
 |---------------------|---------------|-----|
 | recovery I/O | `server/recovery.py` `_find_most_recent_log` / `_parse_last_log_entry` (244-355) | filesystem scan + CSV parse; feeds the parsed `LastLogEntry` into `kiln-core::recovery::check_recovery` |
 
-### `kiln-hal` — the hands (status: `max31856` + `ssr` built; `lcd` planned)
+### `kiln-hal` — the hands (status: `max31856` + `ssr` + `platform` traits + `MultiSsr` done ✅; `lcd` planned)
 
 Thin drivers generic over `embedded-hal` 1.0 traits (`SpiDevice`, `OutputPin`),
 so they run against mocks on the host. Return raw readings; `kiln-control` wraps
@@ -131,9 +131,10 @@ halves, so the traits cost no extra crate.
 | `max31856` ✅ | `kiln/hardware.py:24-205` + `adafruit_max31856` | configure (notch + averaging), `start_autoconverting`, non-blocking 19-bit read → raw °C, decoded `Faults` |
 | `ssr` ✅ | `kiln/hardware.py:209-318` (`pin.value()` calls) | GPIO on/off; SSR-off-on-`Drop` safety guard |
 | `lcd` (optional) | `server/lcd_manager.py` (hardware init/draw) | display driver (over `embedded-hal` I2C) |
-| `platform` (traits) | — (new; replaces direct `embassy-rp` use in the halves) | the abstractions the halves are generic over — `Watchdog`, plus each half's driver bounds; `kiln-firmware` implements them for the RP2350 |
+| `platform` (traits) ✅ | — (new; replaces direct `embassy-rp` use in the halves) | the abstractions the halves are generic over — `Watchdog`, `TempSensor`, `SsrOutput` (+ `NoopWatchdog`); `kiln-firmware` implements them for the RP2350 |
+| `MultiSsr<P, N>` ✅ | `kiln/hardware.py` (staggered multi-relay turn-on) | non-blocking inrush-staggered `SsrOutput` over N relays, `now_ms` injected |
 
-### `kiln-control` — Core 1 real-time loop (status: planned)
+### `kiln-control` — Core 1 real-time loop (status: done ✅ — sync `Controller` + async `run`, host-tested + thumbv8m)
 
 The orchestration that today is `ControlThread`. One `embassy` task; reads
 sensor → core filters → state → PID → SSR every tick; drains the command
@@ -155,7 +156,7 @@ what lets `kiln-sim` run the real loop — see below.)
 | watchdog feed | `kiln/control_thread.py:373-381` (`WDT`) |
 | thread entry | `kiln/control_thread.py` `start_control_thread` (679-694) |
 
-### `kiln-app` — Core 2 application layer (status: planned)
+### `kiln-app` — Core 2 application layer (status: pure modules done ✅ — json/csv/recovery_io/api/profile_json/timefmt/errors/tuning_names host-tested; embassy glue `server.rs` written, device-only)
 
 Everything user-facing and best-effort. Multiple `embassy` tasks on Core 0.
 
@@ -176,7 +177,7 @@ WiFi-chip bring-up (the cyw43 firmware blob, PIO+DMA) and hands the finished
 | LCD render loop | `server/lcd_manager.py` (`LCDManager.run`) |
 | HTML / profile caches | `server/html_cache.py`, `server/profile_cache.py` |
 
-### `kiln-firmware` — the shim (status: planned)
+### `kiln-firmware` — the shim (status: written, device-only — excluded from the host workspace; compiles on thumbv8m with `memory.x` + cyw43 blobs)
 
 **The only RP2350-aware crate.** It alone calls `embassy_rp::init`, runs
 `bind_interrupts!`, owns the channel `static`s, loads the cyw43 firmware blob

@@ -267,6 +267,18 @@ impl<SPI: SpiDevice> Max31856<SPI> {
     }
 }
 
+impl<SPI: SpiDevice> crate::platform::TempSensor for Max31856<SPI> {
+    type Error = Error<SPI::Error>;
+
+    fn has_fault(&mut self) -> Result<bool, Self::Error> {
+        Ok(self.faults()?.any())
+    }
+
+    fn read_temperature(&mut self) -> Result<f32, Self::Error> {
+        Max31856::read_temperature(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

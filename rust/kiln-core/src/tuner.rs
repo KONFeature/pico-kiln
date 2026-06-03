@@ -343,6 +343,48 @@ impl ZieglerNicholsTuner {
     pub fn total_steps(&self) -> usize {
         self.n_steps
     }
+
+    /// The current step, clamped to the last valid index. After the final step
+    /// completes the reference's `current_step` still points at the last step
+    /// (only `current_step_index` advances past the end), so the snapshot
+    /// accessors below read real step data rather than an unused slot.
+    fn current_step(&self) -> &TuningStep {
+        let idx = if self.current_step_index >= self.n_steps {
+            self.n_steps.saturating_sub(1)
+        } else {
+            self.current_step_index
+        };
+        &self.steps[idx]
+    }
+
+    /// Seconds elapsed in the current step (`now − start`, or `0` before it
+    /// starts) — the reference's merged `elapsed` in `get_status`.
+    pub fn step_elapsed(&self, now: f64) -> f64 {
+        match self.current_step().start_time {
+            Some(t) => now - t,
+            None => 0.0,
+        }
+    }
+    /// The current step's fixed SSR output (%).
+    pub fn step_ssr_percent(&self) -> f64 {
+        self.current_step().ssr_percent
+    }
+    /// The current step's temperature target, if any.
+    pub fn step_target_temp(&self) -> Option<f64> {
+        self.current_step().target_temp
+    }
+    /// The current step's timeout (seconds).
+    pub fn step_timeout(&self) -> f64 {
+        self.current_step().timeout
+    }
+    /// Whether the current step has detected a plateau.
+    pub fn step_plateau_detected(&self) -> bool {
+        self.current_step().plateau_detected
+    }
+    /// Peak temperature seen during the current step (°C).
+    pub fn step_peak_temp(&self) -> f64 {
+        self.current_step().peak_temp
+    }
 }
 
 #[cfg(test)]
@@ -399,6 +441,24 @@ mod tests {
         assert_eq!(ssr, 60.0); // SAFE step 0 is 60%
         assert!(cont);
         assert_eq!(t.current_step_index(), 0);
+    }
+
+    #[test]
+    fn accessors_expose_current_step_snapshot_fields() {
+        let mut t = ZieglerNicholsTuner::new(TuningMode::Safe, None);
+        t.start(0.0);
+        assert_eq!(t.step_elapsed(0.0), 0.0);
+
+        t.update(20.0, 1.0);
+        assert_eq!(t.step_ssr_percent(), 60.0);
+        assert_eq!(t.step_target_temp(), Some(100.0));
+        assert_eq!(t.step_timeout(), 2400.0);
+        assert!(!t.step_plateau_detected());
+        assert_eq!(t.step_peak_temp(), 20.0);
+        assert_eq!(t.step_elapsed(6.0), 5.0);
+
+        t.update(35.0, 7.0);
+        assert_eq!(t.step_peak_temp(), 35.0);
     }
 
     #[test]

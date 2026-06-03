@@ -26,7 +26,9 @@ pub mod tuner;
 pub use gain_schedule::{GainSchedule, Gains};
 pub use pid::{Pid, PidStats};
 pub use profile::{Profile, ProfileError, Step, StepKind};
-pub use protocol::{Command, ProfileName, ProtocolError, Status};
+pub use protocol::{
+    Command, ProfileName, ProtocolError, ScheduledSnapshot, Status, TuningSnapshot,
+};
 pub use rate_monitor::TempHistory;
 pub use recovery::{check_recovery, LastLogEntry, RecoveryDecision, RecoveryReason};
 pub use scheduler::{ScheduleError, ScheduledProfileQueue};

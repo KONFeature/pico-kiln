@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["kiln-core", "kiln-hal"]
+members = ["kiln-core", "kiln-hal", "kiln-control", "kiln-app", "kiln-sim"]
+# Excluded (not a member): RP2350-only binary; would break host `cargo test`.
+exclude = ["kiln-firmware"]
 
 # Standalone Rust workspace for the kiln-controller port.
 # Lives under rust/ so it never collides with the MicroPython deploy paths

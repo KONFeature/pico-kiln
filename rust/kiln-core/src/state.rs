@@ -60,6 +60,13 @@ pub enum KilnError {
     MaxTempExceeded { temp: f64, max: f64 },
     NoActiveProfile,
     Stall { actual_rate: f64, min_rate: f64 },
+    /// Emergency shutdown: too many consecutive sensor faults
+    /// (`temp_filter::TempError::EmergencyShutdown`). Mirrors the reference's
+    /// control-loop `except` path raising out of `TemperatureSensor.read()`.
+    SensorFault,
+    /// A sensor fault arrived before any valid reading
+    /// (`temp_filter::TempError::NotInitialized`).
+    SensorNotInitialized,
 }
 
 /// Safety/rate-control parameters (from `config.py`, with the same defaults as
@@ -155,6 +162,20 @@ impl KilnController {
 
     pub fn current_step_index(&self) -> usize {
         self.current_step_index
+    }
+    /// Accumulated elapsed run time (seconds). Already advanced by
+    /// [`update`](Self::update) each tick, so reading it for a status snapshot is
+    /// idempotent (unlike re-calling the reference's `get_elapsed_time`).
+    pub fn elapsed(&self) -> f64 {
+        self.elapsed_offset
+    }
+    /// Elapsed time at which the current step began (seconds).
+    pub fn step_start_time(&self) -> f64 {
+        self.step_start_time
+    }
+    /// The active firing profile, if any (for status: step count/kind/rate).
+    pub fn active_profile(&self) -> Option<&Profile> {
+        self.profile.as_ref()
     }
     pub fn is_recovering(&self) -> bool {
         self.recovery_target_temp.is_some()

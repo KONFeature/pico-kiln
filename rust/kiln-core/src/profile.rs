@@ -112,7 +112,7 @@ pub enum ProfileError {
 }
 
 /// A firing profile: an ordered list of steps and its estimated duration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Profile {
     steps: [Step; MAX_STEPS],
     n_steps: usize,
