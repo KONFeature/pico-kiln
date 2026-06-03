@@ -4,21 +4,25 @@
 **Branch:** `feat/rust-kiln-core`
 **Scope:** every stub / `unimplemented!()` / inert body remaining in the Rust port.
 
-> **Update 2026-06-03 — Group B (flash storage) is DONE.** `FlashStorage` is now
-> a real littlefs2 mount over the reserved top 1.5 MiB of flash (config +
-> profiles + logs), cross-compiles clean for `thumbv8m`, and is clippy-clean. The
-> ARM toolchain blocker is resolved (see Storage plan). **Group C (safety
-> register pokes) is also DONE** (`raw_ssr_off` / `raw_watchdog_feed`,
-> disassembly-verified RAM-resident). Groups **A, D, E** remain.
+> **Update 2026-06-03 — ALL GROUPS DONE.** Every stub in this inventory is now
+> implemented and cross-compiles clean (zero warnings) for `thumbv8m`,
+> clippy-clean; the host workspace still passes 172 tests. Done this pass:
+> **A1** `build_kiln_io` (+ a real SPI1→SPI0 wiring-bug fix), **A2**
+> `init_network` (full cyw43 bring-up, blobs vendored), **D1**
+> `wifi_monitor_task`, **D2** `ntp_task` (sntpc over UDP), **E** the LCD
+> (1602 driver + manager + task). Groups **B** (flash storage) and **C**
+> (safety pokes) were done earlier. There are **no `unimplemented!()` left in
+> the firmware.** What remains is device-on-hardware validation, not code.
 
 ## TL;DR
 
-All missing code lives in **one crate: `kiln-firmware`** (`src/platform.rs` +
-`src/main.rs`). The logic crates (`kiln-core`, `kiln-control`, `kiln-app`,
-`kiln-hal`) are complete and host-tested — `grep` for `unimplemented!`/`todo!`
-finds nothing in them. What remains is **device-I/O wiring**, not business logic:
-the sensor/SSR builder, cyw43/WiFi/NTP bring-up, and the LCD. (Flash storage —
-Group B — and the safety pokes — Group C — are now implemented.)
+All code in this inventory lived in **one crate: `kiln-firmware`**
+(`src/platform.rs` + `src/main.rs`, plus the new `src/lcd.rs`). The logic crates
+(`kiln-core`, `kiln-control`, `kiln-app`, `kiln-hal`) were already complete and
+host-tested. As of this pass the firmware is **fully implemented** — `grep` for
+`unimplemented!`/`todo!` finds nothing anywhere in `rust/`. The device-I/O wiring
+(sensor/SSR builder, cyw43/WiFi/NTP bring-up, LCD) is done; what is left is
+on-hardware validation (the parts marked `DEVICE`, only checkable on a Pico 2 W).
 
 The `kiln-app` web/CSV/recovery/config consumers are all written against the
 `Storage` / `Clock` / `Display` traits (`kiln-app/src/server.rs:54-117`), so each
@@ -27,15 +31,12 @@ now-complete `FlashStorage` (Group B) did.
 
 ---
 
-## Group A — hard `unimplemented!()` (panics at runtime)
+## Group A — hard `unimplemented!()` ✅ DONE
 
-| # | Symbol | Location | What it must do | Python source |
-|---|---|---|---|---|
-| A1 | `build_kiln_io()` | `platform.rs:144` | Construct SPI1 + CS + `Max31856` + `Ssr` pin(s) + `MaybeWatchdog` from `Core1Periphs` + cfg. Sequence: `init()` → `set_averaging()` → `set_noise_filter()` → **`start_autoconverting()`** (mandatory — without it the sensor reads a constant 0 °C). | `hardware.py:69-84` (`TemperatureSensor.__init__`) + `hardware.py:223-256` (`SSRController.__init__`) |
-| A2 | `init_network()` | `platform.rs:618` | cyw43 firmware-blob load + PIO SPI + `embassy_net::Stack` + DHCP + `join_wpa2` retry loop. | `wifi_manager.py:68-137` (`connect`) |
-
-These two **panic the firmware** the moment Core 1 / Core 0 reach them. Nothing
-boots without them.
+| # | Symbol | Implementation |
+|---|---|---|
+| A1 | `build_kiln_io()` | Blocking **SPI0** (not SPI1 — the old wiring named `p.SPI1`, but pins 18/19/16 are SPI0 functions and Python uses `MAX31856_SPI_ID = 0`; fixed) + `ExclusiveDevice` CS → `Max31856` with `init` → `set_averaging` → `set_noise_filter` → **`start_autoconverting`** (mandatory), `Ssr` on PIN_15, `MaybeWatchdog` per `ENABLE_WATCHDOG`. The `DeviceSpi`/`DevicePin` placeholder enums became concrete type aliases. |
+| A2 | `init_network()` | Full cyw43 0.7 bring-up: vendored firmware blobs (`cyw43-firmware/`, Permissive Binary License) via `aligned_bytes!`, PIO0 SPI (`RM2_CLOCK_DIVIDER`) + one DMA channel, `cyw43::new` (5-arg, with nvram), `cyw43_task`/`net_task` spawned, `control.init`/PowerSave, embassy-net DHCP stack (ROSC-seeded), join in a 2 s-backoff retry loop, `wait_config_up`. Returns `(Stack, Control)`. |
 
 ## Group B — `FlashStorage` flash filesystem ✅ DONE
 
@@ -67,21 +68,21 @@ the `write_volatile`s inline, so each function is a self-contained register poke
 with XIP down (C2 during the flash-park, C1 from the panic handler). Needed a new
 `rp-pac` direct dep: embassy-rp's `pac` re-export is `pub(crate)`.
 
-## Group D — stub task bodies (loop, but do no work)
+## Group D — stub task bodies ✅ DONE
 
-| # | Task | Location | Missing vs Python |
-|---|---|---|---|
-| D1 | `wifi_monitor_task` | `platform.rs:632` | Just a `Timer`. No link-status check / disconnect→wait 2 s→re-join. `wifi_manager.py:139-188` (`monitor`) |
-| D2 | `ntp_task` | `platform.rs:780` | Just `Timer(3600 s)`. No `sntpc` UDP exchange → `set_unix_ms` never called → wall clock never syncs → CSV/recovery timestamps stay 0. `wifi_manager.py:42-66` (`sync_time_ntp`) |
+| # | Task | Implementation |
+|---|---|---|
+| D1 | `wifi_monitor_task` | Parks on the embassy-net link (`wait_link_up`/`wait_link_down`), re-joins with a 2 s backoff on a hard failure, waits for DHCP — `wifi_manager.monitor`'s explicit reconnect that cyw43's drop-only auto-reconnect doesn't cover. Takes the `Control` handle threaded from `init_network`. |
+| D2 | `ntp_task` | `sntpc` over an embassy-net UDP socket (added the embassy-net `dns` feature): resolve `pool.ntp.org` (Cloudflare anycast fallback), 10 s-bounded `get_time`, convert NTP→Unix (−2208988800), `NtpClock::set_unix_ms` — unblocking CSV/recovery timestamps. Hourly re-sync, 60 s retry until the first sync. Custom `NtpUdpSocket`/`NtpTimestampGenerator` adapters bridge the proto-ipv4-only smoltcp conversions. |
 
-## Group E — LCD entirely unported (optional / deferred, audit U9)
+## Group E — LCD ✅ DONE
 
-| Missing piece | Location / source |
+| Piece | Implementation |
 |---|---|
-| `LcdDisplay::show()` empty stub | `platform.rs:589` |
-| HD44780/PCF8574 4-bit I²C driver | `lib/lcd1602_i2c.py` (whole file) |
-| Manager loop: 2-line format, 5 s cadence, 300 s periodic HW reset, consecutive-error backoff + auto-disable, I²C scan, 500 ms init timeout | `server/lcd_manager.py` (whole file) |
-| `lcd_task` not spawned | `main.rs:312-314` `TODO(LCD)` |
+| HD44780/PCF8574 4-bit I²C driver | `src/lcd.rs` — `Lcd1602<I>` generic over `embedded_hal::i2c::I2c`, port of `lib/lcd1602_i2c.py`. |
+| `LcdDisplay::show()` + manager | `platform.rs` — implements the kiln-app `Display` trait; since `lcd_task` only calls `show()` per status change, the `lcd_manager.py` logic (5 s render throttle, 300 s periodic reset, disable-after-3-errors) lives in `show()`. Exact 2-line layout; state label reuses the web/CSV-canonical strings. |
+| I²C build + presence check | `init_display` builds blocking I²C0 (SDA=PIN_20/SCL=PIN_21) and runs power-on init; a NACK (no backpack) → `None`, kiln runs headless. |
+| `lcd_task` spawned | `main.rs` — new `LcdPeriphs`; `core0_main` spawns kiln-app's `lcd_task` when `LCD_ENABLED` and the device is present. |
 
 ---
 
@@ -116,10 +117,14 @@ at it via `CC_thumbv8m_main_none_eabihf` if it is not first on PATH. See
 
 ---
 
-## Priority order (remaining)
+## Status — all complete
 
-1. **A1 `build_kiln_io`** — nothing reads temperature without it (drivers already done in `kiln-hal`).
-2. **A2 `init_network`** + **D2 `ntp_task`** + **D1 `wifi_monitor_task`** — network reachability + timestamps.
-3. **E LCD** — optional, last.
+~~A1 `build_kiln_io`~~ ✅ · ~~A2 `init_network`~~ ✅ · ~~B flash storage~~ ✅ ·
+~~C1/C2 safety pokes~~ ✅ · ~~D1 `wifi_monitor_task`~~ ✅ · ~~D2 `ntp_task`~~ ✅ ·
+~~E LCD~~ ✅
 
-~~B (flash storage)~~ — ✅ done. ~~C1 + C2 (safety pokes)~~ — ✅ done.
+The firmware has **no `unimplemented!()` / `todo!()` left**. The remaining
+caveat is unchanged from the start: the `DEVICE`-marked driver bodies
+(cyw43/SPI/I²C register traffic, the sntpc exchange) compile and are
+type-checked but can only be *behaviourally* validated on a physical Pico 2 W
+with the sensor/SSR/LCD wired — there is no host emulation for them.
