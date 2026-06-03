@@ -76,7 +76,7 @@ plus an SSR-off-on-drop guard in `kiln-hal` ensure a fault de-energises the kiln
 
 ## 3. Crate-by-crate, with Python sources
 
-### `kiln-core` — the brain (status: 10/11 modules done)
+### `kiln-core` — the brain (status: 11/11 modules done ✅)
 
 Pure logic, `#![no_std]`, zero deps, time injected as `now: f64` / `now_ms: u64`,
 no strings (errors are typed enums). Already ported and equivalence-tested:
@@ -93,13 +93,15 @@ no strings (errors are typed enums). Already ported and equivalence-tested:
 | `ssr_schedule` ✅ | `kiln/hardware.py:209-318` | time-proportional duty calc, mid-cycle duty **lock**, `MIN_SSR_OUTPUT` floor, single-cycle advance (everything in `SSRController` except `pin.value()`); time injected as `now_ms` |
 | `gain_schedule` ✅ | `kiln/control_thread.py:132-160,585-606` | continuous gain scaling `g(T) = 1 + h·(T − T_ambient)`, `h<0`→disabled validation, + change-threshold gate (`Some(Gains)` exactly when the reference calls `pid.set_gains`) |
 | `protocol` ✅ | `kiln/comms.py:191-506` | `MessageType` + `CommandMessage` → `enum Command` (tags 1..=10 preserved); `StatusMessage` templates → `Copy struct Status` (typed `KilnState`/`KilnError`/`StepKind`, no dicts, no heap strings; filenames in a bounded `ProfileName`) |
+| `recovery` ✅ | `server/recovery.py:156-241` | `check_recovery` decision (`LastLogEntry` → `RecoveryDecision`/`RecoveryReason`): was the last logged state RUNNING + is the current temp within delta, with the resume params echoed through; operates on already-parsed values |
 
-Still to extract — pure logic currently tangled with I/O in the Python, and
-belongs in core, not the HAL:
+Every decision module is now extracted — the only recovery code left in the
+Python is genuine I/O (find the most recent log, read its last line, split the
+columns), which belongs in `kiln-app`, not core:
 
-| Rust module (planned) | Python source | What moves |
-|-----------------------|---------------|-----------|
-| `recovery` (decision) | `server/recovery.py:131-243` | `RecoveryInfo` / `check_recovery` math: is a resume warranted, at what step/elapsed (operates on already-parsed values) |
+| Stays in `kiln-app` | Python source | Why |
+|---------------------|---------------|-----|
+| recovery I/O | `server/recovery.py` `_find_most_recent_log` / `_parse_last_log_entry` (244-355) | filesystem scan + CSV parse; feeds the parsed `LastLogEntry` into `kiln-core::recovery::check_recovery` |
 
 ### `kiln-hal` — the hands (status: `max31856` + `ssr` built; `lcd` planned)
 
@@ -243,9 +245,8 @@ covered transitively (it's mostly `kiln-core` calls) and end-to-end by
 
 ## 8. Status & roadmap
 
-- ✅ `kiln-core`: 10 modules ported, 54 unit + 11 replay tests green.
+- ✅ `kiln-core`: **all 11 decision modules ported**, 60 unit + 12 replay tests green.
 - ✅ `kiln-hal`: `max31856` + `ssr` drivers over `embedded-hal`, 12 tests green.
-- ⏭ `kiln-core`: extract `recovery` (the last decision module).
 - ⏭ `kiln-control` + `kiln-app`: embassy tasks; `kiln-firmware` shim.
 - ⏭ `kiln-sim`: optional host thermal-model harness.
 

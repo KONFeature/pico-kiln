@@ -25,13 +25,16 @@ equivalence-tested:
 | `ssr_schedule` | `kiln/hardware.py` — time-proportional SSR duty: min on-time floor, mid-cycle duty lock, single-cycle advance (the decision half of `SSRController`) | golden replay (floor / lock / on-off / fall-behind / force-off) |
 | `gain_schedule` | `kiln/control_thread.py` — continuous gain scaling `g(T)=1+h·(T−T_ambient)` + change-threshold gate | unit tests |
 | `protocol` | `kiln/comms.py` — `MessageType`/`CommandMessage` → `enum Command`, `StatusMessage` → typed `Status` | unit tests |
+| `recovery` | `server/recovery.py` — crash-recovery decision: was the last logged state RUNNING + is the current temp within delta (the sans-I/O half of `check_recovery`) | golden replay (recover / not-running / deviation) |
 
 The concurrency layer (`comms.py` queues, `_thread`) is intentionally **not**
 here — it maps to `embassy-sync` channels in the firmware crate. Only the message
 *shapes* live here as `protocol`. The chip-side filtering (continuous conversion,
 hardware averaging, mains notch) lives in `kiln-hal`; `temp_filter` is only the
 spike-rejection + fault logic that wraps it, and `ssr_schedule` is the duty
-decision that `kiln-hal::ssr` actuates.
+decision that `kiln-hal::ssr` actuates. Likewise `recovery` is only the *decision*
+(`check_recovery`'s body); finding the most recent log, reading its last line, and
+parsing the columns stay in `kiln-app`.
 
 ## Test it
 
@@ -40,7 +43,7 @@ cd rust
 cargo test -p kiln-core
 ```
 
-54 unit tests plus 11 golden-replay tests. Each `replay_*.rs` feeds inputs
+60 unit tests plus 12 golden-replay tests. Each `replay_*.rs` feeds inputs
 captured from the **real** MicroPython module back through the Rust port and
 asserts the outputs match within a tight tolerance. For example `replay_pid.rs`
 replays `tests/fixtures/pid_golden.csv` — 240 samples spanning ramp / hold /
@@ -69,6 +72,7 @@ python3 rust/kiln-core/tools/gen_state_golden.py
 python3 rust/kiln-core/tools/gen_tuner_golden.py
 python3 rust/kiln-core/tools/gen_temp_filter_golden.py
 python3 rust/kiln-core/tools/gen_ssr_schedule_golden.py
+python3 rust/kiln-core/tools/gen_recovery_golden.py
 ```
 
 (`gain_schedule` and `protocol` are pure formula / data-shape ports with no

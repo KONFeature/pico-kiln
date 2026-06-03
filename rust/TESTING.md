@@ -4,11 +4,11 @@ This document explains how to build, test, cross-compile, and (re)validate the
 Rust control-logic crate against the original MicroPython implementation.
 
 > **Current status (verified):** `kiln-core` compiles `no_std` for the RP2350
-> (`thumbv8m.main-none-eabihf`) and the full test suite is **green — 65/65**
-> (54 unit tests + 11 reference-replay tests) across all ten ported modules:
+> (`thumbv8m.main-none-eabihf`) and the full test suite is **green — 72/72**
+> (60 unit tests + 12 reference-replay tests) across all eleven ported modules:
 > `pid`, `rate_monitor`, `scheduler`, `profile`, `state`, `tuner`, `temp_filter`,
-> `ssr_schedule`, `gain_schedule`, `protocol`. The sibling `kiln-hal` crate
-> (MAX31856 + SSR drivers) adds 12 driver tests. See
+> `ssr_schedule`, `gain_schedule`, `protocol`, `recovery`. The sibling `kiln-hal`
+> crate (MAX31856 + SSR drivers) adds 12 driver tests. See
 > [Results](#results-snapshot).
 
 ---
@@ -221,7 +221,8 @@ rust/
     │   ├── temp_filter.rs
     │   ├── ssr_schedule.rs
     │   ├── gain_schedule.rs        # unit-tested (pure formula, no golden trace)
-    │   └── protocol.rs             # unit-tested (data-shape port, no golden trace)
+    │   ├── protocol.rs             # unit-tested (data-shape port, no golden trace)
+    │   └── recovery.rs
     ├── tests/
     │   ├── replay_pid.rs           # equivalence tests (replay fixtures)
     │   ├── replay_rate.rs
@@ -230,6 +231,7 @@ rust/
     │   ├── replay_tuner.rs         # safe / standard / error scenarios
     │   ├── replay_temp_filter.rs   # init / spike / faults / shutdown scenarios
     │   ├── replay_ssr_schedule.rs  # floor / lock / on-off / fall-behind / force-off
+    │   ├── replay_recovery.rs      # recover / not-running / temp-deviation scenarios
     │   └── fixtures/               # *_golden.csv generated from kiln/*.py
     └── tools/
         └── gen_*_golden.py         # fixture generators (import the real modules)
@@ -256,6 +258,9 @@ All hardware-free modules are ported and equivalence-tested:
    change-threshold gate (unit-tested: pure formula, inline in the control loop)
 10. ✅ `protocol` (`kiln/comms.py`) — `Command`/`Status` typed message shapes
     (unit-tested: data-shape port, no numeric trace)
+11. ✅ `recovery` (`server/recovery.py`) — crash-recovery decision: was the last
+    logged state RUNNING + is the current temp within delta (golden replay; the
+    log-finding/CSV-parsing I/O stays in `kiln-app`)
 
 What's intentionally **not** in `kiln-core`: the concurrency *primitives* of
 `comms.py` (the queues, `_thread`) — only their message *shapes* port, to
@@ -284,12 +289,12 @@ the single biggest risk-reducer for a fire-capable controller.
 Produced with the §5 recipe (this environment has no system linker):
 
 ```
-running 54 tests        # src/lib.rs unit tests
+running 60 tests        # src/lib.rs unit tests
 ... pid::tests (6) ... rate_monitor::tests (4) ... scheduler::tests (5) ...
 ... profile::tests (5) ... state::tests (5) ... tuner::tests (5) ...
 ... temp_filter::tests (6) ... ssr_schedule::tests (6) ...
-... gain_schedule::tests (6) ... protocol::tests (6) ...
-test result: ok. 54 passed; 0 failed; ...
+... gain_schedule::tests (6) ... protocol::tests (6) ... recovery::tests (6) ...
+test result: ok. 60 passed; 0 failed; ...
 
    Running tests/replay_pid.rs          test result: ok. 1 passed; ...
    Running tests/replay_rate.rs         test result: ok. 1 passed; ...
@@ -298,9 +303,10 @@ test result: ok. 54 passed; 0 failed; ...
    Running tests/replay_state.rs        test result: ok. 3 passed; ...  # run/stall/recovery
    Running tests/replay_tuner.rs        test result: ok. 3 passed; ...  # safe/standard/error
    Running tests/replay_temp_filter.rs  test result: ok. 1 passed; ...  # init/spike/faults/shutdown
+   Running tests/replay_recovery.rs     test result: ok. 1 passed; ...  # recover/not-running/temp-deviation
 ```
 
-Total (kiln-core): 54 unit + 11 replay = 65 tests green. `kiln-hal` adds 12.
+Total (kiln-core): 60 unit + 12 replay = 72 tests green. `kiln-hal` adds 12.
 
 Cross-compile for RP2350:
 
