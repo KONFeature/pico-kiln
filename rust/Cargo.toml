@@ -6,10 +6,13 @@ members = ["kiln-core"]
 # Lives under rust/ so it never collides with the MicroPython deploy paths
 # (deploy.sh only ships kiln/, server/, lib/, static/, *.py).
 #
-# Roadmap:
-#   kiln-core  — hardware-free control logic (this crate; host-testable)
-#   kiln-hal   — embedded-hal device drivers (MAX31856, SSR, LCD)   [later]
-#   firmware   — embassy app wiring it together on the RP2350        [later]
+# Crate plan (see ARCHITECTURE.md for the full design + Python mapping):
+#   kiln-core     — hardware-free control logic + protocol types (host-testable)  ✅
+#   kiln-hal      — embedded-hal device drivers (MAX31856, SSR, LCD)              [next]
+#   kiln-control  — Core 1 real-time safety loop (embassy task)                   [later]
+#   kiln-app      — Core 2 networking / web / logging / LCD (embassy tasks)       [later]
+#   kiln-firmware — binary shim: init, split peripherals, dispatch the two cores  [later]
+#   kiln-sim      — optional std host harness: core logic vs a thermal model      [optional]
 
 [profile.release]
 opt-level = "z"     # optimise for size first (flash-constrained target)
