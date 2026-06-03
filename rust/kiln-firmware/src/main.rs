@@ -302,7 +302,9 @@ async fn core0_main(
     // embassy-executor 0.10: `#[task]` fns return `Result<SpawnToken, _>` and
     // `Spawner::spawn` returns `()`, so each token is unwrapped before spawning.
     for id in 0..kiln_app::server::WEB_TASK_POOL_SIZE {
-        spawner.spawn(kiln_app::server::web_task(id, stack, app, web_cfg).unwrap());
+        spawner.spawn(
+            kiln_app::server::web_task(id, stack, app, web_cfg, config.web_server_port).unwrap(),
+        );
     }
     spawner.spawn(
         kiln_app::server::csv_logger_task(status, storage, clock, config, recovery).unwrap(),

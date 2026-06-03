@@ -494,10 +494,11 @@ pub async fn attempt_recovery(state: &AppState) -> Option<kiln_app::server::Reco
     }
     let mut pbuf = [0u8; 8192];
     state.storage.size(Directory::Profiles, &fname)?;
-    let pn = state
-        .storage
-        .read_chunk(Directory::Profiles, &fname, 0, &mut pbuf)
-        .ok()?;
+    // Same transient-glitch retry as the run/schedule load path
+    // (control_thread.load_profile_with_retry): 3 attempts, 0.5 s/1.0 s backoff.
+    let pn =
+        kiln_app::server::read_file_with_retry(state.storage, Directory::Profiles, &fname, &mut pbuf)
+            .await?;
     let ptext = core::str::from_utf8(&pbuf[..pn]).ok()?;
     let parsed = kiln_app::profile_json::parse_profile(ptext).ok()?;
     let profile = ProfileName::new(&fname).ok()?;

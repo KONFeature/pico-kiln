@@ -144,6 +144,33 @@ impl AppState {
     }
 }
 
+/// Read `dir/name` whole into `buf` with the reference's transient-glitch retry
+/// (`control_thread.load_profile_with_retry`: 3 attempts, 0.5 s/1.0 s backoff),
+/// returning the byte count. `None` only if every attempt failed — a single
+/// flash read glitch no longer aborts a run/recovery. The caller checks
+/// existence first, so a genuinely-absent file is a fast 404, not 3 retries.
+pub async fn read_file_with_retry(
+    storage: &dyn Storage,
+    dir: Directory,
+    name: &str,
+    buf: &mut [u8],
+) -> Option<usize> {
+    const MAX_ATTEMPTS: u32 = 3;
+    for attempt in 0..MAX_ATTEMPTS {
+        if let Ok(n) = storage.read_chunk(dir, name, 0, buf) {
+            return Some(n);
+        }
+        if attempt + 1 < MAX_ATTEMPTS {
+            // Exponential backoff: 0.5 s, then 1.0 s (`0.5 * (attempt + 1)`).
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(
+                500 * (attempt as u64 + 1),
+            ))
+            .await;
+        }
+    }
+    None
+}
+
 // === Tasks ==================================================================
 
 /// A crash-recovery resume hand-off for the CSV logger: the *existing* log file
@@ -210,15 +237,27 @@ pub async fn csv_logger_task(
                     logging = true;
                     last_log = 0;
                 }
-            } else if let Some(name) = s.profile_name {
-                filename.clear();
-                let _ = csv::write_log_filename(&mut filename, name.as_str(), now);
-                if storage
-                    .append(Directory::Logs, &filename, csv::HEADER.as_bytes(), true)
-                    .is_ok()
-                {
-                    logging = true;
-                    last_log = 0;
+            } else {
+                // Pick the log stem: a fixed "tuning" while TUNING (the
+                // controller sets no profile_name then, so a profile-only branch
+                // would log nothing and `analyze_tuning.py` would have no data),
+                // else the running profile's filename. Mirrors
+                // `data_logger.on_status_update`'s two start-logging branches.
+                let stem = if s.state == KilnState::Tuning {
+                    Some("tuning")
+                } else {
+                    s.profile_name.as_ref().map(|n| n.as_str())
+                };
+                if let Some(stem) = stem {
+                    filename.clear();
+                    let _ = csv::write_log_filename(&mut filename, stem, now);
+                    if storage
+                        .append(Directory::Logs, &filename, csv::HEADER.as_bytes(), true)
+                        .is_ok()
+                    {
+                        logging = true;
+                        last_log = 0;
+                    }
                 }
             }
         }
@@ -320,30 +359,46 @@ mod web {
                 )
                 .route(
                     "/api/stop",
-                    post(|s: State<AppState>| async move { enqueue(&s.0, Command::Stop) })
-                        .options(cors_preflight),
+                    post(|s: State<AppState>| async move {
+                        enqueue(&s.0, Command::Stop, "Profile stopped")
+                    })
+                    .options(cors_preflight),
                 )
                 .route(
                     "/api/clear-error",
-                    post(|s: State<AppState>| async move { enqueue(&s.0, Command::ClearError) })
-                        .options(cors_preflight),
+                    post(|s: State<AppState>| async move {
+                        enqueue(&s.0, Command::ClearError, "Error cleared, returned to idle")
+                    })
+                    .options(cors_preflight),
                 )
                 .route(
                     "/api/shutdown",
-                    post(|s: State<AppState>| async move { enqueue(&s.0, Command::Shutdown) })
-                        .options(cors_preflight),
+                    post(|s: State<AppState>| async move {
+                        enqueue(
+                            &s.0,
+                            Command::Shutdown,
+                            "System shutdown: SSR off, program stopped",
+                        )
+                    })
+                    .options(cors_preflight),
                 )
                 .route(
                     "/api/scheduled/cancel",
-                    post(
-                        |s: State<AppState>| async move { enqueue(&s.0, Command::CancelScheduled) },
-                    )
+                    post(|s: State<AppState>| async move {
+                        enqueue(
+                            &s.0,
+                            Command::CancelScheduled,
+                            "Cancelled scheduled profile",
+                        )
+                    })
                     .options(cors_preflight),
                 )
                 .route(
                     "/api/tuning/stop",
-                    post(|s: State<AppState>| async move { enqueue(&s.0, Command::StopTuning) })
-                        .options(cors_preflight),
+                    post(|s: State<AppState>| async move {
+                        enqueue(&s.0, Command::StopTuning, "Tuning stopped")
+                    })
+                    .options(cors_preflight),
                 )
                 .route("/api/reboot", post(reboot).options(cors_preflight))
                 .route(
@@ -415,11 +470,16 @@ mod web {
         ApiResponse::json(StatusCode::OK, body)
     }
 
-    /// Enqueue a typed command, returning the reference's `{"success": …}`
-    /// envelope (200, or 500 when the queue is full) — `_send_command`.
-    fn enqueue(state: &AppState, cmd: Command) -> ApiResponse {
+    /// Enqueue a typed command, returning the reference's
+    /// `{"success":true,"message":"…"}` envelope (200), or the static
+    /// queue-full 500 — `_send_command`. The per-command `ok_message` matches
+    /// the reference's `_send_command(... ok_message ...)` text so the web app's
+    /// success toast reads identically.
+    fn enqueue(state: &AppState, cmd: Command, ok_message: &str) -> ApiResponse {
         if state.commands.try_send(cmd).is_ok() {
-            ApiResponse::static_json(StatusCode::OK, "{\"success\":true}")
+            let mut body = heapless::String::<2048>::new();
+            let _ = write!(body, "{{\"success\":true,\"message\":\"{}\"}}", ok_message);
+            ApiResponse::json(StatusCode::OK, body)
         } else {
             ApiResponse::static_json(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -469,8 +529,12 @@ mod web {
             Some(n) if !n.is_empty() => n,
             _ => return ApiResponse::error(StatusCode::BAD_REQUEST, "Profile name required"),
         };
-        match load_profile(&state, name) {
-            Ok((profile, parsed)) => enqueue(&state, Command::RunProfile { profile, parsed }),
+        match load_profile(&state, name).await {
+            Ok((profile, parsed)) => {
+                let mut msg = heapless::String::<96>::new();
+                let _ = write!(msg, "Started profile: {}", name);
+                enqueue(&state, Command::RunProfile { profile, parsed }, &msg)
+            }
             Err(resp) => resp,
         }
     }
@@ -485,23 +549,27 @@ mod web {
         if !api::start_time_in_future(start, state.now() as f64) {
             return ApiResponse::error(StatusCode::BAD_REQUEST, "start_time must be in the future");
         }
-        match load_profile(&state, name) {
-            Ok((profile, parsed)) => enqueue(
-                &state,
-                Command::ScheduleProfile {
-                    profile,
-                    parsed,
-                    start_time: start as u64,
-                },
-            ),
+        match load_profile(&state, name).await {
+            Ok((profile, parsed)) => {
+                let mut msg = heapless::String::<96>::new();
+                let _ = write!(msg, "Scheduled profile: {}", name);
+                enqueue(
+                    &state,
+                    Command::ScheduleProfile {
+                        profile,
+                        parsed,
+                        start_time: start as u64,
+                    },
+                    &msg,
+                )
+            }
             Err(resp) => resp,
         }
     }
 
     async fn tuning_start(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
-        let mode = match api::parse_tuning_mode(
-            api::json_get_str(body.as_str(), "mode").unwrap_or("STANDARD"),
-        ) {
+        let mode_str = api::json_get_str(body.as_str(), "mode").unwrap_or("STANDARD");
+        let mode = match api::parse_tuning_mode(mode_str) {
             Some(m) => m,
             None => return ApiResponse::error(StatusCode::BAD_REQUEST, api::INVALID_MODE_MESSAGE),
         };
@@ -509,13 +577,18 @@ mod web {
         if !api::max_temp_valid(max_temp) {
             return ApiResponse::error(StatusCode::BAD_REQUEST, api::MAX_TEMP_RANGE_MESSAGE);
         }
-        enqueue(&state, Command::StartTuning { mode, max_temp })
+        let mut msg = heapless::String::<64>::new();
+        let _ = write!(msg, "Tuning started in {} mode", mode_str);
+        enqueue(&state, Command::StartTuning { mode, max_temp }, &msg)
     }
 
     /// Read `profiles/{name}.json` and parse it (Core 0 owns the FS and ships the
     /// `parsed` profile), reproducing run/schedule's not-found → 404 and
     /// parse-error → 400 paths.
-    fn load_profile(state: &AppState, name: &str) -> Result<(ProfileName, Profile), ApiResponse> {
+    async fn load_profile(
+        state: &AppState,
+        name: &str,
+    ) -> Result<(ProfileName, Profile), ApiResponse> {
         let mut path = heapless::String::<80>::new();
         if write!(path, "{}.json", name).is_err() {
             return Err(ApiResponse::error(
@@ -530,10 +603,11 @@ mod web {
             ));
         }
         let mut buf = [0u8; PROFILE_READ_CAP];
-        let n = state
-            .storage
-            .read_chunk(Directory::Profiles, &path, 0, &mut buf)
-            .map_err(|_| ApiResponse::error(StatusCode::NOT_FOUND, "Profile not found"))?;
+        // The read retries transient flash glitches (load_profile_with_retry);
+        // existence was just checked, so a `None` here is a hard read failure.
+        let n = read_file_with_retry(state.storage, Directory::Profiles, &path, &mut buf)
+            .await
+            .ok_or_else(|| ApiResponse::error(StatusCode::NOT_FOUND, "Profile not found"))?;
         let text = core::str::from_utf8(&buf[..n]).map_err(|_| {
             ApiResponse::error(StatusCode::BAD_REQUEST, "Profile is not valid UTF-8")
         })?;
@@ -638,9 +712,18 @@ mod web {
             }
         };
         match upload.outcome {
-            UploadOutcome::Ok => {
+            UploadOutcome::Ok(written) => {
                 if state.storage.upload_commit(directory, &file).is_ok() {
-                    ApiResponse::static_json(StatusCode::OK, "{\"success\":true}")
+                    // `{success, message, filename, size}` — the reference's
+                    // upload envelope; the web app's ProfileEditor reads
+                    // `filename`/`size` off it.
+                    let mut body = heapless::String::<2048>::new();
+                    let _ = write!(
+                        body,
+                        "{{\"success\":true,\"message\":\"Uploaded {}\",\"filename\":\"{}\",\"size\":{}}}",
+                        file, file, written
+                    );
+                    ApiResponse::json(StatusCode::OK, body)
                 } else {
                     ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to write file")
                 }
@@ -895,13 +978,17 @@ mod web {
                         .write_to(connection, response_writer)
                         .await
                 }
-                // Streamed bodies have a size not worth buffering, so they use a
-                // chunked (`Transfer-Encoding: chunked`) response; the Content-Type
-                // comes from each `Chunks` impl.
+                // A file download has a known size, so it goes out with a real
+                // `Content-Length` (browser progress) and `Content-Disposition:
+                // attachment` (the saved filename) — the reference's headers —
+                // while still streaming the body in 1 KiB chunks. The
+                // Content-Type/Length come from `StorageBody`'s `Content` impl.
                 ApiResponse::Download(d) => {
-                    ChunkedResponse::new(StorageChunks(d))
-                        .into_response()
+                    let mut disposition = heapless::String::<96>::new();
+                    let _ = write!(disposition, "attachment; filename=\"{}\"", d.name);
+                    Response::new(StatusCode::OK, StorageBody(d))
                         .with_headers(CORS)
+                        .with_header("Content-Disposition", disposition)
                         .write_to(connection, response_writer)
                         .await
                 }
@@ -963,20 +1050,25 @@ mod web {
         }
     }
 
-    /// A picoserve chunked body that streams a file from [`Storage`] in 1 KiB
+    /// A sized picoserve body that streams a file from [`Storage`] in 1 KiB
     /// chunks (the reference's `FILE_CHUNK_SIZE`), so peak RAM stays flat
-    /// regardless of file size.
-    struct StorageChunks(Download);
+    /// regardless of file size, while declaring `Content-Length` up front (the
+    /// `size` from the `os.stat` taken in `file_get`).
+    struct StorageBody(Download);
 
-    impl Chunks for StorageChunks {
+    impl Content for StorageBody {
         fn content_type(&self) -> &'static str {
             content_type_for(&self.0.name)
         }
 
-        async fn write_chunks<W: picoserve::io::Write>(
+        fn content_length(&self) -> usize {
+            self.0.size as usize
+        }
+
+        async fn write_content<W: picoserve::io::Write>(
             self,
-            mut chunk_writer: ChunkWriter<W>,
-        ) -> Result<ChunksWritten, W::Error> {
+            mut writer: W,
+        ) -> Result<(), W::Error> {
             let d = self.0;
             let mut offset = 0u64;
             let mut buf = [0u8; api::FILE_CHUNK_SIZE];
@@ -985,10 +1077,10 @@ mod web {
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
-                chunk_writer.write_chunk(&buf[..n]).await?;
+                writer.write_all(&buf[..n]).await?;
                 offset += n as u64;
             }
-            chunk_writer.finalize().await
+            Ok(())
         }
     }
 
@@ -997,16 +1089,40 @@ mod web {
     pub(super) struct JsonBody(pub heapless::Vec<u8, BODY_CAP>);
 
     impl<'r, S> picoserve::extract::FromRequest<'r, S> for JsonBody {
-        type Rejection = core::convert::Infallible;
+        // A 413 on an oversized body, rather than silently truncating it.
+        type Rejection = ApiResponse;
         async fn from_request<R: picoserve::io::Read>(
             _state: &'r S,
             _parts: picoserve::request::RequestParts<'r>,
             request_body: picoserve::request::RequestBody<'r, R>,
         ) -> Result<Self, Self::Rejection> {
+            // Reject an oversized declared body before buffering it — the
+            // reference's `content_length > MAX_JSON_BODY` 413 guard in
+            // `handle_client`. JSON command bodies are tiny; buffering a hostile
+            // Content-Length would risk the heap.
+            if request_body.content_length() > BODY_CAP {
+                return Err(ApiResponse::error_text(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "Body too large",
+                ));
+            }
             let mut v = heapless::Vec::new();
-            if let Ok(bytes) = request_body.read_all().await {
-                let take = bytes.len().min(BODY_CAP);
-                let _ = v.extend_from_slice(&bytes[..take]);
+            match request_body.read_all().await {
+                Ok(bytes) => {
+                    // content_length <= BODY_CAP, so this never clips a valid body.
+                    let take = bytes.len().min(BODY_CAP);
+                    let _ = v.extend_from_slice(&bytes[..take]);
+                }
+                // The body did not fit the request buffer → too large (413). A
+                // short/aborted body (EOF/IO) leaves `v` empty, and the handler
+                // returns 400 on the missing field — matching the reference.
+                Err(picoserve::request::ReadAllBodyError::BufferIsTooSmall { .. }) => {
+                    return Err(ApiResponse::error_text(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "Body too large",
+                    ));
+                }
+                Err(_) => {}
             }
             Ok(JsonBody(v))
         }
@@ -1021,7 +1137,9 @@ mod web {
     /// Outcome of streaming a PUT body to the upload scratch, classified by
     /// [`api::validate_upload_size`] against the `Content-Length`.
     pub(super) enum UploadOutcome {
-        Ok,
+        /// Streamed successfully; carries the number of bytes written (the
+        /// reference's `written`, echoed as `size`).
+        Ok(usize),
         Missing,
         TooLarge,
         Failed,
@@ -1066,14 +1184,16 @@ mod web {
         }
         let mut reader = request_body.reader();
         let mut buf = [0u8; api::FILE_CHUNK_SIZE];
+        let mut written = 0usize;
         loop {
             match reader.read(&mut buf).await {
-                Ok(0) => return UploadOutcome::Ok,
+                Ok(0) => return UploadOutcome::Ok(written),
                 Ok(n) => {
                     if state.storage.upload_write(&buf[..n]).is_err() {
                         state.storage.upload_abort();
                         return UploadOutcome::Failed;
                     }
+                    written += n;
                 }
                 Err(_) => {
                     state.storage.upload_abort();
@@ -1085,21 +1205,26 @@ mod web {
 
     /// The picoserve worker pool. `make_app(state)` bakes the shared state into
     /// the router, which is built once in the firmware and shared `&'static`;
-    /// each worker serves on port 80. picoserve 0.18 replaces the free
-    /// `listen_and_serve_with_state` function with the `Server` builder.
+    /// each worker serves on `port` (the configured `WEB_SERVER_PORT`, default
+    /// 80 — editing it in `config.json` now takes effect). On a single-NIC
+    /// embassy-net stack there is no per-host bind, so `WEB_SERVER_HOST` is
+    /// inherently "all interfaces"; only the port is actionable. picoserve 0.18
+    /// replaces the free `listen_and_serve_with_state` function with the
+    /// `Server` builder.
     #[embassy_executor::task(pool_size = WEB_TASK_POOL_SIZE)]
     pub async fn web_task(
         id: usize,
         stack: embassy_net::Stack<'static>,
         app: &'static AppRouter,
         config: &'static picoserve::Config,
+        port: u16,
     ) -> ! {
         let mut tcp_rx = [0u8; 1024];
         let mut tcp_tx = [0u8; 1024];
         let mut http = [0u8; 2048];
         loop {
             let _ = picoserve::Server::new(app, config, &mut http)
-                .listen_and_serve(id, stack, 80, &mut tcp_rx, &mut tcp_tx)
+                .listen_and_serve(id, stack, port, &mut tcp_rx, &mut tcp_tx)
                 .await;
         }
     }

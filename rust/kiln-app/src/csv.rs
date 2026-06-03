@@ -87,12 +87,20 @@ fn write_total_steps<W: Write>(w: &mut W, total_steps: Option<usize>) -> fmt::Re
 /// Write the log filename `{safe_profile}_{YYYY-MM-DD_HH-MM-SS}.csv` (no
 /// directory prefix). `safe_profile` replaces spaces and `/` with `_`, matching
 /// `start_logging`.
+///
+/// The carried `profile_name` is the profile *filename* (`cone6.json`), so its
+/// `.json` extension is stripped first — otherwise the log stem would be
+/// `cone6.json` and crash recovery (which does `profile_stem` → lowercase →
+/// `+ ".json"`) would look up `profiles/cone6.json.json` and never resume
+/// (`recovery_io::profile_stem`). The reference sidesteps this by logging the
+/// profile's *display name* (`profile.name`), which carries no extension.
 pub fn write_log_filename<W: Write>(
     w: &mut W,
     profile_name: &str,
     unix_seconds: i64,
 ) -> fmt::Result {
-    write_safe_profile(w, profile_name)?;
+    let stem = profile_name.strip_suffix(".json").unwrap_or(profile_name);
+    write_safe_profile(w, stem)?;
     w.write_char('_')?;
     write_filename_stamp(w, unix_seconds)?;
     w.write_str(".csv")
@@ -216,5 +224,29 @@ mod tests {
         let mut out = String::new();
         write_log_filename(&mut out, "glaze cone6/v2", 1_700_000_000).unwrap();
         assert_eq!(out, "glaze_cone6_v2_2023-11-14_22-13-20.csv");
+    }
+
+    #[test]
+    fn filename_strips_json_extension() {
+        // The carried name is the profile *filename*; its `.json` is dropped so
+        // the log stem is the bare profile name.
+        let mut out = String::new();
+        write_log_filename(&mut out, "cone6.json", 1_700_000_000).unwrap();
+        assert_eq!(out, "cone6_2023-11-14_22-13-20.csv");
+    }
+
+    #[test]
+    fn log_stem_round_trips_through_recovery() {
+        // The log filename a run writes must let recovery rebuild the profile
+        // path: write `{profile}.json` → derive the stem → `+ ".json"` and get
+        // back the original filename (the H3/R3 doubled-`.json` regression).
+        use crate::recovery_io::profile_stem;
+        let mut log = String::new();
+        write_log_filename(&mut log, "cone6.json", 1_700_000_000).unwrap();
+        let stem = profile_stem(&log).unwrap();
+        let mut profile_file = String::new();
+        crate::recovery_io::write_lowercase(&mut profile_file, stem).unwrap();
+        profile_file.push_str(".json");
+        assert_eq!(profile_file, "cone6.json");
     }
 }
