@@ -5,9 +5,22 @@
 #
 #     cd kiln-firmware && cargo build --release
 #
+# C TOOLCHAIN: `littlefs2-sys` compiles the bundled C `littlefs`, which needs an
+# `arm-none-eabi` GCC WITH a C library (newlib `stdint.h`/`string.h`). The
+# Homebrew `arm-none-eabi-gcc` formula ships NO libc, so use the ARM toolchain
+# instead (`brew install --cask gcc-arm-embedded`, or unpack its pkg) and point
+# cc-rs at it if it is not first on PATH:
+#
+#     CC_thumbv8m_main_none_eabihf=/path/to/arm-none-eabi-gcc cargo build
+#
+# (or uncomment the [env] block below with an absolute path to that compiler).
+#
 # Flashing/running needs an external tool (probe-rs or picotool); wire a
 # `runner` here once one is available, e.g.:
 #     runner = "probe-rs run --chip RP235x"
+#
+# [env]
+# CC_thumbv8m_main_none_eabihf = "/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/bin/arm-none-eabi-gcc"
 
 [build]
 target = "thumbv8m.main-none-eabihf"

@@ -73,7 +73,7 @@ fn main() -> ! {
     // Config is global, read once at boot from flash — the runtime replacement
     // for the `config.py` the MicroPython build imported. Mount storage and parse
     // `config.json` before the split so both cores share the same `KilnConfig`.
-    let storage = platform::init_storage();
+    let storage = platform::init_storage(p.FLASH);
     let config = platform::load_config(storage);
 
     // Core 1: the control loop, and nothing else. It receives commands and
@@ -102,7 +102,8 @@ fn main() -> ! {
 
     // Core 0: web + logging + recovery + WiFi + NTP + LCD.
     // Core 0's peripherals — disjoint from Core 1's, taken individually (see
-    // `Core0Periphs`). The fixed Pico 2 W cyw43 wiring plus the flash.
+    // `Core0Periphs`). The fixed Pico 2 W cyw43 wiring (the flash went to
+    // `init_storage` above, before the split).
     let core0_periphs = Core0Periphs {
         wl_pwr: p.PIN_23,
         wl_dio: p.PIN_24,
@@ -110,7 +111,6 @@ fn main() -> ! {
         wl_clk: p.PIN_29,
         pio: p.PIO0,
         dma: p.DMA_CH0,
-        flash: p.FLASH,
     };
 
     let executor0 = EXECUTOR0.init(Executor::new());
@@ -214,11 +214,12 @@ async fn control_task(
 /// `Peripherals` cannot be split by storing the whole struct on one side: once
 /// Core 1's fields are moved out, the remainder can no longer be moved or
 /// borrowed wholesale. So Core 0 takes the *specific* peripherals it owns, which
-/// are disjoint from Core 1's. These are the fixed Pico 2 W cyw43 wiring plus the
-/// on-board flash; the LCD I2C is omitted until the LCD driver is ported (U9).
+/// are disjoint from Core 1's. These are the fixed Pico 2 W cyw43 wiring; the
+/// flash went to `init_storage` (before the split) and the LCD I2C is omitted
+/// until the LCD driver is ported (U9).
 ///
-/// The `platform::build_*` builders that consume these are still `unimplemented!`
-/// DEVICE stubs, so the fields are not read yet.
+/// The `platform::init_network` builder that consumes these is still an
+/// `unimplemented!` DEVICE stub, so the fields are not read yet.
 #[allow(dead_code)]
 struct Core0Periphs {
     // cyw43 WiFi: power-on, the PIO-driven SPI (data/cs/clk), the PIO block, and
@@ -229,8 +230,6 @@ struct Core0Periphs {
     wl_clk: Peri<'static, embassy_rp::peripherals::PIN_29>,
     pio: Peri<'static, embassy_rp::peripherals::PIO0>,
     dma: Peri<'static, embassy_rp::peripherals::DMA_CH0>,
-    // Flash filesystem (littlefs): the QSPI flash peripheral.
-    flash: Peri<'static, embassy_rp::peripherals::FLASH>,
 }
 
 /// Core 0 setup task: bring up cyw43 → an `embassy-net` `Stack`, mount flash,

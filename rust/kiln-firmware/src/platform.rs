@@ -242,90 +242,304 @@ impl Clock for NtpClock {
     }
 }
 
-// === Flash filesystem (Oracle Q2) ===========================================
+// === Flash filesystem (littlefs2 over the RP2350 QSPI flash) =================
+//
+// One littlefs2 mount over the reserved top partition holds everything the
+// reference kept on its MicroPython filesystem: `config.json` at the root,
+// `profiles/*.json`, and `logs/*.csv`. The `Storage` trait is synchronous and
+// littlefs2 is blocking C, so each call mounts (`mount_and_then`), runs the op,
+// and unmounts — cheap at our op rate (a log row every >= 10 s; profiles/config
+// rare) and free of any long-lived-handle lifetime juggling.
+//
+// DEVICE-VERIFICATION SURFACE: only `LfsFlash`'s three `blocking_*` calls touch
+// hardware. They run the erase/program from RAM (embassy-rp) and, at runtime,
+// are serialised against Core 1 by the flash handshake (write paths wrap
+// `with_flash_paused`); reads are XIP-safe and skip it. Boot-time mount/format
+// runs before the core split, so Core 1 is not yet alive to need pausing.
 
-/// littlefs over the RP2350 flash. Every flash *write* is wrapped in the
-/// [`flash_handshake`] so Core 1 de-energises the SSR and parks while XIP is
-/// down; reads are plain XIP and need no handshake.
-///
-/// NOTE: the `littlefs2` dependency is currently commented out in `Cargo.toml`
-/// (its `littlefs2-sys` build compiles the bundled C `littlefs`, which needs a
-/// freestanding ARM C toolchain + libc headers this environment lacks). Until
-/// that is restored, every method below is an `unimplemented!()` / error DEVICE
-/// stub and this struct holds no real filesystem handle — re-enable the dep and
-/// fill in the bodies together.
+use core::cell::RefCell;
+
+use embassy_rp::flash::{Blocking, Flash};
+use embassy_rp::peripherals::FLASH;
+use embassy_rp::Peri;
+use littlefs2::fs::Filesystem;
+use littlefs2::io::SeekFrom;
+use littlefs2::path;
+use littlefs2::path::{Path, PathBuf}; // the `path!` macro is exported at the crate root
+
+/// Total QSPI flash on the Pico 2 W (RP2350A) — the bound embassy-rp's `Flash`
+/// validates every access against.
+const FLASH_TOTAL: usize = 4 * 1024 * 1024;
+/// littlefs partition: the top 1536 KiB, above the 2560 KiB the linker may fill
+/// (`memory.x`). Offsets are flash-relative (from 0x1000_0000), as embassy-rp's
+/// `Flash` expects. `FS_BASE` is erase-sector aligned, so every littlefs offset
+/// stays aligned once rebased.
+const FS_BASE: u32 = 0x28_0000; // 2560 KiB
+const FS_SIZE: usize = 0x18_0000; // 1536 KiB
+/// RP2350 QSPI erase sector and program page.
+const FLASH_ERASE: usize = 4096;
+const FLASH_PAGE: usize = 256;
+
+/// The littlefs block device: embassy-rp's blocking `Flash`, with every littlefs
+/// offset rebased into the reserved partition.
+pub struct LfsFlash {
+    flash: Flash<'static, FLASH, Blocking, FLASH_TOTAL>,
+}
+
+impl littlefs2::driver::Storage for LfsFlash {
+    type CACHE_SIZE = littlefs2::consts::U256;
+    // Lookahead is counted in u64 words: 4 * 64 = 256 blocks scanned per pass,
+    // comfortably covering the 384-block partition.
+    type LOOKAHEAD_SIZE = littlefs2::consts::U4;
+    const READ_SIZE: usize = FLASH_PAGE;
+    const WRITE_SIZE: usize = FLASH_PAGE;
+    const BLOCK_SIZE: usize = FLASH_ERASE;
+    const BLOCK_COUNT: usize = FS_SIZE / FLASH_ERASE;
+    // Migrate a block's data after this many erase cycles (-1 would disable
+    // dynamic wear levelling). 500 is littlefs's common default.
+    const BLOCK_CYCLES: isize = 500;
+
+    fn read(&mut self, off: usize, buf: &mut [u8]) -> littlefs2::io::Result<usize> {
+        self.flash
+            .blocking_read(FS_BASE + off as u32, buf)
+            .map_err(|_| littlefs2::io::Error::IO)?;
+        Ok(buf.len())
+    }
+
+    fn write(&mut self, off: usize, data: &[u8]) -> littlefs2::io::Result<usize> {
+        self.flash
+            .blocking_write(FS_BASE + off as u32, data)
+            .map_err(|_| littlefs2::io::Error::IO)?;
+        Ok(data.len())
+    }
+
+    fn erase(&mut self, off: usize, len: usize) -> littlefs2::io::Result<usize> {
+        let from = FS_BASE + off as u32;
+        self.flash
+            .blocking_erase(from, from + len as u32)
+            .map_err(|_| littlefs2::io::Error::IO)?;
+        Ok(len)
+    }
+}
+
+/// Build a `profiles/<name>` / `logs/<name>` (or bare `config.json`) runtime
+/// path; `None` if it overflows the path buffer.
+fn fs_path(prefix: &str, name: &str) -> Option<PathBuf> {
+    let mut s = heapless::String::<128>::new();
+    s.push_str(prefix).ok()?;
+    s.push_str(name).ok()?;
+    PathBuf::try_from(s.as_str()).ok()
+}
+
+/// The `Directory` → littlefs path prefix.
+fn dir_prefix(dir: Directory) -> &'static str {
+    match dir {
+        Directory::Profiles => "profiles/",
+        Directory::Logs => "logs/",
+    }
+}
+
+/// The `Directory` listing root.
+fn dir_root(dir: Directory) -> &'static Path {
+    match dir {
+        Directory::Profiles => path!("profiles"),
+        Directory::Logs => path!("logs"),
+    }
+}
+
+/// A littlefs filename as `&str`, with the stored trailing NUL trimmed.
+fn name_str(p: &Path) -> &str {
+    let s = p.as_str_ref_with_trailing_nul();
+    s.strip_suffix('\0').unwrap_or(s)
+}
+
+/// A chronologically-sortable key from a `{profile}_{YYYY-MM-DD}_{HH-MM-SS}.csv`
+/// log filename -> `YYYYMMDDHHMMSS`, or 0 when the name has no timestamp.
+/// littlefs keeps no mtime, so recovery's "most recent log" and the web file
+/// list derive `modified` from the timestamp the logger already embeds.
+fn filename_time_key(name: &str) -> u64 {
+    let stem = name.strip_suffix(".csv").unwrap_or(name);
+    let mut it = stem.rsplitn(3, '_');
+    let time = it.next();
+    let date = it.next();
+    match (date, time) {
+        (Some(d), Some(t)) => {
+            let mut key = 0u64;
+            for c in d.chars().chain(t.chars()) {
+                if let Some(digit) = c.to_digit(10) {
+                    key = key * 10 + digit as u64;
+                }
+            }
+            key
+        }
+        _ => 0,
+    }
+}
+
+/// The single littlefs mount, behind a `RefCell` because `mount_and_then` needs
+/// `&mut` storage. Core 0 is single-threaded and these methods run to completion
+/// without awaiting, so the borrow never overlaps.
 pub struct FlashStorage {
-    // DEVICE: the mounted littlefs Filesystem + a CriticalSectionRawMutex (writes
-    // are sync and do not await, but the lock guards cross-task reentry).
-    _private: (),
+    dev: RefCell<LfsFlash>,
 }
 
 impl FlashStorage {
     /// Run `write` between [`flash_handshake::request_pause`] and
     /// [`flash_handshake::release`] — the safety-critical wrapper around any
-    /// flash program/erase.
+    /// flash program/erase (Core 1 de-energises the SSR and parks in RAM).
     fn with_flash_paused<R>(&self, write: impl FnOnce() -> R) -> R {
         flash_handshake::request_pause();
         let r = write();
         flash_handshake::release();
         r
     }
+
+    /// Mount the filesystem, run `f`, unmount. Read-only ops call this directly;
+    /// write ops wrap the call in [`with_flash_paused`]. Any littlefs error
+    /// (mount, or `f`'s) collapses to [`StorageError`].
+    fn with_fs<R>(
+        &self,
+        f: impl FnOnce(&Filesystem<'_, LfsFlash>) -> littlefs2::io::Result<R>,
+    ) -> Result<R, StorageError> {
+        let mut dev = self.dev.borrow_mut();
+        Filesystem::mount_and_then(&mut *dev, f).map_err(|_| StorageError)
+    }
 }
 
 impl kiln_app::server::Storage for FlashStorage {
     fn read_chunk(
         &self,
-        _dir: Directory,
-        _name: &str,
-        _offset: u64,
-        _buf: &mut [u8],
+        dir: Directory,
+        name: &str,
+        offset: u64,
+        buf: &mut [u8],
     ) -> Result<usize, StorageError> {
-        // DEVICE: littlefs open + seek(offset) + read into buf (XIP read; no handshake).
-        Err(StorageError)
+        let path = fs_path(dir_prefix(dir), name).ok_or(StorageError)?;
+        self.with_fs(|fs| {
+            fs.open_file_and_then(&path, |file| {
+                if offset > 0 {
+                    file.seek(SeekFrom::Start(offset as u32))?;
+                }
+                file.read(buf)
+            })
+        })
     }
 
-    fn size(&self, _dir: Directory, _name: &str) -> Option<u64> {
-        // DEVICE: littlefs metadata size (XIP read; no handshake).
-        None
+    fn size(&self, dir: Directory, name: &str) -> Option<u64> {
+        let path = fs_path(dir_prefix(dir), name)?;
+        self.with_fs(|fs| fs.metadata(&path).map(|m| m.len() as u64))
+            .ok()
     }
 
-    fn for_each(&self, _dir: Directory, _f: &mut dyn FnMut(&str, u64, u64)) {
-        // DEVICE: littlefs dir iter → f(name, size, mtime-attr) (XIP read).
+    fn for_each(&self, dir: Directory, f: &mut dyn FnMut(&str, u64, u64)) {
+        let _ = self.with_fs(|fs| {
+            fs.read_dir_and_then(dir_root(dir), |rd| {
+                for entry in rd {
+                    let entry = entry?;
+                    if !entry.file_type().is_file() {
+                        continue; // skip "." and ".."
+                    }
+                    let name = name_str(entry.file_name());
+                    f(name, entry.metadata().len() as u64, filename_time_key(name));
+                }
+                Ok(())
+            })
+        });
     }
 
     fn append(
         &self,
-        _dir: Directory,
-        _name: &str,
-        _bytes: &[u8],
-        _create: bool,
+        dir: Directory,
+        name: &str,
+        bytes: &[u8],
+        create: bool,
     ) -> Result<(), StorageError> {
+        let path = fs_path(dir_prefix(dir), name).ok_or(StorageError)?;
         self.with_flash_paused(|| {
-            // DEVICE: littlefs open (truncate if create else append), write, sync.
-            Err(StorageError)
+            self.with_fs(|fs| {
+                fs.open_file_with_options_and_then(
+                    |o| {
+                        if create {
+                            // New run: truncate and write the header.
+                            o.write(true).create(true).truncate(true)
+                        } else {
+                            // Subsequent rows / a recovery resume: append.
+                            o.write(true).create(true).append(true)
+                        }
+                    },
+                    &path,
+                    |file| {
+                        file.write(bytes)?;
+                        file.sync()
+                    },
+                )?;
+                Ok(())
+            })
         })
     }
 
-    fn remove(&self, _dir: Directory, _name: &str) -> Result<(), StorageError> {
-        self.with_flash_paused(|| Err(StorageError)) // DEVICE: littlefs remove
+    fn remove(&self, dir: Directory, name: &str) -> Result<(), StorageError> {
+        let path = fs_path(dir_prefix(dir), name).ok_or(StorageError)?;
+        self.with_flash_paused(|| self.with_fs(|fs| fs.remove(&path)))
     }
 
-    fn remove_all(&self, _dir: Directory) -> Result<(), StorageError> {
-        self.with_flash_paused(|| Err(StorageError)) // DEVICE: iterate + remove
+    fn remove_all(&self, dir: Directory) -> Result<(), StorageError> {
+        self.with_flash_paused(|| {
+            self.with_fs(|fs| {
+                // Collect full paths first — removing during iteration is unsafe.
+                let mut paths: heapless::Vec<PathBuf, 64> = heapless::Vec::new();
+                fs.read_dir_and_then(dir_root(dir), |rd| {
+                    for entry in rd {
+                        let entry = entry?;
+                        if entry.file_type().is_file() {
+                            let _ = paths.push(PathBuf::from(entry.path()));
+                        }
+                    }
+                    Ok(())
+                })?;
+                for p in &paths {
+                    fs.remove(p)?;
+                }
+                Ok(())
+            })
+        })
     }
 
     fn upload_begin(&self) -> Result<(), StorageError> {
-        self.with_flash_paused(|| Err(StorageError)) // DEVICE: truncate scratch
+        self.with_flash_paused(|| {
+            self.with_fs(|fs| {
+                fs.open_file_with_options_and_then(
+                    |o| o.write(true).create(true).truncate(true),
+                    path!("upload.tmp"),
+                    |_file| Ok(()),
+                )
+            })
+        })
     }
-    fn upload_write(&self, _bytes: &[u8]) -> Result<(), StorageError> {
-        self.with_flash_paused(|| Err(StorageError)) // DEVICE: append scratch
+
+    fn upload_write(&self, bytes: &[u8]) -> Result<(), StorageError> {
+        self.with_flash_paused(|| {
+            self.with_fs(|fs| {
+                fs.open_file_with_options_and_then(
+                    |o| o.write(true).append(true),
+                    path!("upload.tmp"),
+                    |file| {
+                        file.write(bytes)?;
+                        file.sync()
+                    },
+                )?;
+                Ok(())
+            })
+        })
     }
-    fn upload_commit(&self, _dir: Directory, _name: &str) -> Result<(), StorageError> {
-        self.with_flash_paused(|| Err(StorageError)) // DEVICE: rename scratch → dir/name
+
+    fn upload_commit(&self, dir: Directory, name: &str) -> Result<(), StorageError> {
+        let dest = fs_path(dir_prefix(dir), name).ok_or(StorageError)?;
+        self.with_flash_paused(|| self.with_fs(|fs| fs.rename(path!("upload.tmp"), &dest)))
     }
+
     fn upload_abort(&self) {
-        let _ = self.with_flash_paused(|| -> Result<(), StorageError> { Ok(()) });
-        // DEVICE: remove scratch
+        let _ = self.with_flash_paused(|| self.with_fs(|fs| fs.remove(path!("upload.tmp"))));
     }
 
     fn static_asset(&self, name: &str) -> Option<&'static [u8]> {
@@ -337,14 +551,30 @@ impl kiln_app::server::Storage for FlashStorage {
         }
     }
 
-    fn read_config(&self, _buf: &mut [u8]) -> Result<usize, StorageError> {
-        // DEVICE: littlefs open "/config.json" + read into buf (XIP read; no handshake).
-        Err(StorageError)
+    fn read_config(&self, buf: &mut [u8]) -> Result<usize, StorageError> {
+        // Absent/unreadable config → 0 bytes, so `load_config` falls back to
+        // KilnConfig::default() (the graceful-default boot the reference lacks).
+        Ok(self
+            .with_fs(|fs| fs.open_file_and_then(path!("config.json"), |file| file.read(buf)))
+            .unwrap_or(0))
     }
 
-    fn write_config(&self, _bytes: &[u8]) -> Result<(), StorageError> {
-        // DEVICE: littlefs write "/config.json" via a temp file + atomic rename.
-        self.with_flash_paused(|| Err(StorageError))
+    fn write_config(&self, bytes: &[u8]) -> Result<(), StorageError> {
+        // Temp file + atomic rename, so a power loss mid-write can't truncate the
+        // live config (matches the reference's write convention).
+        self.with_flash_paused(|| {
+            self.with_fs(|fs| {
+                fs.open_file_with_options_and_then(
+                    |o| o.write(true).create(true).truncate(true),
+                    path!("config.tmp"),
+                    |file| {
+                        file.write(bytes)?;
+                        file.sync()
+                    },
+                )?;
+                fs.rename(path!("config.tmp"), path!("config.json"))
+            })
+        })
     }
 }
 
@@ -407,12 +637,30 @@ pub async fn wifi_monitor_task(_stack: embassy_net::Stack<'static>) -> ! {
     }
 }
 
-/// Mount littlefs and return the shared [`FlashStorage`]. Called at boot before
-/// the core split so [`load_config`] can read `config.json` and hand both cores
-/// their config. DEVICE: flash driver + littlefs mount (format on first boot).
-pub fn init_storage() -> &'static FlashStorage {
+/// Mount littlefs and return the shared [`FlashStorage`]. Called from `main()`
+/// BEFORE the core split so [`load_config`] can read `config.json` and hand both
+/// cores their config. Since Core 1 is not yet alive, the format/mount writes
+/// run without the flash handshake (which would deadlock waiting for a PARK that
+/// never comes); Core 0 erases its own flash safely because embassy-rp runs the
+/// erase/program from RAM.
+pub fn init_storage(flash: Peri<'static, FLASH>) -> &'static FlashStorage {
     static STORAGE: StaticCell<FlashStorage> = StaticCell::new();
-    STORAGE.init(FlashStorage { _private: () })
+    let mut dev = LfsFlash {
+        flash: Flash::new_blocking(flash),
+    };
+    // Probe the filesystem; format on first boot or after a corrupting power loss.
+    if Filesystem::mount_and_then(&mut dev, |_fs| Ok(())).is_err() {
+        let _ = Filesystem::format(&mut dev);
+    }
+    // Ensure the profiles/ and logs/ directories exist (idempotent across boots).
+    let _ = Filesystem::mount_and_then(&mut dev, |fs| {
+        let _ = fs.create_dir(path!("profiles"));
+        let _ = fs.create_dir(path!("logs"));
+        Ok(())
+    });
+    STORAGE.init(FlashStorage {
+        dev: RefCell::new(dev),
+    })
 }
 
 pub fn init_clock() -> &'static NtpClock {
@@ -496,9 +744,13 @@ pub async fn attempt_recovery(state: &AppState) -> Option<kiln_app::server::Reco
     state.storage.size(Directory::Profiles, &fname)?;
     // Same transient-glitch retry as the run/schedule load path
     // (control_thread.load_profile_with_retry): 3 attempts, 0.5 s/1.0 s backoff.
-    let pn =
-        kiln_app::server::read_file_with_retry(state.storage, Directory::Profiles, &fname, &mut pbuf)
-            .await?;
+    let pn = kiln_app::server::read_file_with_retry(
+        state.storage,
+        Directory::Profiles,
+        &fname,
+        &mut pbuf,
+    )
+    .await?;
     let ptext = core::str::from_utf8(&pbuf[..pn]).ok()?;
     let parsed = kiln_app::profile_json::parse_profile(ptext).ok()?;
     let profile = ProfileName::new(&fname).ok()?;

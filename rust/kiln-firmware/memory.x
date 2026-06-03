@@ -6,8 +6,12 @@
  * `.end_block` at the tail. The INSERT directives below splice those sections
  * into cortex-m-rt's `link.x` so the ROM can find and validate the image. */
 
+/* The linker may fill only the bottom 2560 KiB of the 4 MiB flash; the top
+ * 1536 KiB (offset 0x280000..0x400000) is reserved for the littlefs2 partition
+ * (config + profiles + logs — see platform.rs FS_BASE/FS_SIZE). Capping FLASH
+ * here guarantees the image can never grow into the filesystem region. */
 MEMORY {
-    FLASH : ORIGIN = 0x10000000, LENGTH = 4096K
+    FLASH : ORIGIN = 0x10000000, LENGTH = 2560K
     RAM   : ORIGIN = 0x20000000, LENGTH = 512K
 }
 
