@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["kiln-core"]
+
+# Standalone Rust workspace for the kiln-controller port.
+# Lives under rust/ so it never collides with the MicroPython deploy paths
+# (deploy.sh only ships kiln/, server/, lib/, static/, *.py).
+#
+# Roadmap:
+#   kiln-core  — hardware-free control logic (this crate; host-testable)
+#   kiln-hal   — embedded-hal device drivers (MAX31856, SSR, LCD)   [later]
+#   firmware   — embassy app wiring it together on the RP2350        [later]
+
+[profile.release]
+opt-level = "z"     # optimise for size first (flash-constrained target)
+lto = true
+codegen-units = 1
+panic = "abort"
