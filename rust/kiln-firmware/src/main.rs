@@ -37,6 +37,7 @@ use kiln_app::server::{AppState, CommandChannel, RebootSignal, StatusWatch};
 use kiln_control::Controller;
 
 mod flash_handshake;
+mod lcd;
 mod platform;
 
 use platform::{FlashStorage, NtpClock};
@@ -113,11 +114,20 @@ fn main() -> ! {
         dma: p.DMA_CH0,
     };
 
+    // Optional LCD status line on I2C0 (SDA=PIN_20, SCL=PIN_21 — the config
+    // defaults). Always taken from the peripherals; only used if `LCD_ENABLED`.
+    let lcd_periphs = LcdPeriphs {
+        i2c: p.I2C0,
+        sda: p.PIN_20,
+        scl: p.PIN_21,
+    };
+
     let executor0 = EXECUTOR0.init(Executor::new());
     executor0.run(|spawner| {
         spawner.spawn(
             core0_main(
                 core0_periphs,
+                lcd_periphs,
                 storage,
                 config,
                 commands.sender(),
@@ -231,6 +241,15 @@ struct Core0Periphs {
     dma: Peri<'static, embassy_rp::peripherals::DMA_CH0>,
 }
 
+/// The optional LCD status-line peripherals (I2C0 + its fixed Pico 2 W pins),
+/// kept out of [`Core0Periphs`] because `init_network` consumes that by value.
+/// Handed to `core0_main` and used only when `LCD_ENABLED`; otherwise dropped.
+struct LcdPeriphs {
+    i2c: Peri<'static, embassy_rp::peripherals::I2C0>,
+    sda: Peri<'static, embassy_rp::peripherals::PIN_20>,
+    scl: Peri<'static, embassy_rp::peripherals::PIN_21>,
+}
+
 /// Core 0 setup task: bring up cyw43 → an `embassy-net` `Stack`, mount flash,
 /// wait for Core 1's ready handshake, run crash recovery, build the picoserve app
 /// with shared state, and spawn the worker pool plus the CSV-logging,
@@ -239,6 +258,7 @@ struct Core0Periphs {
 #[embassy_executor::task]
 async fn core0_main(
     p: Core0Periphs,
+    lcd: LcdPeriphs,
     storage: &'static FlashStorage,
     config: &'static KilnConfig,
     commands: kiln_app::server::CommandSender,
@@ -320,9 +340,15 @@ async fn core0_main(
         )
         .unwrap(),
     );
-    // NOTE: the LCD task is intentionally NOT spawned — the LCD driver
-    // (`lcd1602_i2c` + `lcd_manager`) is not yet ported. See MIGRATION_AUDIT.md U9.
-    // TODO(LCD): port the driver, then spawn `lcd_task(status, display)` here.
+    // LCD status line (`server/lcd_manager.py`), optional. Built only when
+    // `LCD_ENABLED`; a missing/mis-wired backpack disables it without affecting
+    // the web server or WiFi. The kiln-app `lcd_task` renders each status change
+    // through the firmware `Display`.
+    if config.lcd_enabled {
+        if let Some(display) = platform::init_display(lcd, config) {
+            spawner.spawn(kiln_app::server::lcd_task(status, display).unwrap());
+        }
+    }
     spawner.spawn(platform::ntp_task(clock, stack).unwrap());
     spawner.spawn(platform::reboot_task(reboot).unwrap());
 }

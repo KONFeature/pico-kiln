@@ -28,7 +28,7 @@ use kiln_core::protocol::{Command, ProfileName, Status};
 use kiln_core::state::KilnState;
 
 use crate::flash_handshake;
-use crate::{Core0Periphs, Core1Periphs};
+use crate::{Core0Periphs, Core1Periphs, LcdPeriphs};
 
 // === Watchdog ===============================================================
 
@@ -618,15 +618,110 @@ impl kiln_app::server::Storage for FlashStorage {
 
 // === LCD ====================================================================
 
-/// The character LCD status line (`main.py`). DEVICE: the I2C HD44780 writes.
+use crate::lcd::Lcd1602;
+use embassy_rp::i2c::I2c;
+use embassy_rp::peripherals::I2C0;
+
+/// The concrete RP2350 LCD bus: blocking I²C0.
+type LcdI2c = I2c<'static, I2C0, embassy_rp::i2c::Blocking>;
+
+/// Throttle between LCD renders — `LCDManager.run`'s 5 s update cadence (keeps
+/// I²C traffic down to limit wire interference).
+const LCD_RENDER_INTERVAL: Duration = Duration::from_secs(5);
+/// Periodic hardware re-init to recover from wire interference (`reset_interval_sec`).
+const LCD_RESET_INTERVAL: Duration = Duration::from_secs(300);
+/// Disable the LCD after this many consecutive write failures
+/// (`max_consecutive_errors`) — the web server / WiFi keep running.
+const LCD_MAX_ERRORS: u8 = 3;
+
+/// The character LCD status line (`server/lcd_manager.py`). The kiln-app
+/// [`lcd_task`] calls [`show`] on every status change; the manager's cadence,
+/// periodic reset, and error-backoff logic live here since `show` is the only
+/// hook the [`Display`] trait exposes.
+///
+/// [`lcd_task`]: kiln_app::server::lcd_task
+/// [`show`]: Display::show
 pub struct LcdDisplay {
-    _private: (),
+    lcd: Lcd1602<LcdI2c>,
+    enabled: bool,
+    rendered: bool,
+    last_render: Instant,
+    last_reset: Instant,
+    errors: u8,
+}
+
+impl LcdDisplay {
+    /// Format and write the two-line summary. Row 1 = current temp + state; row 2
+    /// = target temp + SSR duty (or just SSR duty when idle) — `LCDManager.run`'s
+    /// exact layout.
+    fn render(&mut self, status: &Status) -> Result<(), embassy_rp::i2c::Error> {
+        use core::fmt::Write;
+
+        let mut row1 = heapless::String::<24>::new();
+        let _ = write!(row1, "{:4.0}C {}", status.current_temp, state_label(status.state));
+        self.lcd.print_row(0, &row1)?;
+
+        let mut row2 = heapless::String::<24>::new();
+        if status.target_temp > 0.0 {
+            let _ = write!(
+                row2,
+                "Tgt:{:4.0}C {:3.0}%",
+                status.target_temp, status.ssr_output
+            );
+        } else {
+            let _ = write!(row2, "SSR: {:3.0}%", status.ssr_output);
+        }
+        self.lcd.print_row(1, &row2)?;
+        Ok(())
+    }
+}
+
+/// The web/CSV-canonical state label (`json.rs`), so the LCD matches the API.
+fn state_label(state: KilnState) -> &'static str {
+    match state {
+        KilnState::Idle => "IDLE",
+        KilnState::Running => "RUNNING",
+        KilnState::Tuning => "TUNING",
+        KilnState::Complete => "COMPLETE",
+        KilnState::Error => "ERROR",
+    }
 }
 
 impl Display for LcdDisplay {
-    fn show(&mut self, _status: &Status) {
-        // DEVICE: format a two-line summary (state, temp/target) and write it
-        // over I2C. Presentation only — no control decision here.
+    fn show(&mut self, status: &Status) {
+        if !self.enabled {
+            return;
+        }
+        let now = Instant::now();
+
+        // Periodic hardware reset to shrug off wire-interference corruption.
+        if now.duration_since(self.last_reset) >= LCD_RESET_INTERVAL {
+            self.last_reset = now;
+            let _ = self.lcd.init(); // a failed reset just errors on the next render
+        }
+
+        // Throttle to the render cadence (but always render the first status).
+        if self.rendered && now.duration_since(self.last_render) < LCD_RENDER_INTERVAL {
+            return;
+        }
+
+        match self.render(status) {
+            Ok(()) => {
+                self.errors = 0;
+                self.rendered = true;
+                self.last_render = now;
+            }
+            Err(_) => {
+                self.errors = self.errors.saturating_add(1);
+                if self.errors == 2 {
+                    let _ = self.lcd.init(); // emergency reset on repeated failure
+                }
+                if self.errors >= LCD_MAX_ERRORS {
+                    // Give up — leave web/WiFi untouched (`LCDManager` disables).
+                    self.enabled = false;
+                }
+            }
+        }
     }
 }
 
@@ -816,9 +911,31 @@ pub fn init_clock() -> &'static NtpClock {
     CLOCK.init(NtpClock)
 }
 
-pub fn init_display(_p: &Core0Periphs) -> &'static mut LcdDisplay {
+/// Build the LCD on blocking I²C0 and run its power-on init. Returns `None` when
+/// the device does not ACK (absent / mis-wired backpack), so the caller simply
+/// does not spawn the LCD task and the kiln runs headless. The SDA/SCL pins are
+/// fixed by the RP2350 pinmux (config carries their numbers for documentation);
+/// only `LCD_I2C_FREQ` / `LCD_I2C_ADDR` are honoured at runtime.
+pub fn init_display(p: LcdPeriphs, config: &KilnConfig) -> Option<&'static mut LcdDisplay> {
+    let mut i2c_cfg = embassy_rp::i2c::Config::default();
+    i2c_cfg.frequency = config.lcd_i2c_freq;
+    let i2c = I2c::new_blocking(p.i2c, p.scl, p.sda, i2c_cfg);
+
+    let mut lcd = Lcd1602::new(i2c, config.lcd_i2c_addr);
+    if lcd.init().is_err() {
+        return None; // no device / bus fault → run without the LCD
+    }
+
     static DISPLAY: StaticCell<LcdDisplay> = StaticCell::new();
-    DISPLAY.init(LcdDisplay { _private: () })
+    let now = Instant::now();
+    Some(DISPLAY.init(LcdDisplay {
+        lcd,
+        enabled: true,
+        rendered: false,
+        last_render: now,
+        last_reset: now,
+        errors: 0,
+    }))
 }
 
 /// Crash recovery (`server/recovery.py`): find the most recent profile log,
