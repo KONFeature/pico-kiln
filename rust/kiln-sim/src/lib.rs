@@ -80,9 +80,11 @@ pub fn simulate(name: &str, profile: Profile, ticks: u32, mut model: ThermalMode
     // Warm-up idle tick so the loop has read the sensor before the run command,
     // exactly as the real loop is already reading temperature when one arrives.
     c.sensor_mut().set_temp(model.temp as f32);
-    c.iterate(None, 0, 0.0);
+    c.iterate(None, 0, 0);
 
     let mut now_ms = params.temp_read_interval_ms;
+    // Host time axis (Sample.t_s) stays f64; the controller takes integer Unix
+    // seconds for its wall clock.
     let mut wall = now_ms as f64 / 1000.0;
     c.sensor_mut().set_temp(model.temp as f32);
     c.iterate(
@@ -91,7 +93,7 @@ pub fn simulate(name: &str, profile: Profile, ticks: u32, mut model: ThermalMode
             parsed: profile,
         }),
         now_ms,
-        wall,
+        (now_ms / 1000) as i64,
     );
 
     let mut samples = Vec::with_capacity(ticks as usize);
@@ -100,7 +102,7 @@ pub fn simulate(name: &str, profile: Profile, ticks: u32, mut model: ThermalMode
         wall = now_ms as f64 / 1000.0;
 
         c.sensor_mut().set_temp(model.temp as f32);
-        let _ = c.iterate(None, now_ms, wall);
+        let _ = c.iterate(None, now_ms, (now_ms / 1000) as i64);
 
         let mut on_count = 0u32;
         for s in 0..sub_ticks {
@@ -112,7 +114,7 @@ pub fn simulate(name: &str, profile: Profile, ticks: u32, mut model: ThermalMode
         let duty = on_count as f64 / sub_ticks as f64;
         model.step(duty, dt_s);
 
-        let snap = c.snapshot(now_ms, wall);
+        let snap = c.snapshot(now_ms, (now_ms / 1000) as i64);
         samples.push(Sample {
             t_s: wall,
             temp: model.temp,

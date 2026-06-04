@@ -2,9 +2,11 @@
 //!
 //! Two faithful-but-deliberate departures from the MicroPython version:
 //!
-//! * **Time is injected** (`now: f64` seconds) instead of `time.time()`, so the
-//!   elapsed-time accumulation — including the NTP-jump guard — is deterministic
-//!   and host-testable.
+//! * **Time is injected** (`now_ms: i64` monotonic milliseconds) instead of
+//!   `time.time()`, so the elapsed-time accumulation — including the NTP-jump
+//!   guard — is deterministic and host-testable. The anchors are integer ms (no
+//!   soft-float on the M33); the guard still uses a *signed* delta so an
+//!   out-of-order step clamps exactly as the f64 reference did.
 //! * **Errors are a typed [`KilnError`]** rather than strings; the human message
 //!   is presentation and lives in the firmware/web layer.
 //!
@@ -94,13 +96,13 @@ impl Default for ControllerConfig {
 pub struct KilnController {
     pub state: KilnState,
     profile: Option<Profile>,
-    // Absolute monotonic-seconds anchors stay f64: only their *difference* (a
-    // small `dt`) is ever used, and that difference is narrowed to f32 in
-    // `get_elapsed_time`. Keeping the anchors f64 avoids the catastrophic
-    // cancellation a large f32 timestamp would suffer.
-    start_time: Option<f64>,
+    // Absolute monotonic-millisecond anchors (integer): only their *difference*
+    // (a small `dt`) is ever used, narrowed to f32 in `get_elapsed_time`. Integer
+    // ms keeps the subtraction exact and off the soft-float path; it also dodges
+    // the catastrophic cancellation a large f32 timestamp would suffer.
+    start_time: Option<i64>,
     elapsed_offset: f32,
-    last_update_time: Option<f64>,
+    last_update_time: Option<i64>,
 
     pub current_temp: f32,
     pub target_temp: f32,
@@ -182,14 +184,14 @@ impl KilnController {
 
     // ---- lifecycle -------------------------------------------------------
 
-    /// Start running `profile` at time `now`. Mirrors `run_profile`.
-    pub fn run_profile(&mut self, profile: Profile, now: f64) -> bool {
+    /// Start running `profile` at time `now_ms` (monotonic ms). Mirrors `run_profile`.
+    pub fn run_profile(&mut self, profile: Profile, now_ms: i64) -> bool {
         if matches!(self.state, KilnState::Running | KilnState::Tuning) {
             return false;
         }
         self.profile = Some(profile);
         self.state = KilnState::Running;
-        self.start_time = Some(now);
+        self.start_time = Some(now_ms);
         self.elapsed_offset = 0.0;
         self.last_update_time = None;
         self.error = None;
@@ -244,25 +246,27 @@ impl KilnController {
 
     // ---- elapsed time (delta accumulation with NTP-jump guard) -----------
 
-    fn get_elapsed_time(&mut self, now: f64) -> f32 {
+    fn get_elapsed_time(&mut self, now_ms: i64) -> f32 {
         if self.start_time.is_none() {
             return 0.0;
         }
         match self.last_update_time {
             None => {
-                self.last_update_time = Some(now);
+                self.last_update_time = Some(now_ms);
                 self.elapsed_offset
             }
             Some(last) => {
-                // The subtraction is done in f64 (both anchors are large absolute
-                // timestamps); only the small delta is narrowed to f32.
-                let mut delta = now - last;
+                // Signed integer subtraction (exact); the small delta is narrowed
+                // to f32 seconds. The guard rejects a negative (out-of-order /
+                // backward) or >60 s (NTP forward jump / stall) step, exactly as
+                // the f64 reference did.
+                let mut delta = (now_ms - last) as f32 / 1000.0;
                 if !(0.0..=60.0).contains(&delta) {
                     delta = 1.0; // NTP jump / stall: assume 1 s passed
                 }
-                self.last_update_time = Some(now);
+                self.last_update_time = Some(now_ms);
                 if self.recovery_target_temp.is_none() {
-                    self.elapsed_offset += delta as f32;
+                    self.elapsed_offset += delta;
                 }
                 self.elapsed_offset
             }
@@ -271,9 +275,9 @@ impl KilnController {
 
     // ---- main update -----------------------------------------------------
 
-    /// Advance the state machine with the latest `current_temp` at time `now`,
-    /// returning the target temperature for the PID. Mirrors `update`.
-    pub fn update(&mut self, current_temp: f32, now: f64) -> f32 {
+    /// Advance the state machine with the latest `current_temp` at time `now_ms`
+    /// (monotonic ms), returning the target temperature for the PID. Mirrors `update`.
+    pub fn update(&mut self, current_temp: f32, now_ms: i64) -> f32 {
         self.current_temp = current_temp;
 
         if current_temp > self.cfg.max_temp {
@@ -285,18 +289,18 @@ impl KilnController {
         }
 
         match self.state {
-            KilnState::Running => self.update_running(now),
+            KilnState::Running => self.update_running(now_ms),
             _ => 0.0,
         }
     }
 
-    fn update_running(&mut self, now: f64) -> f32 {
+    fn update_running(&mut self, now_ms: i64) -> f32 {
         if self.profile.is_none() {
             self.set_error(KilnError::NoActiveProfile);
             return 0.0;
         }
 
-        let elapsed = self.get_elapsed_time(now);
+        let elapsed = self.get_elapsed_time(now_ms);
 
         if elapsed - self.last_temp_recording >= self.cfg.rate_recording_interval {
             self.record_temp_for_rate(elapsed);
@@ -446,7 +450,7 @@ impl KilnController {
         last_logged_temp: Option<f32>,
         current_temp: Option<f32>,
         step_index: Option<usize>,
-        now: f64,
+        now_ms: i64,
     ) -> bool {
         if matches!(self.state, KilnState::Running | KilnState::Tuning) {
             return false;
@@ -454,7 +458,7 @@ impl KilnController {
 
         self.profile = Some(profile);
         self.state = KilnState::Running;
-        self.start_time = Some(now);
+        self.start_time = Some(now_ms);
         self.elapsed_offset = elapsed_seconds;
         self.last_update_time = None;
         self.error = None;
@@ -566,7 +570,7 @@ mod tests {
     #[test]
     fn max_temp_exceeded_sets_error_and_zero_output() {
         let mut c = KilnController::new(cfg());
-        let out = c.update(1301.0, 0.0);
+        let out = c.update(1301.0, 0);
         assert_eq!(out, 0.0);
         assert_eq!(c.state, KilnState::Error);
         assert_eq!(
@@ -582,8 +586,8 @@ mod tests {
     fn cannot_start_while_running() {
         let mut c = KilnController::new(cfg());
         let p = Profile::new(&[Step::hold(100.0, 10.0)]).unwrap();
-        assert!(c.run_profile(p.clone(), 0.0));
-        assert!(!c.run_profile(p, 1.0));
+        assert!(c.run_profile(p.clone(), 0));
+        assert!(!c.run_profile(p, 1000));
     }
 
     #[test]
@@ -592,16 +596,16 @@ mod tests {
         // current_temp starts at 0 -> step_start_temp = 0 at run.
         c.current_temp = 100.0;
         let p = Profile::new(&[Step::hold(100.0, 30.0)]).unwrap();
-        assert!(c.run_profile(p, 0.0));
+        assert!(c.run_profile(p, 0));
 
         // t=0 first call: elapsed 0, hold target 100.
-        let t0 = c.update(100.0, 0.0);
+        let t0 = c.update(100.0, 0);
         assert_eq!(c.state, KilnState::Running);
         assert_eq!(t0, 100.0);
 
         // Advance past the 30 s hold duration.
-        let _ = c.update(100.0, 20.0);
-        let _ = c.update(100.0, 40.0); // elapsed ~40 > 30 -> complete (last step)
+        let _ = c.update(100.0, 20_000);
+        let _ = c.update(100.0, 40_000); // elapsed ~40 > 30 -> complete (last step)
         assert_eq!(c.state, KilnState::Complete);
         assert_eq!(c.target_temp, 0.0);
     }
@@ -611,11 +615,11 @@ mod tests {
         let mut c = KilnController::new(cfg());
         c.current_temp = 50.0;
         let p = Profile::new(&[Step::hold(50.0, 1000.0)]).unwrap();
-        assert!(c.run_profile(p, 100.0));
-        c.update(50.0, 100.0); // first call: elapsed 0, sets last_update_time
-        c.update(50.0, 100.5); // delta 0.5 -> elapsed 0.5
-        c.update(50.0, 5000.0); // delta huge -> clamped to 1.0 -> elapsed 1.5
-                                // Not complete yet (hold is 1000 s), still running.
+        assert!(c.run_profile(p, 100_000));
+        c.update(50.0, 100_000); // first call: elapsed 0, sets last_update_time
+        c.update(50.0, 100_500); // delta 0.5 -> elapsed 0.5
+        c.update(50.0, 5_000_000); // delta huge -> clamped to 1.0 -> elapsed 1.5
+                                   // Not complete yet (hold is 1000 s), still running.
         assert_eq!(c.state, KilnState::Running);
     }
 

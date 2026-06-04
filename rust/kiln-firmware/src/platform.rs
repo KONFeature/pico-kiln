@@ -375,9 +375,11 @@ impl NtpClock {
         }
     }
 
-    /// Wall-clock seconds as `f64` for the Core 1 control loop (`0.0` pre-sync).
-    pub fn unix_seconds_f64() -> f64 {
-        Self::unix_ms().map(|ms| ms as f64 / 1000.0).unwrap_or(0.0)
+    /// Wall-clock Unix seconds as `i64` for the Core 1 control loop (`0`
+    /// pre-sync). Integer seconds keep the control loop's wall clock off the
+    /// soft-float path.
+    pub fn unix_seconds_i64() -> i64 {
+        Self::unix_ms().map(|ms| ms / 1000).unwrap_or(0)
     }
 
     /// Record the NTP-derived Unix time, computing the offset from the current
@@ -1237,7 +1239,7 @@ pub async fn attempt_recovery(state: &AppState) -> Option<kiln_app::server::Reco
     let _ = filename.push_str(&log_name); // String<64> always fits in String<96>
     Some(kiln_app::server::RecoveryLog {
         filename,
-        elapsed_seconds: decision.elapsed_seconds as f64,
+        elapsed_seconds: decision.elapsed_seconds,
     })
 }
 

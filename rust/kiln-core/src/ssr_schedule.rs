@@ -94,10 +94,11 @@ impl SsrSchedule {
 
         // ON for the first `duty%` of the window, using the LOCKED duty.
         // `int(...)` truncation toward zero (duty_locked and cycle_time are >= 0).
-        // Duty is stored as f32, but the on-time is computed in f64 so the
-        // truncation matches the reference bit-for-bit (the value isn't stored).
-        let on_time_ms =
-            ((self.duty_cycle_locked as f64 / 100.0) * self.cycle_time_ms as f64) as u64;
+        // Computed in f32 (FPU-native on the M33) — duty and cycle_time are small
+        // enough that the product is exact for whole-percent duties, and any
+        // sub-ms rounding on a fractional duty is invisible at the relay's
+        // ~100 ms sub-tick resolution.
+        let on_time_ms = (self.duty_cycle_locked / 100.0 * self.cycle_time_ms as f32) as u64;
         elapsed < on_time_ms
     }
 

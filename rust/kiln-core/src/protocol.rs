@@ -227,8 +227,9 @@ pub struct TuningSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Status {
     /// Unix seconds at capture (injected; `time.time()` in the reference).
-    /// Wall-clock epoch — stays `f64` (f32 ulp at ~1.7e9 is 128 s).
-    pub timestamp: f64,
+    /// Wall-clock epoch as an integer `i64` — f32 ulp at ~1.7e9 is 128 s, so it
+    /// can never be f32; whole seconds keep it exact and off the soft-float path.
+    pub timestamp: i64,
     pub state: KilnState,
     pub current_temp: f32,
     pub target_temp: f32,
@@ -261,7 +262,7 @@ impl Status {
     /// The idle snapshot — mirrors the reference `_status_template` defaults.
     pub const fn idle() -> Self {
         Self {
-            timestamp: 0.0,
+            timestamp: 0,
             state: KilnState::Idle,
             current_temp: 0.0,
             target_temp: 0.0,

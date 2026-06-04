@@ -187,7 +187,7 @@ pub struct RecoveryLog {
     /// The interrupted run's log filename (no directory prefix).
     pub filename: heapless::String<96>,
     /// `recovery_info.elapsed_seconds` — the elapsed written in the RECOVERY row.
-    pub elapsed_seconds: f64,
+    pub elapsed_seconds: f32,
 }
 
 /// CSV logging — the `data_logger.py` half that owns timing and the file handle.
@@ -229,7 +229,7 @@ pub async fn csv_logger_task(
                 let _ = csv::write_recovery_event_row(
                     &mut row,
                     s.timestamp,
-                    rec.elapsed_seconds as f32,
+                    rec.elapsed_seconds,
                     s.current_temp,
                     s.target_temp,
                     s.ssr_output,
@@ -571,7 +571,7 @@ mod web {
             return ApiResponse::error(StatusCode::BAD_REQUEST, "profile and start_time required");
         }
         let (name, start) = (name.unwrap(), start.unwrap());
-        if !api::start_time_in_future(start, state.now() as f64) {
+        if !api::start_time_in_future(start as i64, state.now()) {
             return ApiResponse::error(StatusCode::BAD_REQUEST, "start_time must be in the future");
         }
         match load_profile(&state, name).await {

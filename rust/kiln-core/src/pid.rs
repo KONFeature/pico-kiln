@@ -53,9 +53,10 @@ pub struct Pid {
 
     prev_error: f32,
     integral: f32,
-    // Absolute monotonic-seconds anchor stays f64; only the small `dt` derived
-    // from it is narrowed to f32 (see `update`).
-    prev_time: Option<f64>,
+    // Absolute monotonic-millisecond anchor (integer). Only the small `dt`
+    // derived from it is narrowed to f32 (see `update`); the i64 subtraction is
+    // exact and never costs the M33 a soft-float op.
+    prev_time: Option<i64>,
 
     stats: PidStats,
 }
@@ -78,19 +79,24 @@ impl Pid {
         }
     }
 
-    /// Compute the control output for `setpoint` vs `measured` at time `now`
-    /// (seconds, monotonic). The first call uses `dt = 1.0` exactly as the
-    /// reference does; thereafter `dt = now - prev_time`, floored at `0.001`.
-    pub fn update(&mut self, setpoint: f32, measured: f32, now: f64) -> f32 {
+    /// Compute the control output for `setpoint` vs `measured` at time `now_ms`
+    /// (monotonic milliseconds). The first call uses `dt = 1.0` exactly as the
+    /// reference does; thereafter `dt = (now_ms - prev_time) / 1000`, floored at
+    /// `0.001` for a non-positive step.
+    pub fn update(&mut self, setpoint: f32, measured: f32, now_ms: i64) -> f32 {
         // --- dt (matches pid.py: first call -> 1.0; non-positive -> 0.001) ---
-        // `now`/`prev_time` are large f64 monotonic seconds; the subtraction is
-        // done in f64, then the small dt is narrowed to f32 — so the timestamp
-        // magnitude never costs PID precision.
+        // `now_ms`/`prev_time` are monotonic-ms integers; the subtraction is exact
+        // (signed, so an out-of-order step is caught by `<= 0`), then the small dt
+        // is narrowed to f32 — the timestamp magnitude never costs PID precision.
         let dt: f32 = match self.prev_time {
             None => 1.0,
             Some(prev) => {
-                let d = now - prev;
-                (if d <= 0.0 { 0.001 } else { d }) as f32
+                let d_ms = now_ms - prev;
+                if d_ms <= 0 {
+                    0.001
+                } else {
+                    d_ms as f32 / 1000.0
+                }
             }
         };
 
@@ -134,7 +140,7 @@ impl Pid {
         let output = clamp(output_raw, self.out_min, self.out_max);
 
         self.prev_error = error;
-        self.prev_time = Some(now);
+        self.prev_time = Some(now_ms);
 
         self.stats = PidStats {
             dt,
@@ -202,7 +208,7 @@ mod tests {
     #[test]
     fn first_call_uses_unit_dt_and_zero_error_gives_zero() {
         let mut pid = Pid::new(25.0, 0.14, 160.0, 0.0, 100.0);
-        let out = pid.update(20.0, 20.0, 0.0);
+        let out = pid.update(20.0, 20.0, 0);
         assert_eq!(out, 0.0);
         assert_eq!(pid.stats().dt, 1.0);
         assert!(!pid.stats().integral_frozen);
@@ -211,7 +217,7 @@ mod tests {
     #[test]
     fn positive_error_drives_output_up_and_clamps() {
         let mut pid = Pid::new(25.0, 0.14, 160.0, 0.0, 100.0);
-        let out = pid.update(200.0, 20.0, 0.0);
+        let out = pid.update(200.0, 20.0, 0);
         assert_eq!(out, 100.0); // huge error saturates high
         assert!(pid.stats().output_raw > 100.0);
     }
@@ -219,8 +225,8 @@ mod tests {
     #[test]
     fn anti_windup_freezes_integral_when_saturated_high() {
         let mut pid = Pid::new(25.0, 0.14, 160.0, 0.0, 100.0);
-        pid.update(500.0, 20.0, 0.0);
-        let frozen = pid.update(500.0, 21.0, 1.0);
+        pid.update(500.0, 20.0, 0);
+        let frozen = pid.update(500.0, 21.0, 1000);
         assert!(frozen >= 99.0);
         assert!(
             pid.stats().integral_frozen,
@@ -231,8 +237,8 @@ mod tests {
     #[test]
     fn negative_dt_is_floored() {
         let mut pid = Pid::new(1.0, 0.0, 0.0, -1000.0, 1000.0);
-        pid.update(10.0, 0.0, 5.0);
-        pid.update(10.0, 0.0, 5.0); // dt would be 0 -> floored to 0.001
+        pid.update(10.0, 0.0, 5000);
+        pid.update(10.0, 0.0, 5000); // dt would be 0 -> floored to 0.001
         assert_eq!(pid.stats().dt, 0.001);
     }
 
@@ -240,8 +246,8 @@ mod tests {
     fn set_gains_bumpless_preserves_i_term() {
         let mut pid = Pid::new(10.0, 0.2, 0.0, 0.0, 100.0);
         // Build up some integral within range.
-        pid.update(50.0, 49.0, 0.0);
-        pid.update(50.0, 49.5, 1.0);
+        pid.update(50.0, 49.0, 0);
+        pid.update(50.0, 49.5, 1000);
         let i_before = pid.stats().i_term;
         pid.set_gains(None, Some(0.4), None);
         // i_term = ki * integral should be preserved across the ki change.
@@ -257,11 +263,11 @@ mod tests {
     #[test]
     fn reset_clears_state() {
         let mut pid = Pid::new(25.0, 0.14, 160.0, 0.0, 100.0);
-        pid.update(200.0, 20.0, 0.0);
+        pid.update(200.0, 20.0, 0);
         pid.reset();
         assert_eq!(pid.integral(), 0.0);
         // After reset the next call is a "first call" again -> dt 1.0.
-        pid.update(100.0, 90.0, 99.0);
+        pid.update(100.0, 90.0, 99000);
         assert_eq!(pid.stats().dt, 1.0);
     }
 }

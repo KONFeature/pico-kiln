@@ -62,7 +62,7 @@ mod tests {
         // Warm-up idle tick so the loop has read the sensor (current_temp = 25),
         // as the real loop is already reading temperature when a run arrives;
         // run_profile then seeds step_start_temp from 25, not 0.
-        c.iterate(None, 500, 0.5);
+        c.iterate(None, 500, 0);
 
         let out = c.iterate(
             Some(Command::RunProfile {
@@ -70,7 +70,7 @@ mod tests {
                 parsed: profile,
             }),
             1_000,
-            1.0,
+            1,
         );
         assert!(!out.faulted);
         assert_eq!(c.state(), KilnState::Running);
@@ -78,11 +78,11 @@ mod tests {
         // Hold the measured temperature at 25 °C while the ramp setpoint climbs;
         // the PID must then command heat and the watchdog must be fed each tick.
         for i in 2..=120u64 {
-            let o = c.iterate(None, i * 1_000, i as f64);
+            let o = c.iterate(None, i * 1_000, i as i64);
             assert!(!o.faulted);
         }
 
-        let snap = c.snapshot(121_000, 121.0);
+        let snap = c.snapshot(121_000, 121);
         assert_eq!(snap.state, KilnState::Running);
         assert!(
             snap.target_temp > 26.0,
@@ -104,7 +104,7 @@ mod tests {
         let mut c = new_controller();
 
         // One good reading initialises the filter (watchdog fed).
-        let o = c.iterate(None, 1_000, 1.0);
+        let o = c.iterate(None, 1_000, 1);
         assert!(!o.faulted);
         assert_eq!(c.watchdog().feeds, 1);
 
@@ -116,7 +116,7 @@ mod tests {
         for i in 2..=80u64 {
             let feeds_before = c.watchdog().feeds;
             let off_before = c.ssr().force_off_count;
-            let o = c.iterate(None, i * 1_000, i as f64);
+            let o = c.iterate(None, i * 1_000, i as i64);
             if o.faulted {
                 assert_eq!(
                     c.watchdog().feeds,
@@ -150,18 +150,18 @@ mod tests {
                 parsed: profile,
             }),
             1_000,
-            1.0,
+            1,
         );
         assert_eq!(c.state(), KilnState::Running);
 
         let off_before = c.ssr().force_off_count;
-        c.iterate(Some(Command::Shutdown), 2_000, 2.0);
+        c.iterate(Some(Command::Shutdown), 2_000, 2);
         assert_eq!(c.state(), KilnState::Idle);
         assert!(
             c.ssr().force_off_count > off_before,
             "Shutdown must force the SSR off"
         );
-        assert!(c.snapshot(2_000, 2.0).profile_name.is_none());
+        assert!(c.snapshot(2_000, 2).profile_name.is_none());
     }
 
     #[test]
@@ -173,13 +173,13 @@ mod tests {
                 max_temp: None,
             }),
             1_000,
-            1.0,
+            1,
         );
         assert_eq!(c.state(), KilnState::Tuning);
 
         // Next tick runs the tuning path: SAFE step 0 holds 60% SSR.
-        c.iterate(None, 2_000, 2.0);
-        let snap = c.snapshot(2_000, 2.0);
+        c.iterate(None, 2_000, 2);
+        let snap = c.snapshot(2_000, 2);
         assert_eq!(snap.state, KilnState::Tuning);
         let t = snap.tuning.expect("tuning snapshot present while tuning");
         assert_eq!(t.mode, TuningMode::Safe);
@@ -187,9 +187,9 @@ mod tests {
         assert_eq!(t.ssr_percent, 60.0);
 
         // Stop tuning returns to idle and clears the snapshot.
-        c.iterate(Some(Command::StopTuning), 3_000, 3.0);
+        c.iterate(Some(Command::StopTuning), 3_000, 3);
         assert_eq!(c.state(), KilnState::Idle);
-        assert!(c.snapshot(3_000, 3.0).tuning.is_none());
+        assert!(c.snapshot(3_000, 3).tuning.is_none());
     }
 
     #[test]
@@ -203,24 +203,24 @@ mod tests {
                 start_time: 5_000,
             }),
             1_000,
-            1_000.0,
+            1_000,
         );
         assert_eq!(c.state(), KilnState::Idle);
 
-        let snap = c.snapshot(2_000, 4_000.0);
+        let snap = c.snapshot(2_000, 4_000);
         let s = snap.scheduled.expect("scheduled snapshot present");
         assert_eq!(s.profile.as_str(), "sched.json");
         assert_eq!(s.seconds_until_start, 1_000);
 
         // Before the start time the kiln stays idle.
-        c.iterate(None, 2_000, 4_000.0);
+        c.iterate(None, 2_000, 4_000);
         assert_eq!(c.state(), KilnState::Idle);
 
         // At/after the start time the scheduler hands the profile to the loop.
-        c.iterate(None, 3_000, 6_000.0);
+        c.iterate(None, 3_000, 6_000);
         assert_eq!(c.state(), KilnState::Running);
         assert_eq!(
-            c.snapshot(3_000, 6_000.0).profile_name.unwrap().as_str(),
+            c.snapshot(3_000, 6_000).profile_name.unwrap().as_str(),
             "sched.json"
         );
     }

@@ -99,7 +99,10 @@ fn replay_matches_reference_pid() {
     let mut neg_error = 0usize;
 
     for r in &rows {
-        let out = pid.update(r.setpoint as f32, r.measured as f32, r.time_s);
+        // The port takes monotonic milliseconds (i64); the golden time column is
+        // f64 seconds at 10 ms resolution, so rounding to ms is exact.
+        let now_ms = (r.time_s * 1000.0).round() as i64;
+        let out = pid.update(r.setpoint as f32, r.measured as f32, now_ms);
         let s = pid.stats();
 
         assert_close(out as f64, r.output, TOL, r.idx, "output");

@@ -31,6 +31,13 @@ fn state_u8(s: KilnState) -> u8 {
     }
 }
 
+/// The port takes monotonic milliseconds (i64); the golden time column is f64
+/// seconds (integer-valued, incl. the deliberate backward NTP jump), so scaling
+/// to ms is exact and the signed delta clamps the same way the f64 reference did.
+fn to_ms(seconds: f64) -> i64 {
+    (seconds * 1000.0).round() as i64
+}
+
 fn fixture(name: &str) -> PathBuf {
     [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", name]
         .iter()
@@ -168,7 +175,7 @@ fn run_fixture(name: &str) -> usize {
             run_now,
         } => {
             c.current_temp = pre_run_temp as f32;
-            assert!(c.run_profile(profile, run_now), "run_profile");
+            assert!(c.run_profile(profile, to_ms(run_now)), "run_profile");
         }
         Op::Resume {
             elapsed,
@@ -178,7 +185,14 @@ fn run_fixture(name: &str) -> usize {
             now,
         } => {
             assert!(
-                c.resume_profile(profile, elapsed as f32, last_logged, current, step_index, now),
+                c.resume_profile(
+                    profile,
+                    elapsed as f32,
+                    last_logged,
+                    current,
+                    step_index,
+                    to_ms(now)
+                ),
                 "resume_profile"
             );
         }
@@ -196,7 +210,7 @@ fn run_fixture(name: &str) -> usize {
         let exp_recovering = f[6].trim() == "1";
         let exp_rate: f64 = f[7].trim().parse().unwrap();
 
-        let out = c.update(temp as f32, now);
+        let out = c.update(temp as f32, to_ms(now));
 
         assert_eq!(
             state_u8(c.state),

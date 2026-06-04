@@ -8,13 +8,14 @@
 //! emergency (sensor shutdown or tuning over-temp) forces the SSR off and skips
 //! the feed, exactly as the reference's `except` / early-`return` paths do.
 //!
-//! Time is injected three ways, matching the safety analysis:
-//! - `now_ms` (monotonic milliseconds): SSR time-proportional schedule + the
-//!   status cadence; also divided to monotonic seconds for the PID `dt`, the
+//! Time is injected two ways, both integer, matching the safety analysis:
+//! - `now_ms` (monotonic milliseconds, `u64`): SSR time-proportional schedule +
+//!   the status cadence; also passed (as `i64` ms) to the PID `dt`, the
 //!   state-machine elapsed accumulation, and the tuner — monotonic so an NTP
-//!   step can never corrupt the control math.
-//! - `wall_s` (Unix wall-clock seconds): the scheduler's absolute start-time
-//!   comparison and the status `timestamp` only.
+//!   step can never corrupt the control math, and integer so the hot path never
+//!   touches the soft-float f64 path on the M33.
+//! - `wall_s` (Unix wall-clock seconds, `i64`): the scheduler's absolute
+//!   start-time comparison and the status `timestamp` only.
 
 use kiln_core::gain_schedule::GainSchedule;
 use kiln_core::pid::Pid;
@@ -144,11 +145,11 @@ where
     /// One outer (≈1 Hz) control iteration. `now_ms` is monotonic; `wall_s` is
     /// Unix wall-clock seconds. Returns what (if anything) to publish and whether
     /// the iteration faulted. Feeds the watchdog itself on a clean iteration.
-    pub fn iterate(&mut self, cmd: Option<Command>, now_ms: u64, wall_s: f64) -> IterationOutcome {
+    pub fn iterate(&mut self, cmd: Option<Command>, now_ms: u64, wall_s: i64) -> IterationOutcome {
         if self.state.state == KilnState::Tuning {
             return self.tuning_iterate(cmd, now_ms, wall_s);
         }
-        let mono_s = now_ms as f64 / 1000.0;
+        let mono_ms = now_ms as i64;
 
         if let Some(c) = cmd {
             self.handle_command(c, now_ms, wall_s);
@@ -164,7 +165,7 @@ where
 
         if self.state.state == KilnState::Idle && self.scheduler.can_consume(wall_s) {
             if let Some(item) = self.scheduler.consume(wall_s) {
-                if self.state.run_profile(item.profile.clone(), mono_s) {
+                if self.state.run_profile(item.profile.clone(), mono_ms) {
                     self.current_profile = Some(item.name);
                     self.pid.reset();
                 }
@@ -184,13 +185,13 @@ where
             }
         };
 
-        let target = self.state.update(temp, mono_s);
+        let target = self.state.update(temp, mono_ms);
 
         let ssr_output = if self.state.state == KilnState::Running {
             if let Some(g) = self.gains.update(temp) {
                 self.pid.set_gains(Some(g.kp), Some(g.ki), Some(g.kd));
             }
-            self.pid.update(target, temp, mono_s)
+            self.pid.update(target, temp, mono_ms)
         } else {
             self.pid.reset();
             0.0
@@ -218,9 +219,9 @@ where
         &mut self,
         cmd: Option<Command>,
         now_ms: u64,
-        wall_s: f64,
+        wall_s: i64,
     ) -> IterationOutcome {
-        let mono_s = now_ms as f64 / 1000.0;
+        let mono_ms = now_ms as i64;
 
         if let Some(c) = cmd {
             self.handle_command(c, now_ms, wall_s);
@@ -262,7 +263,7 @@ where
             };
         }
 
-        let (ssr_output, continue_tuning) = self.tuner.as_mut().unwrap().update(temp, mono_s);
+        let (ssr_output, continue_tuning) = self.tuner.as_mut().unwrap().update(temp, mono_ms);
         self.state.ssr_output = ssr_output;
         self.state.target_temp = self
             .tuner
@@ -316,20 +317,20 @@ where
     }
 
     /// Build a fresh status snapshot for the current state (`wall_s` clock).
-    pub fn snapshot(&self, now_ms: u64, wall_s: f64) -> Status {
+    pub fn snapshot(&self, now_ms: u64, wall_s: i64) -> Status {
         self.build_status(now_ms, wall_s)
     }
 
     // ---- command handling -----------------------------------------------
 
-    fn handle_command(&mut self, cmd: Command, _now_ms: u64, wall_s: f64) {
-        let mono_s = _now_ms as f64 / 1000.0;
+    fn handle_command(&mut self, cmd: Command, _now_ms: u64, wall_s: i64) {
+        let mono_ms = _now_ms as i64;
         match cmd {
             Command::RunProfile { profile, parsed } => {
                 if matches!(self.state.state, KilnState::Running | KilnState::Tuning) {
                     return;
                 }
-                if self.state.run_profile(parsed, mono_s) {
+                if self.state.run_profile(parsed, mono_ms) {
                     self.current_profile = Some(profile);
                     self.pid.reset();
                 }
@@ -348,7 +349,7 @@ where
                     last_logged_temp,
                     current_temp,
                     step_index,
-                    mono_s,
+                    mono_ms,
                 ) {
                     self.current_profile = Some(profile);
                     self.pid.reset();
@@ -365,7 +366,7 @@ where
                     return;
                 }
                 let mut t = ZieglerNicholsTuner::new(mode, max_temp);
-                t.start(mono_s);
+                t.start(mono_ms);
                 self.tuner = Some(t);
                 self.state.state = KilnState::Tuning;
             }
@@ -386,7 +387,7 @@ where
                     name: profile,
                     profile: parsed,
                 };
-                self.scheduler.schedule(item, start_time as f64, wall_s);
+                self.scheduler.schedule(item, start_time as i64, wall_s);
             }
             Command::CancelScheduled => {
                 self.scheduler.cancel();
@@ -438,14 +439,14 @@ where
             || now_ms.saturating_sub(self.last_status_ms) >= self.params.status_update_interval_ms
     }
 
-    fn publish_now(&mut self, now_ms: u64, wall_s: f64) -> Status {
+    fn publish_now(&mut self, now_ms: u64, wall_s: i64) -> Status {
         self.published = true;
         self.last_status_ms = now_ms;
         self.build_status(now_ms, wall_s)
     }
 
-    fn build_status(&self, now_ms: u64, wall_s: f64) -> Status {
-        let mono_s = now_ms as f64 / 1000.0;
+    fn build_status(&self, now_ms: u64, wall_s: i64) -> Status {
+        let mono_ms = now_ms as i64;
         let elapsed = self.state.elapsed();
 
         let mut step_index = None;
@@ -467,7 +468,7 @@ where
 
         let scheduled = self.scheduler.status(wall_s).map(|s| ScheduledSnapshot {
             profile: s.payload.name,
-            start_time: s.start_time as u64,
+            start_time: s.start_time.max(0) as u64,
             seconds_until_start: s.seconds_until_start,
         });
 
@@ -477,7 +478,7 @@ where
             max_temp: t.max_temp,
             step_index: t.current_step_index(),
             total_steps: t.total_steps(),
-            step_elapsed: t.step_elapsed(mono_s),
+            step_elapsed: t.step_elapsed(mono_ms),
             ssr_percent: t.step_ssr_percent(),
             target_temp: t.step_target_temp(),
             timeout: t.step_timeout(),
@@ -486,7 +487,8 @@ where
         });
 
         // Status is f32 throughout except `timestamp`, which is wall-clock epoch
-        // seconds (f32 ulp at ~1.7e9 is 128 s, so it stays f64).
+        // seconds as an integer (`i64`) — f32 ulp at ~1.7e9 is 128 s, so it can
+        // never be f32; integer seconds keep it exact and off the soft-float path.
         Status {
             timestamp: wall_s,
             state: self.state.state,

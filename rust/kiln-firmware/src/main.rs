@@ -210,7 +210,7 @@ async fn control_task(
     loop {
         let cmd = commands.try_receive().ok();
         let now_ms = Instant::now().as_millis();
-        let outcome = controller.iterate(cmd, now_ms, NtpClock::unix_seconds_f64());
+        let outcome = controller.iterate(cmd, now_ms, NtpClock::unix_seconds_i64());
 
         // QuietMode: suppress status sends during the WiFi-connect phase.
         if let Some(snapshot) = outcome.publish {

@@ -70,8 +70,12 @@ fn run_fixture(name: &str) -> usize {
     let max_temp = max_temp.expect("missing max_temp");
     let start_now = start_now.expect("missing start_now");
 
+    // The port takes monotonic milliseconds (i64); the golden time column is f64
+    // seconds (monotonic, whole-second resolution), so scaling to ms is exact.
+    let to_ms = |s: f64| (s * 1000.0).round() as i64;
+
     let mut t = ZieglerNicholsTuner::new(mode, Some(max_temp));
-    t.start(start_now);
+    t.start(to_ms(start_now));
 
     for line in &data {
         let f: Vec<&str> = line.split(',').collect();
@@ -84,7 +88,7 @@ fn run_fixture(name: &str) -> usize {
         let exp_stage: u8 = f[5].trim().parse().unwrap();
         let exp_step: usize = f[6].trim().parse().unwrap();
 
-        let (ssr, cont) = t.update(temp as f32, now);
+        let (ssr, cont) = t.update(temp as f32, to_ms(now));
 
         let d = (ssr as f64 - exp_ssr).abs();
         assert!(

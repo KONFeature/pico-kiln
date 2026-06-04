@@ -23,7 +23,7 @@ ssr_output_percent,state,step_name,step_index,total_steps,measured_rate_c_per_ho
 /// `is_recovering` markers (`step_name=RECOVERY`, `step_index=-1`, forced
 /// `measured_rate=0.0`).
 pub fn write_row<W: Write>(w: &mut W, s: &Status) -> fmt::Result {
-    write_iso(w, s.timestamp as i64)?;
+    write_iso(w, s.timestamp)?;
     write!(
         w,
         ",{:.1},{:.2},{:.2},{:.2},{},",
@@ -62,14 +62,14 @@ pub fn write_row<W: Write>(w: &mut W, s: &Status) -> fmt::Result {
 /// recovery context.
 pub fn write_recovery_event_row<W: Write>(
     w: &mut W,
-    timestamp: f64,
+    timestamp: i64,
     elapsed: f32,
     current_temp: f32,
     target_temp: f32,
     ssr_output: f32,
     measured_rate: f32,
 ) -> fmt::Result {
-    write_iso(w, timestamp as i64)?;
+    write_iso(w, timestamp)?;
     writeln!(
         w,
         ",{:.1},{:.2},{:.2},{:.2},RECOVERY,,,,{:.1}",
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn running_ramp_row() {
         let s = Status {
-            timestamp: 1_700_000_000.0,
+            timestamp: 1_700_000_000,
             state: KilnState::Running,
             current_temp: 123.456,
             target_temp: 200.0,
@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn idle_row_has_empty_step_columns() {
         let s = Status {
-            timestamp: 1_700_000_000.0,
+            timestamp: 1_700_000_000,
             ..Status::idle()
         };
         // state IDLE; step_name, step_index, total_steps all empty.
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn past_last_step_prints_index_but_empty_name() {
         let s = Status {
-            timestamp: 1_700_000_000.0,
+            timestamp: 1_700_000_000,
             state: KilnState::Running,
             step_index: Some(3),
             step_kind: None,
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn recovering_row_uses_markers() {
         let s = Status {
-            timestamp: 1_700_000_000.0,
+            timestamp: 1_700_000_000,
             state: KilnState::Running,
             current_temp: 500.0,
             target_temp: 600.0,
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn recovery_event_row_has_empty_step_fields() {
         let mut out = String::new();
-        write_recovery_event_row(&mut out, 1_700_000_000.0, 1234.5, 250.0, 300.0, 80.0, 90.0)
+        write_recovery_event_row(&mut out, 1_700_000_000, 1234.5, 250.0, 300.0, 80.0, 90.0)
             .unwrap();
         assert_eq!(
             out,

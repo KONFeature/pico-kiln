@@ -122,7 +122,9 @@ pub fn schedule_fields_present(profile: Option<&str>, start_time: Option<f64>) -
 
 /// Whether a scheduled start is in the future — strict `>` so a start at exactly
 /// `now` is rejected, matching `start_time <= time.time()` (`handle_api_schedule`).
-pub fn start_time_in_future(start_time: f64, now: f64) -> bool {
+/// Both are Unix seconds (`i64`); the request's `start_time` is narrowed from the
+/// parsed JSON number at the call site.
+pub fn start_time_in_future(start_time: i64, now: i64) -> bool {
     start_time > now
 }
 
@@ -304,9 +306,9 @@ mod tests {
         assert!(!schedule_fields_present(Some("cone6"), Some(0.0)));
         assert!(!schedule_fields_present(None, Some(1.0)));
 
-        assert!(start_time_in_future(1000.0, 999.0));
-        assert!(!start_time_in_future(1000.0, 1000.0));
-        assert!(!start_time_in_future(1000.0, 1001.0));
+        assert!(start_time_in_future(1000, 999));
+        assert!(!start_time_in_future(1000, 1000));
+        assert!(!start_time_in_future(1000, 1001));
     }
 
     #[test]

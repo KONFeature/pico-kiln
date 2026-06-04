@@ -88,7 +88,7 @@ fn write_scheduled<W: Write>(w: &mut W, sc: &ScheduledSnapshot) -> fmt::Result {
 }
 
 fn write_normal<W: Write>(w: &mut W, s: &Status) -> fmt::Result {
-    write!(w, "{{\"timestamp\":{:.1},\"state\":", s.timestamp)?;
+    write!(w, "{{\"timestamp\":{},\"state\":", s.timestamp)?;
     write_json_str(w, state_str(s.state))?;
     write!(
         w,
@@ -181,7 +181,7 @@ fn write_tuning_obj<W: Write>(w: &mut W, t: &TuningSnapshot) -> fmt::Result {
 }
 
 fn write_tuning<W: Write>(w: &mut W, s: &Status, t: &TuningSnapshot) -> fmt::Result {
-    write!(w, "{{\"timestamp\":{:.1},\"state\":", s.timestamp)?;
+    write!(w, "{{\"timestamp\":{},\"state\":", s.timestamp)?;
     write_json_str(w, state_str(s.state))?;
     write!(
         w,
@@ -240,7 +240,7 @@ mod tests {
         let got = render(&Status::idle());
         assert_eq!(
             got,
-            "{\"timestamp\":0.0,\"state\":\"IDLE\",\"current_temp\":0.00,\"target_temp\":0.00,\
+            "{\"timestamp\":0,\"state\":\"IDLE\",\"current_temp\":0.00,\"target_temp\":0.00,\
 \"ssr_output\":0.00,\"elapsed\":0.0,\"profile_name\":null,\"error\":null,\"error_message\":null,\
 \"step_index\":null,\
 \"step_name\":null,\"total_steps\":null,\"desired_rate\":0.0,\"step_elapsed\":0.0,\
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn running_ramp_with_scheduled_profile() {
         let s = Status {
-            timestamp: 1_700_000_000.0,
+            timestamp: 1_700_000_000,
             state: KilnState::Running,
             current_temp: 123.46,
             target_temp: 200.0,
@@ -274,7 +274,7 @@ mod tests {
         };
         assert_eq!(
             render(&s),
-            "{\"timestamp\":1700000000.0,\"state\":\"RUNNING\",\"current_temp\":123.46,\
+            "{\"timestamp\":1700000000,\"state\":\"RUNNING\",\"current_temp\":123.46,\
 \"target_temp\":200.00,\"ssr_output\":75.50,\"elapsed\":65.2,\"profile_name\":\"cone6.json\",\
 \"error\":null,\"error_message\":null,\"step_index\":1,\"step_name\":\"ramp\",\"total_steps\":3,\
 \"desired_rate\":120.0,\
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn tuning_status_matches_template() {
         let s = Status {
-            timestamp: 1_700_000_000.0,
+            timestamp: 1_700_000_000,
             state: KilnState::Tuning,
             current_temp: 305.25,
             target_temp: 0.0,
@@ -337,7 +337,7 @@ mod tests {
         };
         assert_eq!(
             render(&s),
-            "{\"timestamp\":1700000000.0,\"state\":\"TUNING\",\"current_temp\":305.25,\
+            "{\"timestamp\":1700000000,\"state\":\"TUNING\",\"current_temp\":305.25,\
 \"target_temp\":0.00,\"elapsed\":42.5,\"ssr_output\":50.00,\"profile_name\":null,\
 \"tuning\":{\"stage\":\"running\",\"mode\":\"STANDARD\",\"max_temp\":150.0,\"elapsed\":42.5,\
 \"step_index\":2,\"total_steps\":6,\"error\":null,\"step_name\":\"heat_50pct_plateau\",\
