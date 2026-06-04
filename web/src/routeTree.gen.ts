@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as VisualizerRouteImport } from './routes/visualizer'
 import { Route as FilesRouteImport } from './routes/files'
 import { Route as EditorRouteImport } from './routes/editor'
+import { Route as ConfigRouteImport } from './routes/config'
 import { Route as IndexRouteImport } from './routes/index'
 
 const VisualizerRoute = VisualizerRouteImport.update({
@@ -29,6 +30,11 @@ const EditorRoute = EditorRouteImport.update({
   path: '/editor',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ConfigRoute = ConfigRouteImport.update({
+  id: '/config',
+  path: '/config',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -37,12 +43,14 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/config': typeof ConfigRoute
   '/editor': typeof EditorRoute
   '/files': typeof FilesRoute
   '/visualizer': typeof VisualizerRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/config': typeof ConfigRoute
   '/editor': typeof EditorRoute
   '/files': typeof FilesRoute
   '/visualizer': typeof VisualizerRoute
@@ -50,20 +58,22 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/config': typeof ConfigRoute
   '/editor': typeof EditorRoute
   '/files': typeof FilesRoute
   '/visualizer': typeof VisualizerRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/editor' | '/files' | '/visualizer'
+  fullPaths: '/' | '/config' | '/editor' | '/files' | '/visualizer'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/editor' | '/files' | '/visualizer'
-  id: '__root__' | '/' | '/editor' | '/files' | '/visualizer'
+  to: '/' | '/config' | '/editor' | '/files' | '/visualizer'
+  id: '__root__' | '/' | '/config' | '/editor' | '/files' | '/visualizer'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ConfigRoute: typeof ConfigRoute
   EditorRoute: typeof EditorRoute
   FilesRoute: typeof FilesRoute
   VisualizerRoute: typeof VisualizerRoute
@@ -92,6 +102,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EditorRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/config': {
+      id: '/config'
+      path: '/config'
+      fullPath: '/config'
+      preLoaderRoute: typeof ConfigRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -104,6 +121,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ConfigRoute: ConfigRoute,
   EditorRoute: EditorRoute,
   FilesRoute: FilesRoute,
   VisualizerRoute: VisualizerRoute,

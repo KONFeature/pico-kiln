@@ -5,10 +5,12 @@ import type {
 	DeleteAllFilesResponse,
 	DeleteFileResponse,
 	FileDirectory,
+	KilnConfig,
 	KilnStatus,
 	ListFilesResponse,
 	RunProfileRequest,
 	RunProfileResponse,
+	SaveConfigResponse,
 	ScheduledStatusResponse,
 	ScheduleProfileRequest,
 	ScheduleProfileResponse,
@@ -162,6 +164,31 @@ export class PicoAPIClient {
 	async reboot(): Promise<{ success: boolean; message: string }> {
 		return this.request("/api/reboot", {
 			method: "POST",
+		});
+	}
+
+	// === Config Endpoints ===
+
+	/**
+	 * Fetch the full kiln configuration. LCD_* keys may be omitted by the
+	 * firmware when the LCD is disabled; callers fill defaults for editing.
+	 */
+	async getConfig(): Promise<KilnConfig> {
+		return this.request<KilnConfig>("/api/config");
+	}
+
+	/**
+	 * Persist a sparse config PATCH (only the changed keys). The firmware merges
+	 * it over the running config and applies it on the next reboot. The body must
+	 * stay under the firmware's 2 KiB limit — a diff always does.
+	 */
+	async saveConfig(
+		patch: Record<string, unknown>,
+	): Promise<SaveConfigResponse> {
+		return this.request<SaveConfigResponse>("/api/config", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(patch),
 		});
 	}
 

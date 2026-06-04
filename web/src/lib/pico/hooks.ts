@@ -14,9 +14,11 @@ import type {
 	DeleteAllFilesResponse,
 	DeleteFileResponse,
 	FileDirectory,
+	KilnConfig,
 	KilnStatus,
 	ListFilesResponse,
 	RunProfileResponse,
+	SaveConfigResponse,
 	ScheduledStatusResponse,
 	ScheduleProfileResponse,
 	ShutdownResponse,
@@ -34,6 +36,7 @@ export const picoKeys = {
 	files: (directory: string) => ["files", directory] as const,
 	fileContent: (directory: string, filename: string) =>
 		["file-content", directory, filename] as const,
+	config: ["pico", "config"] as const,
 };
 
 /**
@@ -514,4 +517,54 @@ export function useUploadFile() {
 			});
 		},
 	});
+}
+
+// === Config Hooks ===
+
+/**
+ * Fetch the kiln configuration. Changes rarely, so it is cached for a while and
+ * only refetched on demand / after a save invalidation.
+ */
+export function useKilnConfig(
+	options?: Partial<UseQueryOptions<KilnConfig, PicoAPIError>>,
+) {
+	const { client, isConfigured } = usePico();
+
+	return useQuery<KilnConfig, PicoAPIError>({
+		queryKey: picoKeys.config,
+		queryFn: async () => {
+			if (!client) {
+				throw new PicoAPIError("Pico client not initialized");
+			}
+			return await client.getConfig();
+		},
+		enabled: isConfigured && Boolean(client),
+		staleTime: 1000 * 60 * 5,
+		refetchOnWindowFocus: false,
+		retry: 2,
+		...options,
+	});
+}
+
+/**
+ * Save a sparse config PATCH. On success the config query is invalidated so the
+ * page re-seeds from the persisted values.
+ */
+export function useSaveConfig() {
+	const { client } = usePico();
+	const queryClient = useQueryClient();
+
+	return useMutation<SaveConfigResponse, PicoAPIError, Record<string, unknown>>(
+		{
+			mutationFn: async (patch) => {
+				if (!client) {
+					throw new PicoAPIError("Pico client not initialized");
+				}
+				return unwrap(await client.saveConfig(patch), "Failed to save config");
+			},
+			onSuccess: () => {
+				queryClient.invalidateQueries({ queryKey: picoKeys.config });
+			},
+		},
+	);
 }

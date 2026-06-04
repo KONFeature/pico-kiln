@@ -200,3 +200,98 @@ export interface UploadFileResponse {
 	filename?: string;
 	error?: string;
 }
+
+// === Kiln Configuration (GET/POST /api/config) ===
+
+export type ThermocoupleType =
+	| "B"
+	| "E"
+	| "J"
+	| "K"
+	| "N"
+	| "R"
+	| "S"
+	| "T"
+	| "G8"
+	| "G32";
+
+/**
+ * Full kiln configuration as served by GET /api/config. Field names are
+ * UPPER_SNAKE_CASE to match the firmware wire format exactly. LCD_* keys may be
+ * absent in the response when the LCD is not configured; the client fills them
+ * with firmware defaults for editing (see lib/config/schema.ts DEFAULTS).
+ */
+export interface KilnConfig {
+	// Hardware (GPIO / SPI)
+	MAX31856_SPI_ID: number;
+	MAX31856_SCK_PIN: number;
+	MAX31856_MOSI_PIN: number;
+	MAX31856_MISO_PIN: number;
+	MAX31856_CS_PIN: number;
+	SSR_PIN: number[];
+
+	// Network
+	WIFI_SSID: string;
+	WIFI_PASSWORD: string;
+	WIFI_STATIC_IP: string | null;
+	WIFI_SUBNET: string | null;
+	WIFI_GATEWAY: string | null;
+	WIFI_DNS: string | null;
+	WEB_SERVER_HOST: string;
+	WEB_SERVER_PORT: number;
+
+	// Temperature & sensor
+	THERMOCOUPLE_TYPE: ThermocoupleType;
+	TEMP_UNITS: TempUnits;
+	THERMOCOUPLE_OFFSET: number;
+	MAINS_FREQUENCY: number;
+	THERMOCOUPLE_AVERAGING: number;
+	TEMP_MEDIAN_WINDOW: number;
+
+	// Control loop timing
+	TEMP_READ_INTERVAL: number;
+	PID_UPDATE_INTERVAL: number;
+	STATUS_UPDATE_INTERVAL: number;
+	SSR_UPDATE_INTERVAL: number;
+
+	// PID + thermal model
+	PID_KP_BASE: number;
+	PID_KI_BASE: number;
+	PID_KD_BASE: number;
+	THERMAL_H: number;
+	THERMAL_T_AMBIENT: number;
+
+	// SSR power
+	SSR_CYCLE_TIME: number;
+	SSR_STAGGER_DELAY: number;
+
+	// Safety + rate/stall
+	MAX_TEMP: number;
+	STALL_CHECK_INTERVAL: number;
+	STALL_CONSECUTIVE_FAILS: number;
+	STALL_MIN_STEP_TIME: number;
+	RATE_MEASUREMENT_WINDOW: number;
+	RATE_RECORDING_INTERVAL: number;
+	MAX_RECOVERY_TEMP_DELTA: number;
+
+	// Logging + watchdog
+	LOGGING_INTERVAL: number;
+	ENABLE_WATCHDOG: boolean;
+	WATCHDOG_TIMEOUT: number;
+
+	// LCD (optional)
+	LCD_I2C_ID: number;
+	LCD_I2C_SCL: number;
+	LCD_I2C_SDA: number;
+	LCD_I2C_FREQ: number;
+	LCD_I2C_ADDR: number;
+}
+
+/** A single config value as held by the form. */
+export type ConfigValue = string | number | boolean | number[] | null;
+
+export interface SaveConfigResponse {
+	success: boolean;
+	message?: string;
+	error?: string;
+}
