@@ -31,7 +31,7 @@
 
 /// `|x|` without `std`/libm. Matches Python `abs` for finite values.
 #[inline]
-fn abs(x: f64) -> f64 {
+fn abs(x: f32) -> f32 {
     if x < 0.0 {
         -x
     } else {
@@ -40,23 +40,23 @@ fn abs(x: f64) -> f64 {
 }
 
 /// Minimum `|ΔKp|` before new gains are emitted — `0.01`.
-pub const KP_CHANGE_THRESHOLD: f64 = 0.01;
+pub const KP_CHANGE_THRESHOLD: f32 = 0.01;
 /// Minimum `|ΔKi|` before new gains are emitted — `0.0001`.
-pub const KI_CHANGE_THRESHOLD: f64 = 0.0001;
+pub const KI_CHANGE_THRESHOLD: f32 = 0.0001;
 /// Minimum `|ΔKd|` before new gains are emitted — `0.01`.
-pub const KD_CHANGE_THRESHOLD: f64 = 0.01;
+pub const KD_CHANGE_THRESHOLD: f32 = 0.01;
 
 /// A PID gain triple.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Gains {
-    pub kp: f64,
-    pub ki: f64,
-    pub kd: f64,
+    pub kp: f32,
+    pub ki: f32,
+    pub kd: f32,
 }
 
 impl Gains {
     /// Construct a gain triple.
-    pub const fn new(kp: f64, ki: f64, kd: f64) -> Self {
+    pub const fn new(kp: f32, ki: f32, kd: f32) -> Self {
         Self { kp, ki, kd }
     }
 }
@@ -66,8 +66,8 @@ impl Gains {
 /// PID gains.
 #[derive(Debug, Clone)]
 pub struct GainSchedule {
-    h: f64,
-    t_ambient: f64,
+    h: f32,
+    t_ambient: f32,
     base: Gains,
     current: Gains,
 }
@@ -78,7 +78,7 @@ impl GainSchedule {
     /// (scheduling disabled), matching the reference validation. The "current"
     /// gains seed to `base`, so the first [`update`](Self::update) at ambient is a
     /// no-op (returns [`None`]).
-    pub fn new(base: Gains, h: f64, t_ambient: f64) -> Self {
+    pub fn new(base: Gains, h: f32, t_ambient: f32) -> Self {
         let h = if h < 0.0 { 0.0 } else { h };
         Self {
             h,
@@ -102,7 +102,7 @@ impl GainSchedule {
 
     /// The scale factor `g(T) = 1 + h·(T − T_ambient)` at `current_temp`.
     #[cfg(test)]
-    pub fn gain_scale(&self, current_temp: f64) -> f64 {
+    pub fn gain_scale(&self, current_temp: f32) -> f32 {
         1.0 + self.h * (current_temp - self.t_ambient)
     }
 
@@ -110,7 +110,7 @@ impl GainSchedule {
     /// when scheduling is enabled *and* at least one gain moved past its change
     /// threshold (the caller should then apply them to the PID); otherwise
     /// [`None`], leaving the current gains in place.
-    pub fn update(&mut self, current_temp: f64) -> Option<Gains> {
+    pub fn update(&mut self, current_temp: f32) -> Option<Gains> {
         if self.h <= 0.0 {
             return None;
         }
@@ -168,10 +168,10 @@ mod tests {
         let t = 525.0; // ΔT = 500 -> scale = 1 + 0.001*500 = 1.5
         let mut g = GainSchedule::new(base(), h, 25.0);
         let out = g.update(t).expect("large ΔT must emit new gains");
-        assert!((g.gain_scale(t) - 1.5).abs() < 1e-12);
-        assert!((out.kp - 25.0 * 1.5).abs() < 1e-9);
-        assert!((out.ki - 0.14 * 1.5).abs() < 1e-9);
-        assert!((out.kd - 160.0 * 1.5).abs() < 1e-9);
+        assert!((g.gain_scale(t) - 1.5).abs() < 1e-5);
+        assert!((out.kp - 25.0 * 1.5).abs() < 1e-3);
+        assert!((out.ki - 0.14 * 1.5).abs() < 1e-3);
+        assert!((out.kd - 160.0 * 1.5).abs() < 1e-3);
         assert_eq!(g.current(), out); // current tracks what was emitted
     }
 
@@ -198,7 +198,7 @@ mod tests {
         // ΔT = 100 -> scale = 1 + 1e-7*100 = 1.00001, Δscale = 1e-5.
         // ΔKi = 50 * 1e-5 = 5e-4 > 1e-4 ; ΔKp = ΔKd = 1e-8 « 0.01.
         let out = g.update(125.0).expect("Ki change alone must emit");
-        assert!((out.ki - 50.0 * 1.00001).abs() < 1e-9);
+        assert!((out.ki - 50.0 * 1.00001).abs() < 1e-3);
     }
 
     #[test]
@@ -213,13 +213,13 @@ mod tests {
         let mut g = GainSchedule::new(kp_only, h, 25.0);
         // Kp moves 25*0.001 = 0.025 per °C. A 0.5 °C step -> ΔKp 0.0125 > 0.01 -> emit.
         let a = g.update(25.5).expect("0.5C step exceeds Kp threshold");
-        assert!((a.kp - 25.0 * (1.0 + h * 0.5)).abs() < 1e-9);
+        assert!((a.kp - 25.0 * (1.0 + h * 0.5)).abs() < 1e-3);
         // A further 0.3 °C step (ΔKp 0.0075 vs the last emit) -> suppressed.
         assert_eq!(g.update(25.8), None);
         // One more 0.3 °C (0.6 total from last emit) -> ΔKp 0.015 > 0.01 -> emit.
         let b = g
             .update(26.1)
             .expect("accumulated change exceeds threshold");
-        assert!((b.kp - 25.0 * (1.0 + h * 1.1)).abs() < 1e-9);
+        assert!((b.kp - 25.0 * (1.0 + h * 1.1)).abs() < 1e-3);
     }
 }

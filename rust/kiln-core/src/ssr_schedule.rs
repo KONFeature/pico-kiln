@@ -26,7 +26,7 @@
 
 /// Floor applied to any non-zero duty request, in percent — `MIN_SSR_OUTPUT`.
 /// Guarantees a minimum relay on-time (5 % × cycle) once the PID asks for heat.
-pub const MIN_SSR_OUTPUT: f64 = 5.0;
+pub const MIN_SSR_OUTPUT: f32 = 5.0;
 
 /// Time-proportional duty scheduler for a solid-state relay.
 ///
@@ -37,8 +37,8 @@ pub const MIN_SSR_OUTPUT: f64 = 5.0;
 #[derive(Debug, Clone)]
 pub struct SsrSchedule {
     cycle_time_ms: u32,
-    duty_cycle: f64,
-    duty_cycle_locked: f64,
+    duty_cycle: f32,
+    duty_cycle_locked: f32,
     cycle_start_ms: u64,
 }
 
@@ -62,7 +62,7 @@ impl SsrSchedule {
     /// `[MIN_SSR_OUTPUT, 100]`; an exact `0` (or negative) requests full off.
     /// The change only reaches the relay at the next cycle boundary (see the
     /// mid-cycle lock in [`update`](Self::update)).
-    pub fn set_output(&mut self, percent: f64) {
+    pub fn set_output(&mut self, percent: f32) {
         if percent > 0.0 {
             // max(MIN_SSR_OUTPUT, min(100.0, percent))
             let capped = if percent < 100.0 { percent } else { 100.0 };
@@ -94,7 +94,10 @@ impl SsrSchedule {
 
         // ON for the first `duty%` of the window, using the LOCKED duty.
         // `int(...)` truncation toward zero (duty_locked and cycle_time are >= 0).
-        let on_time_ms = ((self.duty_cycle_locked / 100.0) * self.cycle_time_ms as f64) as u64;
+        // Duty is stored as f32, but the on-time is computed in f64 so the
+        // truncation matches the reference bit-for-bit (the value isn't stored).
+        let on_time_ms =
+            ((self.duty_cycle_locked as f64 / 100.0) * self.cycle_time_ms as f64) as u64;
         elapsed < on_time_ms
     }
 
@@ -108,13 +111,13 @@ impl SsrSchedule {
 
     /// The requested duty (may differ from what's applied until the next cycle).
     /// Used by the golden replay test (`tests/replay_ssr_schedule.rs`).
-    pub fn duty_cycle(&self) -> f64 {
+    pub fn duty_cycle(&self) -> f32 {
         self.duty_cycle
     }
 
     /// The duty currently being applied (latched at the last cycle boundary).
     /// Used by the golden replay test (`tests/replay_ssr_schedule.rs`).
-    pub fn duty_cycle_locked(&self) -> f64 {
+    pub fn duty_cycle_locked(&self) -> f32 {
         self.duty_cycle_locked
     }
 

@@ -20,9 +20,9 @@
 
 const MAX_CONSECUTIVE_FAULTS: u32 = 20;
 const COLD_START_FAULT_LIMIT: u32 = 40;
-const COLD_START_TEMP_THRESHOLD: f64 = 100.0;
-const TEMP_MIN_RANGE: f64 = -50.0;
-const TEMP_MAX_RANGE: f64 = 1500.0;
+const COLD_START_TEMP_THRESHOLD: f32 = 100.0;
+const TEMP_MIN_RANGE: f32 = -50.0;
+const TEMP_MAX_RANGE: f32 = 1500.0;
 
 /// A read that the filter cannot recover from; the control loop must shut down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,14 +37,14 @@ pub enum TempError {
 /// median window; the effective window is set at construction.
 #[derive(Debug, Clone)]
 pub struct TempFilter<const CAP: usize> {
-    offset: f64,
+    offset: f32,
     window: usize,
-    samples: [f64; CAP],
+    samples: [f32; CAP],
     len: usize,
-    last_good: f64,
+    last_good: f32,
     initialized: bool,
     fault_count: u32,
-    max_recorded: f64,
+    max_recorded: f32,
 }
 
 impl<const CAP: usize> TempFilter<CAP> {
@@ -52,7 +52,7 @@ impl<const CAP: usize> TempFilter<CAP> {
     /// median over `median_window` samples (clamped to `1..=CAP`; `1` disables
     /// software filtering). Mirrors the `TemperatureSensor` constructor with no
     /// valid first reading yet (uninitialised, empty window).
-    pub fn new(offset: f64, median_window: usize) -> Self {
+    pub fn new(offset: f32, median_window: usize) -> Self {
         let window = if median_window < 1 {
             1
         } else if median_window > CAP {
@@ -75,7 +75,7 @@ impl<const CAP: usize> TempFilter<CAP> {
     /// Feed a raw sensor reading (°C, before offset). Returns the median-filtered
     /// temperature, or — if the reading is out of range — the recovered last-good
     /// value (treated as a fault), or an error if the fault budget is exhausted.
-    pub fn push_reading(&mut self, raw: f64) -> Result<f64, TempError> {
+    pub fn push_reading(&mut self, raw: f32) -> Result<f32, TempError> {
         if !(TEMP_MIN_RANGE..=TEMP_MAX_RANGE).contains(&raw) {
             return self.fault();
         }
@@ -97,13 +97,13 @@ impl<const CAP: usize> TempFilter<CAP> {
     /// Returns the last-good temperature while the fault budget lasts, then an
     /// error: [`TempError::NotInitialized`] if no valid reading ever arrived,
     /// otherwise [`TempError::EmergencyShutdown`].
-    pub fn push_fault(&mut self) -> Result<f64, TempError> {
+    pub fn push_fault(&mut self) -> Result<f32, TempError> {
         self.fault()
     }
 
     /// Last successfully filtered temperature (°C). Meaningful once initialised.
     #[cfg(test)]
-    pub fn last_good(&self) -> f64 {
+    pub fn last_good(&self) -> f32 {
         self.last_good
     }
 
@@ -113,7 +113,7 @@ impl<const CAP: usize> TempFilter<CAP> {
         self.fault_count
     }
 
-    fn fault(&mut self) -> Result<f64, TempError> {
+    fn fault(&mut self) -> Result<f32, TempError> {
         self.fault_count += 1;
 
         if self.fault_count as usize >= self.window {
@@ -135,7 +135,7 @@ impl<const CAP: usize> TempFilter<CAP> {
         Ok(self.last_good)
     }
 
-    fn push_sample(&mut self, temp: f64) {
+    fn push_sample(&mut self, temp: f32) {
         if self.len < self.window {
             self.samples[self.len] = temp;
             self.len += 1;
@@ -147,9 +147,9 @@ impl<const CAP: usize> TempFilter<CAP> {
         }
     }
 
-    fn median(&self) -> f64 {
+    fn median(&self) -> f32 {
         let n = self.len;
-        let mut sorted = [0.0f64; CAP];
+        let mut sorted = [0.0f32; CAP];
         sorted[..n].copy_from_slice(&self.samples[..n]);
         for i in 1..n {
             let mut j = i;

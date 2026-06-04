@@ -85,14 +85,18 @@ where
     pub fn new(sensor: S, ssr_out: O, mut wdt: W, params: ControlParams, now_ms: u64) -> Self {
         wdt.start(params.watchdog_timeout_ms);
         let pid = Pid::new(
-            params.pid_base.kp,
-            params.pid_base.ki,
-            params.pid_base.kd,
+            params.pid_base.kp as f64,
+            params.pid_base.ki as f64,
+            params.pid_base.kd as f64,
             0.0,
             100.0,
         );
-        let gains = GainSchedule::new(params.pid_base, params.thermal_h, params.thermal_t_ambient);
-        let filter = TempFilter::new(params.thermocouple_offset, params.median_window);
+        let gains = GainSchedule::new(
+            params.pid_base,
+            params.thermal_h as f32,
+            params.thermal_t_ambient as f32,
+        );
+        let filter = TempFilter::new(params.thermocouple_offset as f32, params.median_window);
         let ssr_sched = SsrSchedule::new(params.ssr_cycle_time_s, now_ms);
         Controller {
             sensor,
@@ -187,8 +191,9 @@ where
         let target = self.state.update(temp, mono_s);
 
         let ssr_output = if self.state.state == KilnState::Running {
-            if let Some(g) = self.gains.update(temp) {
-                self.pid.set_gains(Some(g.kp), Some(g.ki), Some(g.kd));
+            if let Some(g) = self.gains.update(temp as f32) {
+                self.pid
+                    .set_gains(Some(g.kp as f64), Some(g.ki as f64), Some(g.kd as f64));
             }
             self.pid.update(target, temp, mono_s)
         } else {
@@ -197,7 +202,7 @@ where
         };
 
         self.state.ssr_output = ssr_output;
-        self.ssr_sched.set_output(ssr_output);
+        self.ssr_sched.set_output(ssr_output as f32);
         if self.state.state == KilnState::Error {
             self.ssr_sched.force_off();
             let _ = self.ssr_out.force_off();
@@ -270,7 +275,7 @@ where
             .unwrap()
             .step_target_temp()
             .unwrap_or(0.0);
-        self.ssr_sched.set_output(ssr_output);
+        self.ssr_sched.set_output(ssr_output as f32);
 
         if !continue_tuning {
             let max = self.tuner.as_ref().unwrap().max_temp;
@@ -416,12 +421,12 @@ where
             self.filter.push_fault()
         } else {
             match self.sensor.read_temperature() {
-                Ok(raw) => self.filter.push_reading(raw as f64),
+                Ok(raw) => self.filter.push_reading(raw),
                 Err(_) => self.filter.push_fault(),
             }
         };
         match result {
-            Ok(t) => Ok(t),
+            Ok(t) => Ok(t as f64),
             Err(TempError::EmergencyShutdown) => {
                 self.last_temp_error = KilnError::SensorFault;
                 Err(())

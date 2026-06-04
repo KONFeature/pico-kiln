@@ -8,7 +8,9 @@
 use kiln_core::temp_filter::{TempError, TempFilter};
 use std::path::PathBuf;
 
-const TOL: f64 = 1e-9;
+// Relaxed from 1e-9: the filter now computes in f32, so values differ from the
+// f64 reference by ~f32 representation error (≤ ~2e-4 °C at kiln temperatures).
+const TOL: f64 = 1e-3;
 const CAP: usize = 8; // max median window; the fixture uses 3
 
 enum Expect {
@@ -90,14 +92,14 @@ fn replay_matches_reference_temp_filter() {
     let (offset, window, rows) = load();
     assert!(rows.len() >= 30, "fixture too small ({} rows)", rows.len());
 
-    let mut f = TempFilter::<CAP>::new(offset, window);
+    let mut f = TempFilter::<CAP>::new(offset as f32, window);
     let mut saw_not_init = false;
     let mut saw_shutdown = false;
     let mut last_good_returns = 0u32;
 
     for (i, r) in rows.iter().enumerate() {
         let got = match r.kind {
-            'R' => f.push_reading(r.input),
+            'R' => f.push_reading(r.input as f32),
             'F' => f.push_fault(),
             other => panic!("row {i}: unknown kind {other:?}"),
         };
@@ -108,7 +110,7 @@ fn replay_matches_reference_temp_filter() {
             Expect::Value(want) => {
                 let got =
                     got.unwrap_or_else(|e| panic!("row {i}: expected {want}, got Err({e:?})"));
-                let diff = (got - want).abs();
+                let diff = (got as f64 - want).abs();
                 assert!(
                     diff <= TOL,
                     "row {i}: rust={got} ref={want} (|Δ|={diff:e} > {TOL:e})"

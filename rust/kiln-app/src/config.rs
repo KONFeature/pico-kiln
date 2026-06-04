@@ -275,7 +275,11 @@ impl KilnConfig {
 
     /// Base PID gains as the gain scheduler's triple.
     pub fn pid_base(&self) -> Gains {
-        Gains::new(self.pid_kp_base, self.pid_ki_base, self.pid_kd_base)
+        Gains::new(
+            self.pid_kp_base as f32,
+            self.pid_ki_base as f32,
+            self.pid_kd_base as f32,
+        )
     }
 
     /// Outer control-tick period in milliseconds.

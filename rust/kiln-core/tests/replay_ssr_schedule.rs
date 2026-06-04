@@ -9,7 +9,10 @@
 use kiln_core::ssr_schedule::SsrSchedule;
 use std::path::PathBuf;
 
-const TOL: f64 = 1e-9;
+// Relaxed from 1e-9: duty is now stored as f32 (the ON/OFF decision still uses
+// f64 on-time math, so it stays bit-exact; only the stored duty % carries f32
+// representation error).
+const TOL: f64 = 1e-4;
 
 enum Step {
     SetOutput { percent: f64, duty: f64 }, // S: request -> resulting duty_cycle
@@ -97,8 +100,8 @@ fn replay_matches_reference_ssr_schedule() {
     for (i, step) in steps.iter().enumerate() {
         match *step {
             Step::SetOutput { percent, duty } => {
-                s.set_output(percent);
-                let got = s.duty_cycle();
+                s.set_output(percent as f32);
+                let got = s.duty_cycle() as f64;
                 assert!(
                     (got - duty).abs() <= TOL,
                     "row {i}: set_output({percent}) duty rust={got} ref={duty}"
@@ -110,7 +113,7 @@ fn replay_matches_reference_ssr_schedule() {
                     got_on, on,
                     "row {i}: update({now_ms}) on rust={got_on} ref={on}"
                 );
-                let got_locked = s.duty_cycle_locked();
+                let got_locked = s.duty_cycle_locked() as f64;
                 assert!(
                     (got_locked - locked).abs() <= TOL,
                     "row {i}: update({now_ms}) locked rust={got_locked} ref={locked}"
@@ -123,7 +126,7 @@ fn replay_matches_reference_ssr_schedule() {
             }
             Step::ForceOff { locked } => {
                 s.force_off();
-                let got_locked = s.duty_cycle_locked();
+                let got_locked = s.duty_cycle_locked() as f64;
                 assert!(
                     (got_locked - locked).abs() <= TOL,
                     "row {i}: force_off locked rust={got_locked} ref={locked}"
