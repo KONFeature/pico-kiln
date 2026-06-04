@@ -112,6 +112,19 @@ pub trait Storage {
     fn read_config(&self, buf: &mut [u8]) -> Result<usize, StorageError>;
     /// Overwrite `config.json` atomically (the `POST /api/config` persist).
     fn write_config(&self, bytes: &[u8]) -> Result<(), StorageError>;
+    /// Read the `active_run` pointer (the live firing's log filename) into `buf`,
+    /// returning the byte count (0 if absent). A dedicated root path, not a
+    /// [`Directory`] entry, so `/api/files` can never touch it. This is the
+    /// authoritative "which run was firing at power loss" marker crash recovery
+    /// reads — independent of any wall-clock/filename timestamp.
+    fn read_active_run(&self, buf: &mut [u8]) -> Result<usize, StorageError>;
+    /// Record the live firing's log filename (atomic). Set on the IDLE→RUNNING
+    /// edge by the CSV logger.
+    fn write_active_run(&self, name: &[u8]) -> Result<(), StorageError>;
+    /// Clear the pointer (idempotent if absent). Written on a clean run end, and
+    /// on a *declined* recovery so a stale interrupted run is considered at most
+    /// once and can never be auto-resumed on a later boot.
+    fn clear_active_run(&self);
 }
 
 /// The character LCD status line (`main.py`'s monitor), behind a trait so the
@@ -146,6 +159,13 @@ impl AppState {
     /// formats whatever `time.time()` returns).
     fn now(&self) -> i64 {
         self.clock.unix_seconds().unwrap_or(0)
+    }
+
+    /// Whether the wall clock has synced at least once. Run-triggering endpoints
+    /// gate on this so every firing/tuning log gets a real dated filename (the
+    /// kiln is reachable only over WiFi, so NTP is available by then anyway).
+    fn clock_synced(&self) -> bool {
+        self.clock.unix_seconds().is_some()
     }
 }
 
@@ -190,14 +210,6 @@ pub struct RecoveryLog {
     pub elapsed_seconds: f32,
 }
 
-/// CSV logging — the `data_logger.py` half that owns timing and the file handle.
-/// Subscribes to the status broadcast and writes a row through [`Storage`] when
-/// the interval has elapsed (`LOGGING_INTERVAL` normally, 2 s while TUNING), using
-/// the verified [`csv`] formatters. On the IDLE→RUNNING/TUNING edge it starts a
-/// new file (header) — or, for a crash-recovery resume, **appends** to the
-/// interrupted run's file (no header) and writes a one-shot `RECOVERY` event row
-/// (`data_logger.log_recovery_event`). Forces a final terminal-state row on the
-/// way out — `data_logger.update`.
 /// Defer the flash write of buffered CSV rows by at most this long (monotonic
 /// seconds). One flash program per *flush* instead of one per *row* — far fewer
 /// flash-pause events (each one de-energises the SSR and busy-spins Core 0; see
@@ -215,6 +227,20 @@ const CSV_ROW_CAP: usize = 256;
 /// a row that would overflow forces an early flush, so nothing is ever dropped.
 const CSV_BUF_CAP: usize = 8192;
 
+/// CSV logging — the `data_logger.py` half that owns timing and the file handle.
+/// Subscribes to the status broadcast and writes a row through [`Storage`] when
+/// the interval has elapsed (`LOGGING_INTERVAL` normally, 2 s while TUNING), using
+/// the verified [`csv`] formatters. On the IDLE→RUNNING/TUNING edge it starts a
+/// new file (header) — or, for a crash-recovery resume, **appends** to the
+/// interrupted run's file (no header) and writes a one-shot `RECOVERY` event row
+/// (`data_logger.log_recovery_event`). Forces a final terminal-state row on the
+/// way out — `data_logger.update`.
+///
+/// Also owns the `active_run` recovery pointer (see [`Storage::write_active_run`]):
+/// it records the live firing's log filename on the IDLE→RUNNING edge and clears
+/// it on a clean exit, so crash recovery can identify *which* run was interrupted
+/// without depending on log-filename timestamps. Tuning runs do not set it (they
+/// are not recovery-eligible).
 #[embassy_executor::task]
 pub async fn csv_logger_task(
     status: &'static StatusWatch,
@@ -292,6 +318,11 @@ pub async fn csv_logger_task(
                         logging = true;
                         last_log = 0;
                         last_flush = None;
+                        // Mark this as the live firing for crash recovery — but
+                        // only a real RUN; tuning is not recovery-eligible.
+                        if s.state == KilnState::Running {
+                            let _ = storage.write_active_run(filename.as_bytes());
+                        }
                     }
                 }
             }
@@ -343,6 +374,10 @@ pub async fn csv_logger_task(
 
             if leaving {
                 logging = false;
+                // Clean run/tuning end → no interrupted run to recover. Clearing
+                // here (and on a declined recovery) is what stops a stale run from
+                // ever being auto-resumed on a later boot. Idempotent if absent.
+                storage.clear_active_run();
             }
         }
         prev_state = s.state;
@@ -611,6 +646,9 @@ mod web {
     }
 
     async fn run(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
+        if !state.clock_synced() {
+            return ApiResponse::error(StatusCode::SERVICE_UNAVAILABLE, api::CLOCK_NOT_SYNCED_MESSAGE);
+        }
         let name = match api::json_get_str(body.as_str(), "profile") {
             Some(n) if !n.is_empty() => n,
             _ => return ApiResponse::error(StatusCode::BAD_REQUEST, "Profile name required"),
@@ -626,6 +664,9 @@ mod web {
     }
 
     async fn schedule(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
+        if !state.clock_synced() {
+            return ApiResponse::error(StatusCode::SERVICE_UNAVAILABLE, api::CLOCK_NOT_SYNCED_MESSAGE);
+        }
         let name = api::json_get_str(body.as_str(), "profile");
         let start = api::json_get_f64(body.as_str(), "start_time");
         if !api::schedule_fields_present(name, start) {
@@ -654,6 +695,9 @@ mod web {
     }
 
     async fn tuning_start(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
+        if !state.clock_synced() {
+            return ApiResponse::error(StatusCode::SERVICE_UNAVAILABLE, api::CLOCK_NOT_SYNCED_MESSAGE);
+        }
         let mode_str = api::json_get_str(body.as_str(), "mode").unwrap_or("STANDARD");
         let mode = match api::parse_tuning_mode(mode_str) {
             Some(m) => m,
@@ -1198,8 +1242,7 @@ mod web {
                         let mut b = heapless::String::<RENDER_CAP>::new();
                         let _ = write!(
                             b,
-                            "{{\"success\":false,\"error\":\"{}\"}}",
-                            "Failed to delete files"
+                            "{{\"success\":false,\"error\":\"Failed to delete files\"}}"
                         );
                         return respond(
                             StatusCode::INTERNAL_SERVER_ERROR,

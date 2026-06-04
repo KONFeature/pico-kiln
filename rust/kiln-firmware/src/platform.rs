@@ -730,6 +730,37 @@ impl kiln_app::server::Storage for FlashStorage {
             })
         })
     }
+
+    fn read_active_run(&self, buf: &mut [u8]) -> Result<usize, StorageError> {
+        // Absent pointer → 0 bytes (the common "clean boot" case); recovery then
+        // does nothing. A read is XIP-safe, so no flash handshake.
+        Ok(self
+            .with_fs(|fs| fs.open_file_and_then(path!("active_run"), |file| file.read(buf)))
+            .unwrap_or(0))
+    }
+
+    fn write_active_run(&self, name: &[u8]) -> Result<(), StorageError> {
+        // Temp file + atomic rename, so a power loss mid-write can't leave a
+        // half-written pointer (matching write_config).
+        self.with_flash_paused(|| {
+            self.with_fs(|fs| {
+                fs.open_file_with_options_and_then(
+                    |o| o.write(true).create(true).truncate(true),
+                    path!("active_run.tmp"),
+                    |file| {
+                        file.write(name)?;
+                        file.sync()
+                    },
+                )?;
+                fs.rename(path!("active_run.tmp"), path!("active_run"))
+            })
+        })
+    }
+
+    fn clear_active_run(&self) {
+        // Idempotent: a missing pointer (already cleared / never set) is fine.
+        let _ = self.with_flash_paused(|| self.with_fs(|fs| fs.remove(path!("active_run"))));
+    }
 }
 
 // === LCD ====================================================================
@@ -1142,43 +1173,73 @@ pub fn init_display(p: LcdPeriphs, config: &KilnConfig) -> Option<&'static mut L
     }))
 }
 
-/// Crash recovery (`server/recovery.py`): find the most recent profile log,
-/// parse its last line, and — if the run was interrupted mid-firing within the
-/// safe temperature delta — resume it. The *decisions* use the host-tested
-/// `recovery_io` + `kiln_core::recovery`; only the directory scan and the file
-/// read are device I/O. The resume profile is parsed here on Core 0 and shipped
-/// to Core 1, like every other run.
+/// What to do with the `active_run` pointer after inspecting it.
+enum RecoveryOutcome {
+    /// No pointer — the last run ended cleanly (or never started). Nothing to do.
+    Nothing,
+    /// Pointer present but we will NOT resume (last row not RUNNING, temperature
+    /// drifted past the delta, or the profile is gone/corrupt). The caller
+    /// consumes the pointer so this run is auto-resumed **at most once** and never
+    /// on a later boot — the safety property that stops a stale run being retried.
+    Decline,
+    /// Resume this interrupted run; the logger continues its CSV file.
+    Resume(kiln_app::server::RecoveryLog),
+}
+
+/// Crash recovery (`server/recovery.py`): resume an interrupted firing after a
+/// reboot. The run to resume is identified by the **`active_run` pointer** (the
+/// CSV logger records the live firing's filename on RUN start and clears it on a
+/// clean end) — NOT by scanning for the newest log, which was unreliable without
+/// NTP and could resurrect a stale interrupted run. Two gates must both pass: the
+/// pointed-to log's last row must be RUNNING (content) and the current
+/// temperature must still be within the safe delta of the last logged temperature
+/// (recency). Decisions use the host-tested `recovery_io` + `kiln_core::recovery`;
+/// only the flash reads are device I/O. The resume profile is parsed here on
+/// Core 0 and shipped to Core 1, like every other run.
 pub async fn attempt_recovery(state: &AppState) -> Option<kiln_app::server::RecoveryLog> {
+    match recover_from_pointer(state).await {
+        RecoveryOutcome::Resume(log) => Some(log),
+        RecoveryOutcome::Decline => {
+            // Consume the pointer: a stale/interrupted run is considered once and
+            // can never be auto-resumed on a future boot (the load may have been
+            // swapped). This is the core safety rule the operator asked for.
+            state.storage.clear_active_run();
+            None
+        }
+        RecoveryOutcome::Nothing => None,
+    }
+}
+
+async fn recover_from_pointer(state: &AppState) -> RecoveryOutcome {
     use kiln_app::recovery_io;
 
-    // Wait for the first valid (>= 20°C) temperature, as the reference does.
-    let current_temp = loop {
-        let s = state.latest();
-        if s.current_temp >= 20.0 {
-            break s.current_temp;
+    // Read the active-run pointer. Absent → nothing was mid-firing.
+    let mut name_buf = [0u8; 96];
+    let n = match state.storage.read_active_run(&mut name_buf) {
+        Ok(n) if n > 0 => n,
+        _ => return RecoveryOutcome::Nothing,
+    };
+    let mut log_name = heapless::String::<96>::new();
+    match core::str::from_utf8(&name_buf[..n]) {
+        Ok(s) if log_name.push_str(s).is_ok() => {}
+        // Corrupt / oversize pointer — consume it so it can't wedge every boot.
+        _ => return RecoveryOutcome::Decline,
+    }
+
+    // Wait (bounded) for the first valid temperature, as the reference does — but
+    // never hang boot: a cold workshop may read < 20 °C, in which case we proceed
+    // with whatever we have and let the temp-delta gate decline safely. 60×500 ms
+    // = 30 s, far more than the MAX31856's sub-second first conversion.
+    let mut current_temp = state.latest().current_temp;
+    for _ in 0..60 {
+        current_temp = state.latest().current_temp;
+        if current_temp >= 20.0 {
+            break;
         }
         embassy_time::Timer::after(Duration::from_millis(500)).await;
-    };
+    }
 
-    // Most recent non-tuning .csv by mtime (DEVICE: the listdir + mtime sort;
-    // the candidate filter is `recovery_io::is_recovery_candidate`).
-    let mut newest: Option<(heapless::String<64>, u64)> = None;
-    state
-        .storage
-        .for_each(Directory::Logs, &mut |name, _size, modified| {
-            if recovery_io::is_recovery_candidate(name) {
-                let newer = newest.as_ref().map(|(_, m)| modified > *m).unwrap_or(true);
-                if newer {
-                    let mut n = heapless::String::new();
-                    if n.push_str(name).is_ok() {
-                        newest = Some((n, modified));
-                    }
-                }
-            }
-        });
-    let (log_name, _) = newest?;
-
-    // Read the tail and decide.
+    // Read the pointed-to log's tail → its last entry.
     let mut buf = [0u8; 4096];
     let read = state
         .storage
@@ -1190,54 +1251,79 @@ pub async fn attempt_recovery(state: &AppState) -> Option<kiln_app::server::Reco
                 .read_chunk(Directory::Logs, &log_name, start, &mut buf)
                 .ok()
         });
-    let n = read?;
-    let text = core::str::from_utf8(&buf[..n]).ok()?;
-    let entry = recovery_io::last_log_entry_from_csv(text)?;
+    let entry = match read
+        .and_then(|n| core::str::from_utf8(&buf[..n]).ok())
+        .and_then(recovery_io::last_log_entry_from_csv)
+    {
+        Some(e) => e,
+        // Pointer present but the file is missing / empty / unparseable — consume.
+        None => return RecoveryOutcome::Decline,
+    };
 
+    // Both gates: last row RUNNING (content) AND temperature still close (recency).
     let decision = kiln_core::recovery::check_recovery(
         &entry,
-        current_temp as f32,
+        current_temp,
         state.config.max_recovery_temp_delta as f32,
     );
     if !decision.can_recover {
-        return None;
+        return RecoveryOutcome::Decline;
     }
 
-    // Profile name from the log filename (lowercased), then parse profiles/{name}.json.
-    let stem = recovery_io::profile_stem(&log_name)?;
+    // Resolve + parse the profile (profiles/{name}.json, name lowercased from the
+    // log stem). Any failure declines-and-consumes: a missing/corrupt profile will
+    // not appear on a retry, so we must not loop on it.
+    let stem = match recovery_io::profile_stem(&log_name) {
+        Some(s) => s,
+        None => return RecoveryOutcome::Decline,
+    };
     let mut fname = heapless::String::<80>::new();
     if recovery_io::write_lowercase(&mut fname, stem).is_err() || fname.push_str(".json").is_err() {
-        return None;
+        return RecoveryOutcome::Decline;
+    }
+    if state.storage.size(Directory::Profiles, &fname).is_none() {
+        return RecoveryOutcome::Decline;
     }
     let mut pbuf = [0u8; 8192];
-    state.storage.size(Directory::Profiles, &fname)?;
-    // Same transient-glitch retry as the run/schedule load path
-    // (control_thread.load_profile_with_retry): 3 attempts, 0.5 s/1.0 s backoff.
-    let pn = kiln_app::server::read_file_with_retry(
+    // Transient-glitch retry as the run/schedule load path does.
+    let pn = match kiln_app::server::read_file_with_retry(
         state.storage,
         Directory::Profiles,
         &fname,
         &mut pbuf,
     )
-    .await?;
-    let ptext = core::str::from_utf8(&pbuf[..pn]).ok()?;
-    let parsed = kiln_app::profile_json::parse_profile(ptext).ok()?;
-    let profile = ProfileName::new(&fname).ok()?;
+    .await
+    {
+        Some(n) => n,
+        None => return RecoveryOutcome::Decline,
+    };
+    let parsed = match core::str::from_utf8(&pbuf[..pn])
+        .ok()
+        .and_then(|t| kiln_app::profile_json::parse_profile(t).ok())
+    {
+        Some(p) => p,
+        None => return RecoveryOutcome::Decline,
+    };
+    let profile = match ProfileName::new(&fname) {
+        Ok(p) => p,
+        Err(_) => return RecoveryOutcome::Decline,
+    };
 
     let _ = state.commands.try_send(Command::ResumeProfile {
         profile,
         parsed,
         elapsed_seconds: decision.elapsed_seconds,
         last_logged_temp: Some(decision.last_temp),
-        current_temp: Some(current_temp as f32),
+        current_temp: Some(current_temp),
         step_index: decision.step_index,
     });
 
+    // Keep the pointer: the run is live again, so a re-crash recovers it again.
     // Hand the CSV logger the interrupted run's file so it appends (no new header)
     // and writes the one-shot RECOVERY event row — data_logger.set_recovery_context.
     let mut filename = heapless::String::<96>::new();
-    let _ = filename.push_str(&log_name); // String<64> always fits in String<96>
-    Some(kiln_app::server::RecoveryLog {
+    let _ = filename.push_str(&log_name);
+    RecoveryOutcome::Resume(kiln_app::server::RecoveryLog {
         filename,
         elapsed_seconds: decision.elapsed_seconds,
     })

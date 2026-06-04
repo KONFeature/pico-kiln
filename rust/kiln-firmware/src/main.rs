@@ -22,8 +22,6 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use embassy_executor::Executor;
 use embassy_futures::select::select;
 use embassy_rp::gpio::{Level, Output};
@@ -54,11 +52,6 @@ static REBOOT: StaticCell<RebootSignal> = StaticCell::new();
 /// signals once its sensor/SSR/watchdog are built; Core 0 refuses to bring up the
 /// app until then, and resets if it never comes — "unsafe to operate".
 static READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-
-/// Status-publish suppression during the WiFi-connect phase (`main.py`'s
-/// `QuietMode`). Starts quiet so Core 1 doesn't publish while WiFi bring-up needs
-/// the CPU; cleared once the network is up. Read on Core 1, written on Core 0.
-static QUIET: AtomicBool = AtomicBool::new(true);
 
 /// Core 1's dedicated stack and executor (kept off Core 0's executor entirely).
 static CORE1_STACK: StaticCell<Stack<8192>> = StaticCell::new();
@@ -213,11 +206,8 @@ async fn control_task(
         let now_ms = Instant::now().as_millis();
         let outcome = controller.iterate(cmd, now_ms, NtpClock::unix_seconds_i64());
 
-        // QuietMode: suppress status sends during the WiFi-connect phase.
         if let Some(snapshot) = outcome.publish {
-            if !QUIET.load(Ordering::Acquire) {
-                status.send(snapshot);
-            }
+            status.send(snapshot);
         }
 
         if outcome.faulted {
@@ -297,18 +287,12 @@ async fn core0_main(
     // exactly the precondition embassy-executor 0.10 requires for this call.
     let spawner = unsafe { embassy_executor::Spawner::for_current_executor() }.await;
 
-    // WiFi + network stack (cyw43 firmware blobs + PIO SPI), then DHCP. Returns
-    // the `embassy-net` Stack the web workers serve on, plus the cyw43 `Control`
-    // handle the WiFi monitor needs to re-join.
-    let (stack, control) = platform::init_network(&spawner, p, config).await;
-
-    // WiFi is up — let Core 1 resume publishing status (clear QuietMode).
-    QUIET.store(false, Ordering::Release);
-
-    // The world, behind the kiln_app traits. Storage (mounted in `main`) routes
-    // flash writes through the flash handshake; the clock is sntpc-disciplined.
+    // --- Network-independent bring-up first ---------------------------------
+    // Build the wall clock and shared AppState. None of this needs WiFi, so crash
+    // recovery + control + logging come up even if the AP is slow or absent (a
+    // power blip mid-firing must resume the firing regardless of connectivity;
+    // Core 1 already runs independently).
     let clock: &'static NtpClock = platform::init_clock();
-
     let state = AppState {
         commands,
         status,
@@ -319,9 +303,8 @@ async fn core0_main(
     };
 
     // Gate on Core 1 hardware-ready (`main.py:235-242`, ReadyFlag). If Core 1
-    // never signals within 20 s the kiln is unsafe to operate — reset and retry
-    // the boot rather than serving the web/recovery stack against a dead control
-    // core.
+    // never signals within 20 s the kiln is unsafe to operate — reset and retry.
+    // WiFi-independent, and kept ahead of the (potentially slow) network bring-up.
     if with_timeout(Duration::from_secs(20), READY.wait())
         .await
         .is_err()
@@ -329,19 +312,30 @@ async fn core0_main(
         cortex_m::peripheral::SCB::sys_reset();
     }
 
-    // Crash recovery: parse the most recent log and, if interrupted mid-firing
-    // within the safe temperature delta, resume. Uses kiln_app::recovery_io +
-    // kiln_core::recovery (both host-tested); the resume Command is parsed here on
-    // Core 0 and shipped to Core 1. Returns the interrupted run's log file (if
-    // any) so the CSV logger continues it (append + RECOVERY row) rather than
-    // starting a fresh file.
+    // Crash recovery — BEFORE the network. It needs only flash + Core 1's live
+    // temperature (published from the first tick now that QuietMode is gone), never
+    // the network: the run to resume is the `active_run` pointer and the decision
+    // is temp-delta gated (kiln_core::recovery), not time/NTP based. Returns the
+    // interrupted run's log file so the CSV logger continues it (append + RECOVERY
+    // row) rather than starting fresh.
     let recovery = platform::attempt_recovery(&state).await;
 
-    // `make_app` bakes the shared `AppState` into the router; picoserve 0.18
-    // then serves the stateless `Router<P>` aliased as `AppRouter`, which names
-    // the router type so it stores in a StaticCell and keeps the `#[task]`
-    // web_task non-generic. (`AppState` is `Copy`, so the copy into `make_app`
-    // leaves `state` usable.)
+    // Start CSV logging now (flash only, no network) so a resumed firing — or one
+    // started the instant the web comes up — is logged from its first row.
+    spawner.spawn(
+        kiln_app::server::csv_logger_task(status, storage, clock, config, recovery).unwrap(),
+    );
+
+    // --- Network bring-up ---------------------------------------------------
+    // cyw43 firmware blobs + PIO SPI + embassy-net stack + WiFi join + DHCP.
+    // Returns the Stack the web workers serve on and the cyw43 `Control` the WiFi
+    // monitor re-joins with. Everything below this line genuinely needs the network.
+    let (stack, control) = platform::init_network(&spawner, p, config).await;
+
+    // `make_app` bakes the shared `AppState` into the router; picoserve 0.18 then
+    // serves the stateless `Router<P>` aliased as `AppRouter`, stored in a
+    // StaticCell so the `#[task]` web_task stays non-generic. (`AppState` is
+    // `Copy`, so recovery's borrow above leaves `state` usable here.)
     static APP: StaticCell<kiln_app::server::AppRouter> = StaticCell::new();
     let app: &'static _ = APP.init(kiln_app::server::make_app(state));
     let web_cfg = platform::web_config();
@@ -353,9 +347,6 @@ async fn core0_main(
             kiln_app::server::web_task(id, stack, app, web_cfg, config.web_server_port).unwrap(),
         );
     }
-    spawner.spawn(
-        kiln_app::server::csv_logger_task(status, storage, clock, config, recovery).unwrap(),
-    );
     // WiFi reconnect monitor (`wifi_manager.monitor`): re-join on link failure.
     // Takes the `Control` handle (moved here — nothing else uses it) plus the
     // SSID/password, which live in the `'static` config.

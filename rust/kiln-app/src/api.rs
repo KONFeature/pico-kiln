@@ -41,6 +41,10 @@ pub const INVALID_MODE_MESSAGE: &str =
 /// The out-of-range max-temp message (note the degree signs, as in the source).
 pub const MAX_TEMP_RANGE_MESSAGE: &str =
     "Maximum temperature must be between 50\u{b0}C and 500\u{b0}C";
+/// Returned (503) when a run/tuning/schedule is requested before the wall clock
+/// has synced. Run-triggers are gated on NTP so every log gets a dated filename.
+pub const CLOCK_NOT_SYNCED_MESSAGE: &str =
+    "Clock not synced yet (waiting for NTP) — please retry in a moment";
 
 /// A file-operation target directory — `VALID_DIRECTORIES`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
