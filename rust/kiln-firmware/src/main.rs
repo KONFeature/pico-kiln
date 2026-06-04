@@ -211,7 +211,24 @@ async fn control_task(
         }
 
         if outcome.faulted {
-            Timer::after(Duration::from_secs(1)).await;
+            // Throttle (the reference's sleep(1)) — but keep answering the flash
+            // handshake while faulted. Core 0 may need to write *now* (e.g. the
+            // terminal ERROR log row this fault just published), and the faulted
+            // branch used to `continue` straight past the only place the handshake
+            // is serviced, so such a write would spin Core 0 forever. Wake early on
+            // a pause request and park (RAM-resident, raw watchdog feed); the SSR is
+            // already de-energised by the faulted iterate. Between parks the
+            // watchdog is still not fed, so a sustained sensor fault still resets
+            // the chip as intended.
+            let _ = select(
+                Timer::after(Duration::from_secs(1)),
+                flash_handshake::PAUSE_WAKE.wait(),
+            )
+            .await;
+            if flash_handshake::pause_requested() {
+                let _ = controller.force_ssr_off();
+                flash_handshake::park_until_idle(platform::raw_watchdog_feed);
+            }
             continue;
         }
 

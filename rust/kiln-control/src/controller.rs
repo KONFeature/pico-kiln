@@ -177,9 +177,21 @@ where
             Err(()) => {
                 self.ssr_sched.force_off();
                 let _ = self.ssr_out.force_off();
+                let was_error = self.state.state == KilnState::Error;
                 self.state.set_error(self.last_temp_error);
+                // Publish the Error transition (once). A faulted tick returns here,
+                // before the normal status_due check, so without this the Error is
+                // never published: Core 0 never logs the terminal ERROR row and
+                // never clears the recovery pointer, leaving the last CSV row stuck
+                // at RUNNING. Republishing every faulted tick would only spam the
+                // logger, so suppress once already in Error.
+                let publish = if was_error {
+                    pending
+                } else {
+                    Some(self.publish_now(now_ms, wall_s))
+                };
                 return IterationOutcome {
-                    publish: pending,
+                    publish,
                     faulted: true,
                 };
             }
@@ -241,8 +253,10 @@ where
                 let _ = self.ssr_out.force_off();
                 self.state.set_error(self.last_temp_error);
                 self.tuner = None;
+                // Publish the Error so Core 0 logs it (this is a Tuning→Error
+                // transition, so it is always the first Error tick — see iterate).
                 return IterationOutcome {
-                    publish: None,
+                    publish: Some(self.publish_now(now_ms, wall_s)),
                     faulted: true,
                 };
             }
@@ -257,8 +271,9 @@ where
             self.tuner = None;
             self.ssr_sched.force_off();
             let _ = self.ssr_out.force_off();
+            // Publish the over-temp Error so Core 0 logs the terminal row.
             return IterationOutcome {
-                publish: None,
+                publish: Some(self.publish_now(now_ms, wall_s)),
                 faulted: true,
             };
         }

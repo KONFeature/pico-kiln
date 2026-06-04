@@ -30,7 +30,7 @@ mod tests {
     use super::{ControlParams, Controller};
     use kiln_core::profile::{Profile, Step};
     use kiln_core::protocol::{Command, ProfileName};
-    use kiln_core::state::KilnState;
+    use kiln_core::state::{KilnError, KilnState};
     use kiln_core::tuner::TuningMode;
 
     fn name(s: &str) -> ProfileName {
@@ -137,6 +137,42 @@ mod tests {
         assert!(
             faulted,
             "sustained sensor faults must trigger the emergency path"
+        );
+    }
+
+    #[test]
+    fn emergency_publishes_error_status_once_for_logging() {
+        let mut c = new_controller();
+        // One good reading initialises the filter.
+        assert!(!c.iterate(None, 1_000, 1).faulted);
+
+        // Sensor faults forever; the emergency iteration must PUBLISH an Error
+        // status so Core 0 can log the terminal ERROR row and clear the recovery
+        // pointer. Faulted ticks return before the normal status check, so without
+        // the fix they publish nothing and the last logged row stays RUNNING.
+        c.sensor_mut().set_fault(true);
+        let mut emergency = None;
+        for i in 2..=80u64 {
+            let o = c.iterate(None, i * 1_000, i as i64);
+            if o.faulted {
+                emergency = Some(o);
+                break;
+            }
+        }
+        let o = emergency.expect("emergency path must be reached");
+        let snap = o
+            .publish
+            .expect("emergency iteration must publish an Error status for logging");
+        assert_eq!(snap.state, KilnState::Error);
+        assert!(matches!(snap.error, Some(KilnError::SensorFault)));
+
+        // A subsequent faulted tick (already in Error) must NOT republish — avoid
+        // waking the logger every second once the terminal row is written.
+        let o2 = c.iterate(None, 81_000, 81);
+        assert!(o2.faulted);
+        assert!(
+            o2.publish.is_none(),
+            "must not republish while already in Error"
         );
     }
 
