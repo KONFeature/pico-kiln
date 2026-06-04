@@ -276,7 +276,7 @@ where
             .unwrap()
             .step_target_temp()
             .unwrap_or(0.0) as f32;
-        self.ssr_sched.set_output(ssr_output as f32);
+        self.ssr_sched.set_output(self.state.ssr_output); // reuse the already-narrowed f32
 
         if !continue_tuning {
             let max = self.tuner.as_ref().unwrap().max_temp;

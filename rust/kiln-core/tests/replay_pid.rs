@@ -13,11 +13,16 @@
 use kiln_core::Pid;
 use std::path::PathBuf;
 
-/// Absolute tolerance. The PID now computes in f32 while the golden is f64, so
-/// terms (p/i/d up to ~1e4–1e5 in the step-down phase) carry f32 representation
-/// error plus a little integral-accumulation drift. 0.5 covers that while still
-/// catching any real divergence in the control output (which is clamped 0–100).
+/// Absolute tolerance for the wide-dynamic-range fields. `output` is clamped
+/// 0–100, but `p_term`/`d_term` reach ~1e4–1e5 in the step-down phase, where the
+/// f32 representation error is larger; 0.5 covers that while still catching any
+/// real divergence.
 const TOL: f64 = 0.5;
+/// Tighter tolerance for `i_term`. Unlike p/d, the integral term is bounded
+/// (`ki * integral`, with `integral` clamped to `out_max/ki` → `i_term` ≤ 100, and
+/// ≤ ~12.6 in this fixture), so its f32 error is tiny (<1e-3). Hold it to 1e-2 so a
+/// real `ki` / integral-accumulation bug can't hide behind the looser 0.5.
+const I_TERM_TOL: f64 = 1e-2;
 
 struct Row {
     idx: usize,
@@ -74,11 +79,11 @@ fn load_rows() -> Vec<Row> {
     rows
 }
 
-fn assert_close(actual: f64, expected: f64, idx: usize, field: &str) {
+fn assert_close(actual: f64, expected: f64, tol: f64, idx: usize, field: &str) {
     let diff = (actual - expected).abs();
     assert!(
-        diff <= TOL,
-        "row {idx} {field}: rust={actual} ref={expected} (|Δ|={diff:e} > {TOL:e})"
+        diff <= tol,
+        "row {idx} {field}: rust={actual} ref={expected} (|Δ|={diff:e} > {tol:e})"
     );
 }
 
@@ -97,10 +102,10 @@ fn replay_matches_reference_pid() {
         let out = pid.update(r.setpoint as f32, r.measured as f32, r.time_s);
         let s = pid.stats();
 
-        assert_close(out as f64, r.output, r.idx, "output");
-        assert_close(s.p_term as f64, r.p_term, r.idx, "p_term");
-        assert_close(s.i_term as f64, r.i_term, r.idx, "i_term");
-        assert_close(s.d_term as f64, r.d_term, r.idx, "d_term");
+        assert_close(out as f64, r.output, TOL, r.idx, "output");
+        assert_close(s.p_term as f64, r.p_term, TOL, r.idx, "p_term");
+        assert_close(s.i_term as f64, r.i_term, I_TERM_TOL, r.idx, "i_term");
+        assert_close(s.d_term as f64, r.d_term, TOL, r.idx, "d_term");
         assert_eq!(
             s.integral_frozen, r.integral_frozen,
             "row {} integral_frozen: rust={} ref={}",
