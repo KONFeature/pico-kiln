@@ -264,12 +264,12 @@ impl KilnConfig {
     /// The safety/rate/stall subset, as the `kiln-core` controller wants it.
     pub fn controller_config(&self) -> ControllerConfig {
         ControllerConfig {
-            max_temp: self.max_temp,
-            rate_measurement_window: self.rate_measurement_window,
-            rate_recording_interval: self.rate_recording_interval,
-            stall_check_interval: self.stall_check_interval,
+            max_temp: self.max_temp as f32,
+            rate_measurement_window: self.rate_measurement_window as f32,
+            rate_recording_interval: self.rate_recording_interval as f32,
+            stall_check_interval: self.stall_check_interval as f32,
             stall_consecutive_fails: self.stall_consecutive_fails,
-            stall_min_step_time: self.stall_min_step_time,
+            stall_min_step_time: self.stall_min_step_time as f32,
         }
     }
 

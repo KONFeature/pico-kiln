@@ -56,9 +56,9 @@ pub fn parse_last_log_entry(line: &str) -> Option<LastLogEntry> {
 
     Some(LastLogEntry {
         state: parse_state(cols[5]),
-        last_temp: cols[2].trim().parse::<f64>().ok()?,
-        last_target_temp: cols[3].trim().parse::<f64>().ok()?,
-        elapsed_seconds: cols[1].trim().parse::<f64>().ok()?,
+        last_temp: cols[2].trim().parse::<f64>().ok()? as f32,
+        last_target_temp: cols[3].trim().parse::<f64>().ok()? as f32,
+        elapsed_seconds: cols[1].trim().parse::<f64>().ok()? as f32,
         step_index,
     })
 }

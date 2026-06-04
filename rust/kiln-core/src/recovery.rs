@@ -23,7 +23,7 @@ use crate::state::KilnState;
 
 /// `|x|` without `std`/libm.
 #[inline]
-fn abs(x: f64) -> f64 {
+fn abs(x: f32) -> f32 {
     if x < 0.0 {
         -x
     } else {
@@ -43,13 +43,13 @@ pub struct LastLogEntry {
     pub state: KilnState,
     /// Last logged current temperature (°C) — CSV `current_temp`. The deviation
     /// check compares against this.
-    pub last_temp: f64,
+    pub last_temp: f32,
     /// Last logged target temperature (°C) — CSV `target_temp`. Parsed for
     /// schema validation (a malformed column rejects the row, matching the
     /// reference's `float(values[3])`); not part of the decision.
-    pub last_target_temp: f64,
+    pub last_target_temp: f32,
     /// How far into the run the last entry was (seconds) — CSV `elapsed`.
-    pub elapsed_seconds: f64,
+    pub elapsed_seconds: f32,
     /// Last step index (0-based), or `None` if the column was blank.
     pub step_index: Option<usize>,
 }
@@ -61,9 +61,9 @@ pub struct RecoveryDecision {
     /// Whether resuming is safe and warranted.
     pub can_recover: bool,
     /// Echoed `elapsed_seconds` to resume from.
-    pub elapsed_seconds: f64,
+    pub elapsed_seconds: f32,
     /// Echoed last logged temperature.
-    pub last_temp: f64,
+    pub last_temp: f32,
     /// Echoed last step index.
     pub step_index: Option<usize>,
 }
@@ -83,8 +83,8 @@ pub struct RecoveryDecision {
 /// 4. otherwise recover.
 pub fn check_recovery(
     entry: &LastLogEntry,
-    current_temp: f64,
-    max_temp_delta: f64,
+    current_temp: f32,
+    max_temp_delta: f32,
 ) -> RecoveryDecision {
     // Echo the resume parameters through regardless of outcome, matching how the
     // reference fills RecoveryInfo (recovery.py:198-201) before the checks.
@@ -117,7 +117,7 @@ pub fn check_recovery(
 mod tests {
     use super::*;
 
-    fn running(last_temp: f64) -> LastLogEntry {
+    fn running(last_temp: f32) -> LastLogEntry {
         LastLogEntry {
             state: KilnState::Running,
             last_temp,

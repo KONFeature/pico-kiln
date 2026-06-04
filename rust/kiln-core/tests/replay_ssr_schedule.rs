@@ -91,7 +91,7 @@ fn replay_matches_reference_ssr_schedule() {
     );
 
     // Generator seeds the SSRController's clock at 0 before construction.
-    let mut s = SsrSchedule::new(cycle_time, 0);
+    let mut s = SsrSchedule::new(cycle_time as f32, 0);
 
     let mut on_count = 0u32;
     let mut off_count = 0u32;

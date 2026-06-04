@@ -46,13 +46,13 @@ pub enum KilnState {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum KilnError {
     MaxTempExceeded {
-        temp: f64,
-        max: f64,
+        temp: f32,
+        max: f32,
     },
     NoActiveProfile,
     Stall {
-        actual_rate: f64,
-        min_rate: f64,
+        actual_rate: f32,
+        min_rate: f32,
     },
     /// Emergency shutdown: too many consecutive sensor faults
     /// (`temp_filter::TempError::EmergencyShutdown`). Mirrors the reference's
@@ -67,12 +67,12 @@ pub enum KilnError {
 /// `config.example.py`).
 #[derive(Debug, Clone, Copy)]
 pub struct ControllerConfig {
-    pub max_temp: f64,
-    pub rate_measurement_window: f64,
-    pub rate_recording_interval: f64,
-    pub stall_check_interval: f64,
+    pub max_temp: f32,
+    pub rate_measurement_window: f32,
+    pub rate_recording_interval: f32,
+    pub stall_check_interval: f32,
     pub stall_consecutive_fails: u32,
-    pub stall_min_step_time: f64,
+    pub stall_min_step_time: f32,
 }
 
 impl Default for ControllerConfig {
@@ -177,8 +177,7 @@ impl KilnController {
     }
     /// Measured rate over the configured window (°C/h).
     pub fn measured_rate(&self) -> f32 {
-        self.temp_history
-            .get_rate(self.cfg.rate_measurement_window as f32)
+        self.temp_history.get_rate(self.cfg.rate_measurement_window)
     }
 
     // ---- lifecycle -------------------------------------------------------
@@ -277,11 +276,9 @@ impl KilnController {
     pub fn update(&mut self, current_temp: f32, now: f64) -> f32 {
         self.current_temp = current_temp;
 
-        // Safety compare in f64 (cfg.max_temp / KilnError stay f64 for the wire
-        // format); current_temp is exact in f32 at these magnitudes.
-        if current_temp as f64 > self.cfg.max_temp {
+        if current_temp > self.cfg.max_temp {
             self.set_error(KilnError::MaxTempExceeded {
-                temp: current_temp as f64,
+                temp: current_temp,
                 max: self.cfg.max_temp,
             });
             return 0.0;
@@ -301,7 +298,7 @@ impl KilnController {
 
         let elapsed = self.get_elapsed_time(now);
 
-        if elapsed - self.last_temp_recording >= self.cfg.rate_recording_interval as f32 {
+        if elapsed - self.last_temp_recording >= self.cfg.rate_recording_interval {
             self.record_temp_for_rate(elapsed);
         }
 
@@ -339,21 +336,18 @@ impl KilnController {
         }
         if current_step.kind == StepKind::Ramp {
             if let Some(mr) = min_rate {
-                if mr > 0.0
-                    && elapsed - self.last_stall_check >= self.cfg.stall_check_interval as f32
-                {
+                if mr > 0.0 && elapsed - self.last_stall_check >= self.cfg.stall_check_interval {
                     self.last_stall_check = elapsed;
                     let time_in_step = elapsed - self.step_start_time;
-                    if time_in_step >= self.cfg.stall_min_step_time as f32 {
-                        let actual_rate = self
-                            .temp_history
-                            .get_rate(self.cfg.rate_measurement_window as f32);
+                    if time_in_step >= self.cfg.stall_min_step_time {
+                        let actual_rate =
+                            self.temp_history.get_rate(self.cfg.rate_measurement_window);
                         if abs(actual_rate) < mr {
                             self.stall_fail_count += 1;
                             if self.stall_fail_count >= self.cfg.stall_consecutive_fails {
                                 self.set_error(KilnError::Stall {
-                                    actual_rate: abs(actual_rate) as f64,
-                                    min_rate: mr as f64,
+                                    actual_rate: abs(actual_rate),
+                                    min_rate: mr,
                                 });
                                 return 0.0;
                             }

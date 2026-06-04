@@ -15,13 +15,13 @@ pub struct ControlParams {
     /// Base PID gains (`PID_KP_BASE` / `PID_KI_BASE` / `PID_KD_BASE`).
     pub pid_base: Gains,
     /// Heat-loss coefficient for gain scheduling (`THERMAL_H`; 0 disables).
-    pub thermal_h: f64,
+    pub thermal_h: f32,
     /// Ambient reference for gain scheduling (`THERMAL_T_AMBIENT`).
-    pub thermal_t_ambient: f64,
+    pub thermal_t_ambient: f32,
     /// SSR time-proportional cycle period (`SSR_CYCLE_TIME`), seconds.
-    pub ssr_cycle_time_s: f64,
+    pub ssr_cycle_time_s: f32,
     /// Calibration offset added to every reading (`THERMOCOUPLE_OFFSET`).
-    pub thermocouple_offset: f64,
+    pub thermocouple_offset: f32,
     /// Software median window (`TEMP_MEDIAN_WINDOW`); clamped to the filter cap.
     pub median_window: usize,
     /// Status publish cadence in milliseconds (`STATUS_UPDATE_INTERVAL`).

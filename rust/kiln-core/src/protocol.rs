@@ -128,9 +128,9 @@ pub enum Command {
     ResumeProfile {
         profile: ProfileName,
         parsed: Profile,
-        elapsed_seconds: f64,
-        last_logged_temp: Option<f64>,
-        current_temp: Option<f64>,
+        elapsed_seconds: f32,
+        last_logged_temp: Option<f32>,
+        current_temp: Option<f32>,
         step_index: Option<usize>,
     },
     /// Stop the current profile. (`STOP`)
@@ -141,7 +141,7 @@ pub enum Command {
     /// (`START_TUNING`)
     StartTuning {
         mode: TuningMode,
-        max_temp: Option<f64>,
+        max_temp: Option<f32>,
     },
     /// Stop auto-tuning. (`STOP_TUNING`)
     StopTuning,
@@ -203,22 +203,22 @@ pub struct ScheduledSnapshot {
 pub struct TuningSnapshot {
     pub stage: TuningStage,
     pub mode: TuningMode,
-    pub max_temp: f64,
+    pub max_temp: f32,
     /// Current step index (0-based).
     pub step_index: usize,
     pub total_steps: usize,
     /// Seconds elapsed in the current step (the reference's merged `elapsed`).
-    pub step_elapsed: f64,
+    pub step_elapsed: f32,
     /// Fixed SSR output the current step holds (%).
-    pub ssr_percent: f64,
+    pub ssr_percent: f32,
     /// The current step's temperature target, if any.
-    pub target_temp: Option<f64>,
+    pub target_temp: Option<f32>,
     /// The current step's timeout (seconds).
-    pub timeout: f64,
+    pub timeout: f32,
     /// Whether the current step has detected a plateau.
     pub plateau_detected: bool,
     /// Peak temperature seen during the current step (°C).
-    pub peak_temp: f64,
+    pub peak_temp: f32,
 }
 
 /// A status snapshot from the control loop (Core 1) to the application layer
@@ -227,13 +227,14 @@ pub struct TuningSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Status {
     /// Unix seconds at capture (injected; `time.time()` in the reference).
+    /// Wall-clock epoch — stays `f64` (f32 ulp at ~1.7e9 is 128 s).
     pub timestamp: f64,
     pub state: KilnState,
-    pub current_temp: f64,
-    pub target_temp: f64,
-    pub ssr_output: f64,
+    pub current_temp: f32,
+    pub target_temp: f32,
+    pub ssr_output: f32,
     /// Seconds since the run started.
-    pub elapsed: f64,
+    pub elapsed: f32,
     /// Typed fault reason, if the controller is in error.
     pub error: Option<KilnError>,
     pub step_index: Option<usize>,
@@ -241,13 +242,13 @@ pub struct Status {
     pub step_kind: Option<StepKind>,
     pub total_steps: Option<usize>,
     /// Target ramp rate for the current step (°C/h); `0` when not applicable.
-    pub desired_rate: f64,
+    pub desired_rate: f32,
     /// Seconds elapsed within the current step.
-    pub step_elapsed: f64,
+    pub step_elapsed: f32,
     pub is_recovering: bool,
-    pub recovery_target_temp: Option<f64>,
+    pub recovery_target_temp: Option<f32>,
     /// Measured rate over the controller's window (°C/h).
-    pub measured_rate: f64,
+    pub measured_rate: f32,
     /// The active (running or just-completed) profile's filename, if any.
     pub profile_name: Option<ProfileName>,
     /// The delayed-start scheduler's snapshot, if a profile is queued.

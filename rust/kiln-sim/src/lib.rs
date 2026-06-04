@@ -116,8 +116,8 @@ pub fn simulate(name: &str, profile: Profile, ticks: u32, mut model: ThermalMode
         samples.push(Sample {
             t_s: wall,
             temp: model.temp,
-            target: snap.target_temp,
-            ssr: snap.ssr_output,
+            target: snap.target_temp as f64,
+            ssr: snap.ssr_output as f64,
             state: snap.state,
         });
     }

@@ -27,14 +27,14 @@ pub enum TuningStage {
 
 
 const PLATEAU_WINDOW: usize = 5;
-const PLATEAU_CHECK_INTERVAL: f64 = 60.0;
-const PLATEAU_RANGE: f64 = 0.5;
+const PLATEAU_CHECK_INTERVAL: f64 = 60.0; // compared against an absolute-time delta (f64 anchor)
+const PLATEAU_RANGE: f32 = 0.5;
 
 /// Max steps any mode produces (THOROUGH builds 13).
 pub const MAX_TUNING_STEPS: usize = 16;
 
 #[inline]
-fn fmin(a: f64, b: f64) -> f64 {
+fn fmin(a: f32, b: f32) -> f32 {
     if a < b {
         a
     } else {
@@ -46,16 +46,18 @@ fn fmin(a: f64, b: f64) -> f64 {
 /// completion condition is met.
 #[derive(Debug, Clone, Copy)]
 pub struct TuningStep {
-    pub ssr_percent: f64,
-    pub target_temp: Option<f64>,
-    pub hold_time: f64,
-    pub timeout: f64,
+    pub ssr_percent: f32,
+    pub target_temp: Option<f32>,
+    pub hold_time: f32,
+    pub timeout: f32,
     pub plateau_detect: bool,
 
+    // Absolute monotonic-seconds anchors stay f64; durations derived from them
+    // are narrowed to f32 at use (see `update`).
     start_time: Option<f64>,
     target_reached_time: Option<f64>,
-    peak_temp: f64,
-    temp_history: [f64; PLATEAU_WINDOW],
+    peak_temp: f32,
+    temp_history: [f32; PLATEAU_WINDOW],
     temp_len: usize,
     last_plateau_check: f64,
     plateau_detected: bool,
@@ -65,10 +67,10 @@ impl TuningStep {
     /// Define a step (its completion conditions). Runtime state is set by
     /// [`start`](Self::start).
     pub fn new(
-        ssr_percent: f64,
-        target_temp: Option<f64>,
-        hold_time: f64,
-        timeout: f64,
+        ssr_percent: f32,
+        target_temp: Option<f32>,
+        hold_time: f32,
+        timeout: f32,
         plateau_detect: bool,
     ) -> Self {
         Self {
@@ -104,7 +106,7 @@ impl TuningStep {
         }
     }
 
-    fn start(&mut self, current_temp: f64, now: f64) {
+    fn start(&mut self, current_temp: f32, now: f64) {
         self.start_time = Some(now);
         self.target_reached_time = None;
         self.peak_temp = current_temp;
@@ -113,7 +115,7 @@ impl TuningStep {
         self.plateau_detected = false;
     }
 
-    fn push_temp(&mut self, t: f64) {
+    fn push_temp(&mut self, t: f32) {
         if self.temp_len < PLATEAU_WINDOW {
             self.temp_history[self.temp_len] = t;
             self.temp_len += 1;
@@ -125,7 +127,7 @@ impl TuningStep {
         }
     }
 
-    fn history_range(&self) -> f64 {
+    fn history_range(&self) -> f32 {
         let mut mn = self.temp_history[0];
         let mut mx = self.temp_history[0];
         for &v in &self.temp_history[1..self.temp_len] {
@@ -140,8 +142,8 @@ impl TuningStep {
     }
 
     /// Returns `(ssr_output, step_complete)`. Mirrors `TuningStep.update`.
-    fn update(&mut self, current_temp: f64, now: f64) -> (f64, bool) {
-        let elapsed = now - self.start_time.unwrap_or(now);
+    fn update(&mut self, current_temp: f32, now: f64) -> (f32, bool) {
+        let elapsed = (now - self.start_time.unwrap_or(now)) as f32;
 
         if elapsed >= self.timeout {
             return (self.ssr_percent, true);
@@ -167,7 +169,7 @@ impl TuningStep {
                     if self.target_reached_time.is_none() {
                         self.target_reached_time = Some(now);
                     }
-                    let hold_elapsed = now - self.target_reached_time.unwrap();
+                    let hold_elapsed = (now - self.target_reached_time.unwrap()) as f32;
                     if hold_elapsed >= self.hold_time {
                         return (self.ssr_percent, true);
                     }
@@ -204,7 +206,7 @@ impl StepBuf {
     }
 }
 
-fn build_step_sequence(mode: TuningMode, max_temp: f64) -> StepBuf {
+fn build_step_sequence(mode: TuningMode, max_temp: f32) -> StepBuf {
     let mut b = StepBuf::new();
     match mode {
         TuningMode::Safe => {
@@ -227,7 +229,7 @@ fn build_step_sequence(mode: TuningMode, max_temp: f64) -> StepBuf {
             b.push(TuningStep::new(0.0, None, 0.0, 3600.0, false));
         }
         TuningMode::Thorough => {
-            for &power in &[20.0_f64, 40.0, 60.0, 80.0] {
+            for &power in &[20.0_f32, 40.0, 60.0, 80.0] {
                 b.push(TuningStep::new(power, None, 0.0, 2700.0, true));
                 b.push(TuningStep::new(power, None, 0.0, 300.0, false));
                 b.push(TuningStep::new(0.0, Some(50.0), 0.0, 1200.0, false));
@@ -254,7 +256,7 @@ fn build_step_sequence(mode: TuningMode, max_temp: f64) -> StepBuf {
     b
 }
 
-fn default_max_temp(mode: TuningMode) -> f64 {
+fn default_max_temp(mode: TuningMode) -> f32 {
     match mode {
         TuningMode::Safe => 200.0,
         _ => 900.0,
@@ -266,17 +268,18 @@ fn default_max_temp(mode: TuningMode) -> f64 {
 #[derive(Debug, Clone)]
 pub struct ZieglerNicholsTuner {
     pub mode: TuningMode,
-    pub max_temp: f64,
+    pub max_temp: f32,
     steps: [TuningStep; MAX_TUNING_STEPS],
     n_steps: usize,
     stage: TuningStage,
+    // Absolute monotonic-seconds anchor (durations narrowed to f32 at use).
     start_time: Option<f64>,
     current_step_index: usize,
 }
 
 impl ZieglerNicholsTuner {
     /// Create a tuner; `max_temp` falls back to the mode default when `None`.
-    pub fn new(mode: TuningMode, max_temp: Option<f64>) -> Self {
+    pub fn new(mode: TuningMode, max_temp: Option<f32>) -> Self {
         let max_temp = max_temp.unwrap_or_else(|| default_max_temp(mode));
         let buf = build_step_sequence(mode, max_temp);
         Self {
@@ -299,7 +302,7 @@ impl ZieglerNicholsTuner {
 
     /// Advance tuning with the latest `current_temp` at time `now`. Returns
     /// `(ssr_output, continue_tuning)`. Mirrors `ZieglerNicholsTuner.update`.
-    pub fn update(&mut self, current_temp: f64, now: f64) -> (f64, bool) {
+    pub fn update(&mut self, current_temp: f32, now: f64) -> (f32, bool) {
         if current_temp > self.max_temp {
             self.stage = TuningStage::Error;
             return (0.0, false);
@@ -350,22 +353,22 @@ impl ZieglerNicholsTuner {
 
     /// Seconds elapsed in the current step (`now − start`, or `0` before it
     /// starts) — the reference's merged `elapsed` in `get_status`.
-    pub fn step_elapsed(&self, now: f64) -> f64 {
+    pub fn step_elapsed(&self, now: f64) -> f32 {
         match self.current_step().start_time {
-            Some(t) => now - t,
+            Some(t) => (now - t) as f32,
             None => 0.0,
         }
     }
     /// The current step's fixed SSR output (%).
-    pub fn step_ssr_percent(&self) -> f64 {
+    pub fn step_ssr_percent(&self) -> f32 {
         self.current_step().ssr_percent
     }
     /// The current step's temperature target, if any.
-    pub fn step_target_temp(&self) -> Option<f64> {
+    pub fn step_target_temp(&self) -> Option<f32> {
         self.current_step().target_temp
     }
     /// The current step's timeout (seconds).
-    pub fn step_timeout(&self) -> f64 {
+    pub fn step_timeout(&self) -> f32 {
         self.current_step().timeout
     }
     /// Whether the current step has detected a plateau.
@@ -373,7 +376,7 @@ impl ZieglerNicholsTuner {
         self.current_step().plateau_detected
     }
     /// Peak temperature seen during the current step (°C).
-    pub fn step_peak_temp(&self) -> f64 {
+    pub fn step_peak_temp(&self) -> f32 {
         self.current_step().peak_temp
     }
 }

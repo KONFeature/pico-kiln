@@ -229,7 +229,7 @@ pub async fn csv_logger_task(
                 let _ = csv::write_recovery_event_row(
                     &mut row,
                     s.timestamp,
-                    rec.elapsed_seconds,
+                    rec.elapsed_seconds as f32,
                     s.current_temp,
                     s.target_temp,
                     s.ssr_output,
@@ -604,7 +604,14 @@ mod web {
         }
         let mut msg = heapless::String::<64>::new();
         let _ = write!(msg, "Tuning started in {} mode", mode_str);
-        enqueue(&state, Command::StartTuning { mode, max_temp }, &msg)
+        enqueue(
+            &state,
+            Command::StartTuning {
+                mode,
+                max_temp: max_temp.map(|m| m as f32),
+            },
+            &msg,
+        )
     }
 
     /// Read `profiles/{name}.json` and parse it (Core 0 owns the FS and ships the

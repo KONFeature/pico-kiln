@@ -63,11 +63,11 @@ pub fn write_row<W: Write>(w: &mut W, s: &Status) -> fmt::Result {
 pub fn write_recovery_event_row<W: Write>(
     w: &mut W,
     timestamp: f64,
-    elapsed: f64,
-    current_temp: f64,
-    target_temp: f64,
-    ssr_output: f64,
-    measured_rate: f64,
+    elapsed: f32,
+    current_temp: f32,
+    target_temp: f32,
+    ssr_output: f32,
+    measured_rate: f32,
 ) -> fmt::Result {
     write_iso(w, timestamp as i64)?;
     writeln!(

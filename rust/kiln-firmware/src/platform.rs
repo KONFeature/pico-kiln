@@ -143,10 +143,10 @@ pub fn control_params_from(cfg: &KilnConfig) -> ControlParams {
     ControlParams {
         controller: cfg.controller_config(),
         pid_base: cfg.pid_base(),
-        thermal_h: cfg.thermal_h,
-        thermal_t_ambient: cfg.thermal_t_ambient,
-        ssr_cycle_time_s: cfg.ssr_cycle_time,
-        thermocouple_offset: cfg.thermocouple_offset,
+        thermal_h: cfg.thermal_h as f32,
+        thermal_t_ambient: cfg.thermal_t_ambient as f32,
+        ssr_cycle_time_s: cfg.ssr_cycle_time as f32,
+        thermocouple_offset: cfg.thermocouple_offset as f32,
         median_window: cfg.temp_median_window,
         status_update_interval_ms: cfg.status_update_interval_ms(),
         watchdog_timeout_ms: cfg.watchdog_timeout,
@@ -1194,8 +1194,8 @@ pub async fn attempt_recovery(state: &AppState) -> Option<kiln_app::server::Reco
 
     let decision = kiln_core::recovery::check_recovery(
         &entry,
-        current_temp,
-        state.config.max_recovery_temp_delta,
+        current_temp as f32,
+        state.config.max_recovery_temp_delta as f32,
     );
     if !decision.can_recover {
         return None;
@@ -1227,7 +1227,7 @@ pub async fn attempt_recovery(state: &AppState) -> Option<kiln_app::server::Reco
         parsed,
         elapsed_seconds: decision.elapsed_seconds,
         last_logged_temp: Some(decision.last_temp),
-        current_temp: Some(current_temp),
+        current_temp: Some(current_temp as f32),
         step_index: decision.step_index,
     });
 
@@ -1237,7 +1237,7 @@ pub async fn attempt_recovery(state: &AppState) -> Option<kiln_app::server::Reco
     let _ = filename.push_str(&log_name); // String<64> always fits in String<96>
     Some(kiln_app::server::RecoveryLog {
         filename,
-        elapsed_seconds: decision.elapsed_seconds,
+        elapsed_seconds: decision.elapsed_seconds as f64,
     })
 }
 

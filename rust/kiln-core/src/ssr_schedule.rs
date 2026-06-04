@@ -49,7 +49,7 @@ impl SsrSchedule {
     ///
     /// `cycle_time_s` is truncated to whole milliseconds exactly as the reference
     /// (`int(cycle_time * 1000)`).
-    pub fn new(cycle_time_s: f64, now_ms: u64) -> Self {
+    pub fn new(cycle_time_s: f32, now_ms: u64) -> Self {
         Self {
             cycle_time_ms: (cycle_time_s * 1000.0) as u32,
             duty_cycle: 0.0,

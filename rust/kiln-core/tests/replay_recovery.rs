@@ -51,8 +51,8 @@ fn parse_reason(s: &str) -> Reason {
 
 struct Row {
     entry: LastLogEntry,
-    current_temp: f64,
-    max_delta: f64,
+    current_temp: f32,
+    max_delta: f32,
     expect_recover: bool,
     expect_reason: Reason,
 }

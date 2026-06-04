@@ -91,12 +91,8 @@ where
             0.0,
             100.0,
         );
-        let gains = GainSchedule::new(
-            params.pid_base,
-            params.thermal_h as f32,
-            params.thermal_t_ambient as f32,
-        );
-        let filter = TempFilter::new(params.thermocouple_offset as f32, params.median_window);
+        let gains = GainSchedule::new(params.pid_base, params.thermal_h, params.thermal_t_ambient);
+        let filter = TempFilter::new(params.thermocouple_offset, params.median_window);
         let ssr_sched = SsrSchedule::new(params.ssr_cycle_time_s, now_ms);
         Controller {
             sensor,
@@ -252,9 +248,9 @@ where
         };
         self.state.current_temp = temp;
 
-        if temp as f64 > self.params.controller.max_temp {
+        if temp > self.params.controller.max_temp {
             self.state.set_error(KilnError::MaxTempExceeded {
-                temp: temp as f64,
+                temp,
                 max: self.params.controller.max_temp,
             });
             self.tuner = None;
@@ -266,17 +262,15 @@ where
             };
         }
 
-        // The tuner stays f64; bridge to the now-f32 state at the call boundary.
-        let (ssr_output, continue_tuning) =
-            self.tuner.as_mut().unwrap().update(temp as f64, mono_s);
-        self.state.ssr_output = ssr_output as f32;
+        let (ssr_output, continue_tuning) = self.tuner.as_mut().unwrap().update(temp, mono_s);
+        self.state.ssr_output = ssr_output;
         self.state.target_temp = self
             .tuner
             .as_ref()
             .unwrap()
             .step_target_temp()
-            .unwrap_or(0.0) as f32;
-        self.ssr_sched.set_output(self.state.ssr_output); // reuse the already-narrowed f32
+            .unwrap_or(0.0);
+        self.ssr_sched.set_output(ssr_output);
 
         if !continue_tuning {
             let max = self.tuner.as_ref().unwrap().max_temp;
@@ -284,10 +278,7 @@ where
                 TuningStage::Complete => self.state.state = KilnState::Idle,
                 TuningStage::Error => self
                     .state
-                    .set_error(KilnError::MaxTempExceeded {
-                        temp: temp as f64,
-                        max,
-                    }),
+                    .set_error(KilnError::MaxTempExceeded { temp, max }),
                 TuningStage::Running => {}
             }
             self.tuner = None;
@@ -353,9 +344,9 @@ where
             } => {
                 if self.state.resume_profile(
                     parsed,
-                    elapsed_seconds as f32,
-                    last_logged_temp.map(|t| t as f32),
-                    current_temp.map(|t| t as f32),
+                    elapsed_seconds,
+                    last_logged_temp,
+                    current_temp,
                     step_index,
                     mono_s,
                 ) {
@@ -494,24 +485,24 @@ where
             peak_temp: t.step_peak_temp(),
         });
 
-        // The control state computes in f32; the Status wire format stays f64,
-        // so widen at this single boundary.
+        // Status is f32 throughout except `timestamp`, which is wall-clock epoch
+        // seconds (f32 ulp at ~1.7e9 is 128 s, so it stays f64).
         Status {
             timestamp: wall_s,
             state: self.state.state,
-            current_temp: self.state.current_temp as f64,
-            target_temp: self.state.target_temp as f64,
-            ssr_output: self.state.ssr_output as f64,
-            elapsed: elapsed as f64,
+            current_temp: self.state.current_temp,
+            target_temp: self.state.target_temp,
+            ssr_output: self.state.ssr_output,
+            elapsed,
             error: self.state.error(),
             step_index,
             step_kind,
             total_steps,
-            desired_rate: desired_rate as f64,
-            step_elapsed: step_elapsed as f64,
+            desired_rate,
+            step_elapsed,
             is_recovering: self.state.is_recovering(),
-            recovery_target_temp: self.state.recovery_target_temp().map(|t| t as f64),
-            measured_rate: self.state.measured_rate() as f64,
+            recovery_target_temp: self.state.recovery_target_temp(),
+            measured_rate: self.state.measured_rate(),
             profile_name: self.current_profile,
             scheduled,
             tuning,
