@@ -7,7 +7,10 @@
 use kiln_core::rate_monitor::TempHistory;
 use std::path::PathBuf;
 
-const TOL: f64 = 1e-6;
+// Relaxed from 1e-6: TempHistory now stores (time, temp) as f32, so rates carry
+// f32 representation error (≲ 0.1 °C/h at kiln rates). The relative time values
+// stay small, so the (Δtemp / Δt) division doesn't amplify it materially.
+const TOL: f64 = 1e-1;
 const CAP: usize = 60; // must match the generator's capacity
 
 struct Row {
@@ -83,7 +86,7 @@ fn replay_matches_reference_rate_monitor() {
 
     for r in &rows {
         match r.op.as_str() {
-            "add" => h.add(r.time, r.temp),
+            "add" => h.add(r.time as f32, r.temp as f32),
             "clear" => {
                 h.clear();
                 saw_clear = true;
@@ -94,9 +97,9 @@ fn replay_matches_reference_rate_monitor() {
             saw_full = true;
         }
 
-        assert_close(h.get_rate(60.0), r.rate60, r.idx, "rate60");
-        assert_close(h.get_rate(120.0), r.rate120, r.idx, "rate120");
-        assert_close(h.get_rate(600.0), r.rate600, r.idx, "rate600");
+        assert_close(h.get_rate(60.0) as f64, r.rate60, r.idx, "rate60");
+        assert_close(h.get_rate(120.0) as f64, r.rate120, r.idx, "rate120");
+        assert_close(h.get_rate(600.0) as f64, r.rate600, r.idx, "rate600");
     }
 
     assert!(saw_clear, "fixture never exercised clear()");

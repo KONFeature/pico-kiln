@@ -9,7 +9,7 @@
 
 /// `|x|` without pulling in `std`/libm. Matches Python `abs` for finite values.
 #[inline]
-fn abs(x: f64) -> f64 {
+fn abs(x: f32) -> f32 {
     if x < 0.0 {
         -x
     } else {
@@ -21,7 +21,7 @@ fn abs(x: f64) -> f64 {
 /// `TempHistory(capacity=...)` argument; the kiln controller uses `CAP = 60`.
 #[derive(Debug, Clone)]
 pub struct TempHistory<const CAP: usize> {
-    buf: [(f64, f64); CAP],
+    buf: [(f32, f32); CAP],
     len: usize,
     write_index: usize,
 }
@@ -44,7 +44,7 @@ impl<const CAP: usize> TempHistory<CAP> {
 
     /// Add a `(timestamp, temp)` sample. Once full, overwrites the oldest write
     /// slot exactly as the reference circular buffer does.
-    pub fn add(&mut self, timestamp: f64, temp: f64) {
+    pub fn add(&mut self, timestamp: f32, temp: f32) {
         if self.len < CAP {
             self.buf[self.len] = (timestamp, temp);
             self.len += 1;
@@ -57,7 +57,7 @@ impl<const CAP: usize> TempHistory<CAP> {
     /// Temperature rate over `window_seconds`, in °C/hour
     /// (positive = heating, negative = cooling). Returns `0.0` with fewer than
     /// two samples or a zero time span.
-    pub fn get_rate(&self, window_seconds: f64) -> f64 {
+    pub fn get_rate(&self, window_seconds: f32) -> f32 {
         if self.len < 2 {
             return 0.0;
         }
@@ -75,7 +75,7 @@ impl<const CAP: usize> TempHistory<CAP> {
 
         // old = among samples with time <= recent_time, the one closest to
         // target_time (first min wins, matching Python `min`).
-        let mut old: Option<(f64, f64)> = None;
+        let mut old: Option<(f32, f32)> = None;
         for &r in active {
             if r.0 <= recent_time {
                 match old {
@@ -137,17 +137,17 @@ mod tests {
         let mut h = TempHistory::<60>::new();
         // +1 C every 10 s over 600 s => 360 C/h.
         for i in 0..=60 {
-            h.add((i as f64) * 10.0, 20.0 + i as f64);
+            h.add((i as f32) * 10.0, 20.0 + i as f32);
         }
         let rate = h.get_rate(600.0);
-        assert!((rate - 360.0).abs() < 1e-9, "rate={rate}");
+        assert!((rate - 360.0).abs() < 1e-2, "rate={rate}");
     }
 
     #[test]
     fn ring_overwrites_when_full() {
         let mut h = TempHistory::<4>::new();
         for i in 0..6 {
-            h.add(i as f64, i as f64);
+            h.add(i as f32, i as f32);
         }
         assert!(h.is_full());
         assert_eq!(h.size(), 4);

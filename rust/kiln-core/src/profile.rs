@@ -8,7 +8,7 @@
 
 /// `|x|` without `std`/libm. Matches Python `abs` for finite values.
 #[inline]
-fn abs(x: f64) -> f64 {
+fn abs(x: f32) -> f32 {
     if x < 0.0 {
         -x
     } else {
@@ -17,13 +17,13 @@ fn abs(x: f64) -> f64 {
 }
 
 /// Default ramp rate when a ramp omits it — mirrors `step.get('desired_rate', 100)`.
-pub const DEFAULT_RAMP_RATE: f64 = 100.0;
+pub const DEFAULT_RAMP_RATE: f32 = 100.0;
 /// Assumed natural-cooling rate, used only for duration *estimation* — mirrors
 /// the reference's `dtemp / 100.0` in cooling steps.
-pub const COOLING_ESTIMATE_RATE: f64 = 100.0;
+pub const COOLING_ESTIMATE_RATE: f32 = 100.0;
 /// Start temperature assumed when the first step has no target — mirrors
 /// `self.steps[0].get('target_temp', 20)`.
-pub const ASSUMED_START_TEMP: f64 = 20.0;
+pub const ASSUMED_START_TEMP: f32 = 20.0;
 /// Max inline steps (no heap). Real kiln schedules are 4-5 steps; 16 keeps
 /// generous headroom (e.g. for future step types) while halving the inline
 /// `[Step; MAX_STEPS]` array. `Profile` is duplicated in every in-flight command,
@@ -43,10 +43,10 @@ pub enum StepKind {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Step {
     pub kind: StepKind,
-    pub target_temp: Option<f64>,
-    pub desired_rate: Option<f64>,
-    pub min_rate: Option<f64>,
-    pub duration: Option<f64>,
+    pub target_temp: Option<f32>,
+    pub desired_rate: Option<f32>,
+    pub min_rate: Option<f32>,
+    pub duration: Option<f32>,
 }
 
 impl Default for Step {
@@ -65,7 +65,7 @@ impl Step {
     /// Controlled ramp to `target_temp` at `desired_rate` °C/h (defaults to
     /// [`DEFAULT_RAMP_RATE`] when `None`), with an optional `min_rate`. Used by
     /// `kiln-sim` and the replay/unit tests to build profile fixtures.
-    pub fn ramp(target_temp: f64, desired_rate: Option<f64>, min_rate: Option<f64>) -> Self {
+    pub fn ramp(target_temp: f32, desired_rate: Option<f32>, min_rate: Option<f32>) -> Self {
         Step {
             kind: StepKind::Ramp,
             target_temp: Some(target_temp),
@@ -76,7 +76,7 @@ impl Step {
     }
 
     /// Hold `target_temp` for `duration` seconds.
-    pub fn hold(target_temp: f64, duration: f64) -> Self {
+    pub fn hold(target_temp: f32, duration: f32) -> Self {
         Step {
             kind: StepKind::Hold,
             target_temp: Some(target_temp),
@@ -88,7 +88,7 @@ impl Step {
 
     /// Natural cooling, optionally until `target_temp` is reached. Used by
     /// `kiln-sim` and the replay/unit tests to build profile fixtures.
-    pub fn cooling(target_temp: Option<f64>) -> Self {
+    pub fn cooling(target_temp: Option<f32>) -> Self {
         Step {
             kind: StepKind::Cooling,
             target_temp,
@@ -99,7 +99,7 @@ impl Step {
     }
 
     /// `step.get('desired_rate', 100)`.
-    pub fn desired_rate_or_default(&self) -> f64 {
+    pub fn desired_rate_or_default(&self) -> f32 {
         match self.desired_rate {
             Some(r) => r,
             None => DEFAULT_RAMP_RATE,
@@ -121,7 +121,7 @@ pub enum ProfileError {
 pub struct Profile {
     steps: [Step; MAX_STEPS],
     n_steps: usize,
-    duration: f64,
+    duration: f32,
 }
 
 impl Profile {
@@ -157,13 +157,13 @@ impl Profile {
 
     /// Estimated total duration in seconds. Used by the golden replay test
     /// (`tests/replay_profile.rs`).
-    pub fn duration(&self) -> f64 {
+    pub fn duration(&self) -> f32 {
         self.duration
     }
 
     /// Port of `_calculate_duration`. Estimates duration from desired rates;
     /// actual run time varies with the kiln's thermal capacity.
-    fn calculate_duration(&self) -> f64 {
+    fn calculate_duration(&self) -> f32 {
         let steps = &self.steps[..self.n_steps];
         let mut total = 0.0;
         // `self.steps[0].get('target_temp', 20)`
@@ -201,7 +201,7 @@ impl Profile {
     /// `elapsed_seconds >= duration` (fallback completion check; step
     /// sequencing is the primary mechanism in the controller). Used by the
     /// golden replay test (`tests/replay_profile.rs`).
-    pub fn is_complete(&self, elapsed_seconds: f64) -> bool {
+    pub fn is_complete(&self, elapsed_seconds: f32) -> bool {
         elapsed_seconds >= self.duration
     }
 
@@ -209,7 +209,7 @@ impl Profile {
     /// `min(100.0, (elapsed / duration) * 100)`, returning `100.0` when the
     /// duration is zero. Used by the golden replay test
     /// (`tests/replay_profile.rs`).
-    pub fn progress(&self, elapsed_seconds: f64) -> f64 {
+    pub fn progress(&self, elapsed_seconds: f32) -> f32 {
         if self.duration == 0.0 {
             return 100.0;
         }
@@ -246,7 +246,7 @@ mod tests {
         ])
         .unwrap();
         assert!(
-            (p.duration() - (0.0 + 600.0 + 18000.0)).abs() < 1e-9,
+            (p.duration() - (0.0 + 600.0 + 18000.0)).abs() < 1e-1,
             "dur={}",
             p.duration()
         );
@@ -258,14 +258,14 @@ mod tests {
         // A leading hold sets (and doesn't advance) the start temp, so the ramp
         // truly spans 20->120. Default rate 100 C/h => 100/100*3600 = 3600 s.
         let p = Profile::new(&[Step::hold(20.0, 0.0), Step::ramp(120.0, None, None)]).unwrap();
-        assert!((p.duration() - 3600.0).abs() < 1e-9, "dur={}", p.duration());
+        assert!((p.duration() - 3600.0).abs() < 1e-1, "dur={}", p.duration());
     }
 
     #[test]
     fn progress_and_complete() {
         let p = Profile::new(&[Step::hold(600.0, 1000.0)]).unwrap();
         assert_eq!(p.progress(0.0), 0.0);
-        assert!((p.progress(500.0) - 50.0).abs() < 1e-9);
+        assert!((p.progress(500.0) - 50.0).abs() < 1e-1);
         assert_eq!(p.progress(1000.0), 100.0);
         assert_eq!(p.progress(5000.0), 100.0); // clamped
         assert!(!p.is_complete(999.0));

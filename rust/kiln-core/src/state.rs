@@ -16,7 +16,7 @@ use crate::rate_monitor::TempHistory;
 
 /// `|x|` without `std`/libm.
 #[inline]
-fn abs(x: f64) -> f64 {
+fn abs(x: f32) -> f32 {
     if x < 0.0 {
         -x
     } else {
@@ -25,10 +25,10 @@ fn abs(x: f64) -> f64 {
 }
 
 /// Temperature-loss tolerance (°C) for recovery detection — `TEMP_LOSS_THRESHOLD`.
-pub const TEMP_LOSS_THRESHOLD: f64 = 5.0;
+pub const TEMP_LOSS_THRESHOLD: f32 = 5.0;
 /// Start temperature assumed by `_find_step_for_elapsed` (note: differs from the
 /// duration estimator, which seeds from `steps[0].target_temp`).
-const FIND_START_TEMP: f64 = 20.0;
+const FIND_START_TEMP: f32 = 20.0;
 const RATE_HISTORY_CAP: usize = 60;
 
 /// Controller state. Integer values match the reference `KilnState` constants
@@ -94,28 +94,32 @@ impl Default for ControllerConfig {
 pub struct KilnController {
     pub state: KilnState,
     profile: Option<Profile>,
+    // Absolute monotonic-seconds anchors stay f64: only their *difference* (a
+    // small `dt`) is ever used, and that difference is narrowed to f32 in
+    // `get_elapsed_time`. Keeping the anchors f64 avoids the catastrophic
+    // cancellation a large f32 timestamp would suffer.
     start_time: Option<f64>,
-    elapsed_offset: f64,
+    elapsed_offset: f32,
     last_update_time: Option<f64>,
 
-    pub current_temp: f64,
-    pub target_temp: f64,
-    pub ssr_output: f64,
+    pub current_temp: f32,
+    pub target_temp: f32,
+    pub ssr_output: f32,
 
     cfg: ControllerConfig,
 
     current_step_index: usize,
-    step_start_time: f64,
-    step_start_temp: f64,
+    step_start_time: f32,
+    step_start_temp: f32,
 
     temp_history: TempHistory<RATE_HISTORY_CAP>,
-    last_temp_recording: f64,
-    last_stall_check: f64,
+    last_temp_recording: f32,
+    last_stall_check: f32,
     stall_fail_count: u32,
 
     error: Option<KilnError>,
 
-    recovery_target_temp: Option<f64>,
+    recovery_target_temp: Option<f32>,
 }
 
 impl KilnController {
@@ -151,11 +155,11 @@ impl KilnController {
     /// Accumulated elapsed run time (seconds). Already advanced by
     /// [`update`](Self::update) each tick, so reading it for a status snapshot is
     /// idempotent (unlike re-calling the reference's `get_elapsed_time`).
-    pub fn elapsed(&self) -> f64 {
+    pub fn elapsed(&self) -> f32 {
         self.elapsed_offset
     }
     /// Elapsed time at which the current step began (seconds).
-    pub fn step_start_time(&self) -> f64 {
+    pub fn step_start_time(&self) -> f32 {
         self.step_start_time
     }
     /// The active firing profile, if any (for status: step count/kind/rate).
@@ -168,12 +172,13 @@ impl KilnController {
     pub fn error(&self) -> Option<KilnError> {
         self.error
     }
-    pub fn recovery_target_temp(&self) -> Option<f64> {
+    pub fn recovery_target_temp(&self) -> Option<f32> {
         self.recovery_target_temp
     }
     /// Measured rate over the configured window (°C/h).
-    pub fn measured_rate(&self) -> f64 {
-        self.temp_history.get_rate(self.cfg.rate_measurement_window)
+    pub fn measured_rate(&self) -> f32 {
+        self.temp_history
+            .get_rate(self.cfg.rate_measurement_window as f32)
     }
 
     // ---- lifecycle -------------------------------------------------------
@@ -240,7 +245,7 @@ impl KilnController {
 
     // ---- elapsed time (delta accumulation with NTP-jump guard) -----------
 
-    fn get_elapsed_time(&mut self, now: f64) -> f64 {
+    fn get_elapsed_time(&mut self, now: f64) -> f32 {
         if self.start_time.is_none() {
             return 0.0;
         }
@@ -250,13 +255,15 @@ impl KilnController {
                 self.elapsed_offset
             }
             Some(last) => {
+                // The subtraction is done in f64 (both anchors are large absolute
+                // timestamps); only the small delta is narrowed to f32.
                 let mut delta = now - last;
                 if !(0.0..=60.0).contains(&delta) {
                     delta = 1.0; // NTP jump / stall: assume 1 s passed
                 }
                 self.last_update_time = Some(now);
                 if self.recovery_target_temp.is_none() {
-                    self.elapsed_offset += delta;
+                    self.elapsed_offset += delta as f32;
                 }
                 self.elapsed_offset
             }
@@ -267,12 +274,14 @@ impl KilnController {
 
     /// Advance the state machine with the latest `current_temp` at time `now`,
     /// returning the target temperature for the PID. Mirrors `update`.
-    pub fn update(&mut self, current_temp: f64, now: f64) -> f64 {
+    pub fn update(&mut self, current_temp: f32, now: f64) -> f32 {
         self.current_temp = current_temp;
 
-        if current_temp > self.cfg.max_temp {
+        // Safety compare in f64 (cfg.max_temp / KilnError stay f64 for the wire
+        // format); current_temp is exact in f32 at these magnitudes.
+        if current_temp as f64 > self.cfg.max_temp {
             self.set_error(KilnError::MaxTempExceeded {
-                temp: current_temp,
+                temp: current_temp as f64,
                 max: self.cfg.max_temp,
             });
             return 0.0;
@@ -284,7 +293,7 @@ impl KilnController {
         }
     }
 
-    fn update_running(&mut self, now: f64) -> f64 {
+    fn update_running(&mut self, now: f64) -> f32 {
         if self.profile.is_none() {
             self.set_error(KilnError::NoActiveProfile);
             return 0.0;
@@ -292,7 +301,7 @@ impl KilnController {
 
         let elapsed = self.get_elapsed_time(now);
 
-        if elapsed - self.last_temp_recording >= self.cfg.rate_recording_interval {
+        if elapsed - self.last_temp_recording >= self.cfg.rate_recording_interval as f32 {
             self.record_temp_for_rate(elapsed);
         }
 
@@ -330,18 +339,21 @@ impl KilnController {
         }
         if current_step.kind == StepKind::Ramp {
             if let Some(mr) = min_rate {
-                if mr > 0.0 && elapsed - self.last_stall_check >= self.cfg.stall_check_interval {
+                if mr > 0.0
+                    && elapsed - self.last_stall_check >= self.cfg.stall_check_interval as f32
+                {
                     self.last_stall_check = elapsed;
                     let time_in_step = elapsed - self.step_start_time;
-                    if time_in_step >= self.cfg.stall_min_step_time {
-                        let actual_rate =
-                            self.temp_history.get_rate(self.cfg.rate_measurement_window);
+                    if time_in_step >= self.cfg.stall_min_step_time as f32 {
+                        let actual_rate = self
+                            .temp_history
+                            .get_rate(self.cfg.rate_measurement_window as f32);
                         if abs(actual_rate) < mr {
                             self.stall_fail_count += 1;
                             if self.stall_fail_count >= self.cfg.stall_consecutive_fails {
                                 self.set_error(KilnError::Stall {
-                                    actual_rate: abs(actual_rate),
-                                    min_rate: mr,
+                                    actual_rate: abs(actual_rate) as f64,
+                                    min_rate: mr as f64,
                                 });
                                 return 0.0;
                             }
@@ -358,7 +370,7 @@ impl KilnController {
         target
     }
 
-    fn is_step_complete(&self, elapsed: f64) -> bool {
+    fn is_step_complete(&self, elapsed: f32) -> bool {
         let prof = match &self.profile {
             Some(p) => p,
             None => return false,
@@ -386,7 +398,7 @@ impl KilnController {
         }
     }
 
-    fn advance_to_next_step(&mut self, elapsed: f64) {
+    fn advance_to_next_step(&mut self, elapsed: f32) {
         self.current_step_index += 1;
         self.step_start_time = elapsed;
         self.step_start_temp = self.current_temp;
@@ -395,12 +407,12 @@ impl KilnController {
         self.stall_fail_count = 0;
     }
 
-    fn record_temp_for_rate(&mut self, elapsed: f64) {
+    fn record_temp_for_rate(&mut self, elapsed: f32) {
         self.temp_history.add(elapsed, self.current_temp);
         self.last_temp_recording = elapsed;
     }
 
-    fn get_step_target_temp(&self, elapsed: f64, step: &Step) -> f64 {
+    fn get_step_target_temp(&self, elapsed: f32, step: &Step) -> f32 {
         match step.kind {
             StepKind::Hold => step.target_temp.unwrap_or(0.0),
             StepKind::Ramp => {
@@ -436,9 +448,9 @@ impl KilnController {
     pub fn resume_profile(
         &mut self,
         profile: Profile,
-        elapsed_seconds: f64,
-        last_logged_temp: Option<f64>,
-        current_temp: Option<f64>,
+        elapsed_seconds: f32,
+        last_logged_temp: Option<f32>,
+        current_temp: Option<f32>,
         step_index: Option<usize>,
         now: f64,
     ) -> bool {
@@ -500,7 +512,7 @@ impl KilnController {
     /// Estimate which step `elapsed_seconds` falls in. Mirrors
     /// `_find_step_for_elapsed` (note: seeds `profile_temp` from 20, unlike the
     /// duration estimator). Returns `(index, time_in_step, step_start_temp)`.
-    fn find_step_for_elapsed(&self, elapsed_seconds: f64) -> (usize, f64, f64) {
+    fn find_step_for_elapsed(&self, elapsed_seconds: f32) -> (usize, f32, f32) {
         let prof = match &self.profile {
             Some(p) if p.step_count() > 0 => p,
             _ => return (0, 0.0, self.current_temp),

@@ -13,9 +13,11 @@
 use kiln_core::Pid;
 use std::path::PathBuf;
 
-/// Absolute tolerance. f64 with identical arithmetic order agrees to within a
-/// few ULP (~1e-9 at these magnitudes); 1e-6 is generous headroom.
-const TOL: f64 = 1e-6;
+/// Absolute tolerance. The PID now computes in f32 while the golden is f64, so
+/// terms (p/i/d up to ~1e4–1e5 in the step-down phase) carry f32 representation
+/// error plus a little integral-accumulation drift. 0.5 covers that while still
+/// catching any real divergence in the control output (which is clamped 0–100).
+const TOL: f64 = 0.5;
 
 struct Row {
     idx: usize,
@@ -92,13 +94,13 @@ fn replay_matches_reference_pid() {
     let mut neg_error = 0usize;
 
     for r in &rows {
-        let out = pid.update(r.setpoint, r.measured, r.time_s);
+        let out = pid.update(r.setpoint as f32, r.measured as f32, r.time_s);
         let s = pid.stats();
 
-        assert_close(out, r.output, r.idx, "output");
-        assert_close(s.p_term, r.p_term, r.idx, "p_term");
-        assert_close(s.i_term, r.i_term, r.idx, "i_term");
-        assert_close(s.d_term, r.d_term, r.idx, "d_term");
+        assert_close(out as f64, r.output, r.idx, "output");
+        assert_close(s.p_term as f64, r.p_term, r.idx, "p_term");
+        assert_close(s.i_term as f64, r.i_term, r.idx, "i_term");
+        assert_close(s.d_term as f64, r.d_term, r.idx, "d_term");
         assert_eq!(
             s.integral_frozen, r.integral_frozen,
             "row {} integral_frozen: rust={} ref={}",

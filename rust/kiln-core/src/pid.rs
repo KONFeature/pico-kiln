@@ -15,7 +15,7 @@
 /// `max(min(x, hi), lo)`. Avoids `f64::min`/`max` to stay dependency- and
 /// libm-free for `no_std`.
 #[inline]
-fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
+fn clamp(x: f32, lo: f32, hi: f32) -> f32 {
     let m = if x < hi { x } else { hi }; // min(x, hi)
     if m > lo {
         m
@@ -28,16 +28,16 @@ fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
 /// downstream (status messages, tuning logs).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PidStats {
-    pub dt: f64,
-    pub setpoint: f64,
-    pub measured: f64,
-    pub error: f64,
-    pub p_term: f64,
-    pub i_term: f64,
-    pub d_term: f64,
-    pub output: f64,
+    pub dt: f32,
+    pub setpoint: f32,
+    pub measured: f32,
+    pub error: f32,
+    pub p_term: f32,
+    pub i_term: f32,
+    pub d_term: f32,
+    pub output: f32,
     /// Output before clamping to the limits.
-    pub output_raw: f64,
+    pub output_raw: f32,
     /// True when the integral was held this step (anti-windup engaged).
     pub integral_frozen: bool,
 }
@@ -45,14 +45,16 @@ pub struct PidStats {
 /// PID controller. Construct with [`Pid::new`], drive with [`Pid::update`].
 #[derive(Debug, Clone)]
 pub struct Pid {
-    pub kp: f64,
-    pub ki: f64,
-    pub kd: f64,
-    out_min: f64,
-    out_max: f64,
+    pub kp: f32,
+    pub ki: f32,
+    pub kd: f32,
+    out_min: f32,
+    out_max: f32,
 
-    prev_error: f64,
-    integral: f64,
+    prev_error: f32,
+    integral: f32,
+    // Absolute monotonic-seconds anchor stays f64; only the small `dt` derived
+    // from it is narrowed to f32 (see `update`).
     prev_time: Option<f64>,
 
     stats: PidStats,
@@ -62,7 +64,7 @@ impl Pid {
     /// Create a controller with output clamped to `[out_min, out_max]`.
     ///
     /// Mirrors `PID(kp, ki, kd, output_limits=(out_min, out_max))`.
-    pub fn new(kp: f64, ki: f64, kd: f64, out_min: f64, out_max: f64) -> Self {
+    pub fn new(kp: f32, ki: f32, kd: f32, out_min: f32, out_max: f32) -> Self {
         Self {
             kp,
             ki,
@@ -79,17 +81,16 @@ impl Pid {
     /// Compute the control output for `setpoint` vs `measured` at time `now`
     /// (seconds, monotonic). The first call uses `dt = 1.0` exactly as the
     /// reference does; thereafter `dt = now - prev_time`, floored at `0.001`.
-    pub fn update(&mut self, setpoint: f64, measured: f64, now: f64) -> f64 {
+    pub fn update(&mut self, setpoint: f32, measured: f32, now: f64) -> f32 {
         // --- dt (matches pid.py: first call -> 1.0; non-positive -> 0.001) ---
-        let dt = match self.prev_time {
+        // `now`/`prev_time` are large f64 monotonic seconds; the subtraction is
+        // done in f64, then the small dt is narrowed to f32 — so the timestamp
+        // magnitude never costs PID precision.
+        let dt: f32 = match self.prev_time {
             None => 1.0,
             Some(prev) => {
                 let d = now - prev;
-                if d <= 0.0 {
-                    0.001
-                } else {
-                    d
-                }
+                (if d <= 0.0 { 0.001 } else { d }) as f32
             }
         };
 
@@ -162,7 +163,7 @@ impl Pid {
     /// Update gains on the fly with bumpless transfer for `ki` changes
     /// (preserves `i_term` so the output doesn't jump). Mirrors
     /// `PID.set_gains()`. `None` leaves a gain unchanged.
-    pub fn set_gains(&mut self, kp: Option<f64>, ki: Option<f64>, kd: Option<f64>) {
+    pub fn set_gains(&mut self, kp: Option<f32>, ki: Option<f32>, kd: Option<f32>) {
         let old_ki = self.ki;
         if let Some(v) = kp {
             self.kp = v;
@@ -189,7 +190,7 @@ impl Pid {
 
     /// Current integral accumulator (for inspection/tests).
     #[cfg(test)]
-    pub fn integral(&self) -> f64 {
+    pub fn integral(&self) -> f32 {
         self.integral
     }
 }

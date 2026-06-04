@@ -85,9 +85,9 @@ where
     pub fn new(sensor: S, ssr_out: O, mut wdt: W, params: ControlParams, now_ms: u64) -> Self {
         wdt.start(params.watchdog_timeout_ms);
         let pid = Pid::new(
-            params.pid_base.kp as f64,
-            params.pid_base.ki as f64,
-            params.pid_base.kd as f64,
+            params.pid_base.kp,
+            params.pid_base.ki,
+            params.pid_base.kd,
             0.0,
             100.0,
         );
@@ -191,9 +191,8 @@ where
         let target = self.state.update(temp, mono_s);
 
         let ssr_output = if self.state.state == KilnState::Running {
-            if let Some(g) = self.gains.update(temp as f32) {
-                self.pid
-                    .set_gains(Some(g.kp as f64), Some(g.ki as f64), Some(g.kd as f64));
+            if let Some(g) = self.gains.update(temp) {
+                self.pid.set_gains(Some(g.kp), Some(g.ki), Some(g.kd));
             }
             self.pid.update(target, temp, mono_s)
         } else {
@@ -202,7 +201,7 @@ where
         };
 
         self.state.ssr_output = ssr_output;
-        self.ssr_sched.set_output(ssr_output as f32);
+        self.ssr_sched.set_output(ssr_output);
         if self.state.state == KilnState::Error {
             self.ssr_sched.force_off();
             let _ = self.ssr_out.force_off();
@@ -253,9 +252,9 @@ where
         };
         self.state.current_temp = temp;
 
-        if temp > self.params.controller.max_temp {
+        if temp as f64 > self.params.controller.max_temp {
             self.state.set_error(KilnError::MaxTempExceeded {
-                temp,
+                temp: temp as f64,
                 max: self.params.controller.max_temp,
             });
             self.tuner = None;
@@ -267,14 +266,16 @@ where
             };
         }
 
-        let (ssr_output, continue_tuning) = self.tuner.as_mut().unwrap().update(temp, mono_s);
-        self.state.ssr_output = ssr_output;
+        // The tuner stays f64; bridge to the now-f32 state at the call boundary.
+        let (ssr_output, continue_tuning) =
+            self.tuner.as_mut().unwrap().update(temp as f64, mono_s);
+        self.state.ssr_output = ssr_output as f32;
         self.state.target_temp = self
             .tuner
             .as_ref()
             .unwrap()
             .step_target_temp()
-            .unwrap_or(0.0);
+            .unwrap_or(0.0) as f32;
         self.ssr_sched.set_output(ssr_output as f32);
 
         if !continue_tuning {
@@ -283,7 +284,10 @@ where
                 TuningStage::Complete => self.state.state = KilnState::Idle,
                 TuningStage::Error => self
                     .state
-                    .set_error(KilnError::MaxTempExceeded { temp, max }),
+                    .set_error(KilnError::MaxTempExceeded {
+                        temp: temp as f64,
+                        max,
+                    }),
                 TuningStage::Running => {}
             }
             self.tuner = None;
@@ -349,9 +353,9 @@ where
             } => {
                 if self.state.resume_profile(
                     parsed,
-                    elapsed_seconds,
-                    last_logged_temp,
-                    current_temp,
+                    elapsed_seconds as f32,
+                    last_logged_temp.map(|t| t as f32),
+                    current_temp.map(|t| t as f32),
                     step_index,
                     mono_s,
                 ) {
@@ -415,7 +419,7 @@ where
     /// temperature, feeding either through the median/fault filter. `Err(())`
     /// is the emergency shutdown (the filter exhausted its fault budget), with
     /// the typed reason stashed in `last_temp_error`.
-    fn read_temp(&mut self) -> Result<f64, ()> {
+    fn read_temp(&mut self) -> Result<f32, ()> {
         let faulted = self.sensor.has_fault().unwrap_or(true);
         let result = if faulted {
             self.filter.push_fault()
@@ -426,7 +430,7 @@ where
             }
         };
         match result {
-            Ok(t) => Ok(t as f64),
+            Ok(t) => Ok(t),
             Err(TempError::EmergencyShutdown) => {
                 self.last_temp_error = KilnError::SensorFault;
                 Err(())
@@ -490,22 +494,24 @@ where
             peak_temp: t.step_peak_temp(),
         });
 
+        // The control state computes in f32; the Status wire format stays f64,
+        // so widen at this single boundary.
         Status {
             timestamp: wall_s,
             state: self.state.state,
-            current_temp: self.state.current_temp,
-            target_temp: self.state.target_temp,
-            ssr_output: self.state.ssr_output,
-            elapsed,
+            current_temp: self.state.current_temp as f64,
+            target_temp: self.state.target_temp as f64,
+            ssr_output: self.state.ssr_output as f64,
+            elapsed: elapsed as f64,
             error: self.state.error(),
             step_index,
             step_kind,
             total_steps,
-            desired_rate,
-            step_elapsed,
+            desired_rate: desired_rate as f64,
+            step_elapsed: step_elapsed as f64,
             is_recovering: self.state.is_recovering(),
-            recovery_target_temp: self.state.recovery_target_temp(),
-            measured_rate: self.state.measured_rate(),
+            recovery_target_temp: self.state.recovery_target_temp().map(|t| t as f64),
+            measured_rate: self.state.measured_rate() as f64,
             profile_name: self.current_profile,
             scheduled,
             tuning,

@@ -13,7 +13,11 @@ use kiln_core::profile::{Profile, Step, StepKind};
 use kiln_core::state::{ControllerConfig, KilnController, KilnState};
 use std::path::PathBuf;
 
-const TOL: f64 = 1e-6;
+// Relaxed from 1e-6: the state machine now computes temps and elapsed-relative
+// time in f32 (config/KilnError stay f64). Targets and rates carry f32
+// representation error plus a little elapsed-accumulation drift (≲ 0.1 over a
+// long run); the discrete outputs (state, step index, recovery) stay exact.
+const TOL: f64 = 1e-1;
 
 /// Local re-encoding of the former `KilnState::as_u8` — kept only as golden
 /// comparison scaffolding; production code never encoded the state to a byte.
@@ -33,7 +37,7 @@ fn fixture(name: &str) -> PathBuf {
         .collect()
 }
 
-fn opt(s: &str) -> Option<f64> {
+fn opt(s: &str) -> Option<f32> {
     let s = s.trim();
     if s.is_empty() {
         None
@@ -86,8 +90,8 @@ enum Op {
     },
     Resume {
         elapsed: f64,
-        last_logged: Option<f64>,
-        current: Option<f64>,
+        last_logged: Option<f32>,
+        current: Option<f32>,
         step_index: Option<usize>,
         now: f64,
     },
@@ -163,7 +167,7 @@ fn run_fixture(name: &str) -> usize {
             pre_run_temp,
             run_now,
         } => {
-            c.current_temp = pre_run_temp;
+            c.current_temp = pre_run_temp as f32;
             assert!(c.run_profile(profile, run_now), "run_profile");
         }
         Op::Resume {
@@ -174,7 +178,7 @@ fn run_fixture(name: &str) -> usize {
             now,
         } => {
             assert!(
-                c.resume_profile(profile, elapsed, last_logged, current, step_index, now),
+                c.resume_profile(profile, elapsed as f32, last_logged, current, step_index, now),
                 "resume_profile"
             );
         }
@@ -192,7 +196,7 @@ fn run_fixture(name: &str) -> usize {
         let exp_recovering = f[6].trim() == "1";
         let exp_rate: f64 = f[7].trim().parse().unwrap();
 
-        let out = c.update(temp, now);
+        let out = c.update(temp as f32, now);
 
         assert_eq!(
             state_u8(c.state),
@@ -200,7 +204,7 @@ fn run_fixture(name: &str) -> usize {
             "{name} row {idx} state: rust={} ref={exp_state}",
             state_u8(c.state)
         );
-        close(out, exp_target, idx, "target", name);
+        close(out as f64, exp_target, idx, "target", name);
         assert_eq!(
             c.current_step_index(),
             exp_step,
@@ -211,7 +215,7 @@ fn run_fixture(name: &str) -> usize {
             exp_recovering,
             "{name} row {idx} recovering"
         );
-        close(c.measured_rate(), exp_rate, idx, "rate", name);
+        close(c.measured_rate() as f64, exp_rate, idx, "rate", name);
     }
 
     data.len()

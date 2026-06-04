@@ -216,10 +216,12 @@ impl<'a> Reader<'a> {
     fn parse_step(&mut self) -> Result<Step, ProfileJsonError> {
         self.expect(b'{')?;
         let mut kind: Option<StepKind> = None;
-        let mut target_temp: Option<f64> = None;
-        let mut desired_rate: Option<f64> = None;
-        let mut min_rate: Option<f64> = None;
-        let mut duration: Option<f64> = None;
+        // `Step` stores f32; parse as f64 then narrow (kiln temps/rates/durations
+        // are far inside f32's exact range).
+        let mut target_temp: Option<f32> = None;
+        let mut desired_rate: Option<f32> = None;
+        let mut min_rate: Option<f32> = None;
+        let mut duration: Option<f32> = None;
 
         self.skip_ws();
         if !self.try_consume(b'}') {
@@ -238,10 +240,10 @@ impl<'a> Reader<'a> {
                             _ => return Err(ProfileJsonError::BadStepType),
                         });
                     }
-                    "target_temp" => target_temp = Some(self.parse_number()?),
-                    "desired_rate" => desired_rate = Some(self.parse_number()?),
-                    "min_rate" => min_rate = Some(self.parse_number()?),
-                    "duration" => duration = Some(self.parse_number()?),
+                    "target_temp" => target_temp = Some(self.parse_number()? as f32),
+                    "desired_rate" => desired_rate = Some(self.parse_number()? as f32),
+                    "min_rate" => min_rate = Some(self.parse_number()? as f32),
+                    "duration" => duration = Some(self.parse_number()? as f32),
                     _ => self.skip_value(0)?,
                 }
                 self.skip_ws();
