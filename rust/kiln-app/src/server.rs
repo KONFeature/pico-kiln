@@ -198,6 +198,23 @@ pub struct RecoveryLog {
 /// interrupted run's file (no header) and writes a one-shot `RECOVERY` event row
 /// (`data_logger.log_recovery_event`). Forces a final terminal-state row on the
 /// way out — `data_logger.update`.
+/// Defer the flash write of buffered CSV rows by at most this long (monotonic
+/// seconds). One flash program per *flush* instead of one per *row* — far fewer
+/// flash-pause events (each one de-energises the SSR and busy-spins Core 0; see
+/// the flash handshake), which matters most during TUNING (a row every 2 s) — and
+/// far less flash wear. Trade-off: a power cut loses up to this much logged data.
+/// That is safe: crash recovery resumes from the last *flushed* row, and its
+/// safety gate is the current-vs-logged **temperature delta**, not the exact
+/// elapsed (`kiln_core::recovery`), so a slightly stale resume still gates
+/// correctly and the controller re-derives the step from temp.
+const CSV_FLUSH_INTERVAL_S: u64 = 120;
+/// One rendered CSV row's upper bound (matches the per-row render `String`).
+const CSV_ROW_CAP: usize = 256;
+/// RAM accumulator for un-flushed rows. Sized to hold one flush interval at the
+/// fastest cadence (TUNING: 120 s / 2 s = 60 rows × ~130 B ≈ 7.8 KB) with margin;
+/// a row that would overflow forces an early flush, so nothing is ever dropped.
+const CSV_BUF_CAP: usize = 8192;
+
 #[embassy_executor::task]
 pub async fn csv_logger_task(
     status: &'static StatusWatch,
@@ -206,11 +223,18 @@ pub async fn csv_logger_task(
     config: &'static KilnConfig,
     mut recovery: Option<RecoveryLog>,
 ) -> ! {
+    use embassy_time::Instant;
     use kiln_core::state::KilnState;
     let mut rx = status.receiver().unwrap();
     let mut logging = false;
     let mut filename = heapless::String::<96>::new();
     let mut last_log: i64 = 0;
+    // Rows accumulate here and flush to flash in batches (see CSV_FLUSH_INTERVAL_S).
+    let mut buf = heapless::String::<CSV_BUF_CAP>::new();
+    // Monotonic, so the flush cadence holds even before NTP sync. `None` until the
+    // first flush of a run, which is taken promptly so the file gains a RUNNING
+    // row early and recovery stays possible from near the start.
+    let mut last_flush: Option<Instant> = None;
     let mut prev_state = KilnState::Idle;
 
     loop {
@@ -219,13 +243,15 @@ pub async fn csv_logger_task(
         let active = matches!(s.state, KilnState::Running | KilnState::Tuning);
 
         if active && !logging {
+            buf.clear();
             if let Some(rec) = recovery.take() {
                 // Recovery resume: continue the interrupted run's file (append,
                 // no header) and write the one-shot RECOVERY marker row using the
                 // resume elapsed + live temps/SSR/rate (data_logger.py 201-264).
+                // Written straight through (not buffered) so the marker is durable.
                 filename.clear();
                 let _ = filename.push_str(&rec.filename);
-                let mut row = heapless::String::<256>::new();
+                let mut row = heapless::String::<CSV_ROW_CAP>::new();
                 let _ = csv::write_recovery_event_row(
                     &mut row,
                     s.timestamp,
@@ -241,13 +267,16 @@ pub async fn csv_logger_task(
                 {
                     logging = true;
                     last_log = 0;
+                    last_flush = None;
                 }
             } else {
                 // Pick the log stem: a fixed "tuning" while TUNING (the
                 // controller sets no profile_name then, so a profile-only branch
                 // would log nothing and `analyze_tuning.py` would have no data),
                 // else the running profile's filename. Mirrors
-                // `data_logger.on_status_update`'s two start-logging branches.
+                // `data_logger.on_status_update`'s two start-logging branches. The
+                // header is written straight through (create + truncate) so the
+                // file exists immediately; rows then batch into `buf`.
                 let stem = if s.state == KilnState::Tuning {
                     Some("tuning")
                 } else {
@@ -262,6 +291,7 @@ pub async fn csv_logger_task(
                     {
                         logging = true;
                         last_log = 0;
+                        last_flush = None;
                     }
                 }
             }
@@ -274,12 +304,43 @@ pub async fn csv_logger_task(
                 config.logging_interval as i64
             };
             let leaving = matches!(prev_state, KilnState::Running | KilnState::Tuning) && !active;
+
+            // Accumulate a row at the logging cadence (and a final row on the way
+            // out). Cadence/granularity are unchanged — only the flash write is
+            // deferred. If the next row would overflow the buffer, flush first so
+            // a row is never dropped.
             if leaving || (now - last_log) >= interval {
-                let mut row = heapless::String::<256>::new();
+                let mut row = heapless::String::<CSV_ROW_CAP>::new();
                 let _ = csv::write_row(&mut row, &s);
-                let _ = storage.append(Directory::Logs, &filename, row.as_bytes(), false);
+                if buf.len() + row.len() > buf.capacity()
+                    && storage
+                        .append(Directory::Logs, &filename, buf.as_bytes(), false)
+                        .is_ok()
+                {
+                    buf.clear();
+                    last_flush = Some(Instant::now());
+                }
+                let _ = buf.push_str(&row);
                 last_log = now;
             }
+
+            // Flush the batch on the way out, or once the defer window elapses.
+            // `last_flush == None` (the first batch of a run) flushes promptly so
+            // the file holds a RUNNING row early and recovery stays possible.
+            let due = match last_flush {
+                None => true,
+                Some(t) => Instant::now().duration_since(t).as_secs() >= CSV_FLUSH_INTERVAL_S,
+            };
+            if !buf.is_empty()
+                && (leaving || due)
+                && storage
+                    .append(Directory::Logs, &filename, buf.as_bytes(), false)
+                    .is_ok()
+            {
+                buf.clear();
+                last_flush = Some(Instant::now());
+            }
+
             if leaving {
                 logging = false;
             }
