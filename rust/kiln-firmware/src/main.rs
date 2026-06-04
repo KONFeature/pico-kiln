@@ -25,6 +25,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_executor::Executor;
+use embassy_futures::select::select;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::multicore::{spawn_core1, Stack};
 use embassy_rp::Peri;
@@ -225,13 +226,23 @@ async fn control_task(
         }
 
         for _ in 0..sub_ticks {
+            // Wait out the sub-tick, but wake the instant Core 0 asks to write
+            // flash (PAUSE_WAKE) instead of only noticing at the next sub-tick
+            // boundary — collapses Core 0's busy-spin in `request_pause` from up
+            // to ~sub_ms down to the flash-op time itself.
+            let _ = select(
+                Timer::after(Duration::from_millis(sub_ms)),
+                flash_handshake::PAUSE_WAKE.wait(),
+            )
+            .await;
+
             // Flash handshake: if Core 0 is about to program flash, de-energise
             // the SSR now (flash still live) and park in RAM until it is done.
             if flash_handshake::pause_requested() {
                 let _ = controller.force_ssr_off();
                 flash_handshake::park_until_idle(platform::raw_watchdog_feed);
             }
-            Timer::after(Duration::from_millis(sub_ms)).await;
+
             let _ = controller.ssr_subtick(Instant::now().as_millis());
         }
     }

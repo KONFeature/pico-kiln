@@ -29,6 +29,9 @@
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
+
 /// No flash operation in progress; Core 1 runs normally.
 pub const IDLE: u8 = 0;
 /// Core 0 has requested a pause and is waiting for Core 1 to park.
@@ -40,10 +43,21 @@ pub const PARKED: u8 = 2;
 /// `Acquire`/`Release` ordering is sufficient.
 pub static FLASH_LOCK: AtomicU8 = AtomicU8::new(IDLE);
 
+/// Core 0 → Core 1 wake-up, pulsed by [`request_pause`]. Without it, Core 1
+/// would only notice a pause request at the top of its next SSR sub-tick — up to
+/// one sub-tick period (~100 ms) of pure Core-0 busy-spin per flash write. Core 1
+/// selects on this alongside its sub-tick timer (see `control_task`), so it parks
+/// within microseconds and the spin below collapses to the flash-op time itself.
+/// A latched `Signal` (not a flag): if it fires while Core 1 is briefly running
+/// synchronous code rather than awaiting, the next `wait()` returns immediately,
+/// so the wake is never lost.
+pub static PAUSE_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
 /// Core 0: request a flash pause and block until Core 1 has parked (SSR off).
 /// Call immediately before a flash erase/program.
 pub fn request_pause() {
     FLASH_LOCK.store(REQUEST, Ordering::Release);
+    PAUSE_WAKE.signal(()); // wake Core 1's sub-tick wait now, don't wait for its poll
     while FLASH_LOCK.load(Ordering::Acquire) != PARKED {
         core::hint::spin_loop();
     }
