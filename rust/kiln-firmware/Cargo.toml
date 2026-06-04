@@ -64,3 +64,23 @@ littlefs2 = { version = "0.7", features = ["c-stubs"] }
 
 [features]
 default = []
+
+# Release profile for the SHIPPED image. kiln-firmware is `exclude`d from the
+# host workspace (../Cargo.toml), so the workspace's size-optimised profile does
+# NOT apply here — without this block `cargo build --release` would fall back to
+# cargo defaults (opt-level=3, lto=false, codegen-units=16), bloating the flash
+# image (embassy + cyw43 + picoserve + littlefs C + the baked HTML assets) on a
+# target whose linker region is capped at 2560 KiB (memory.x). `panic=abort` is
+# already forced by the `-none-` target spec, so it is not repeated here.
+#
+# Measured on this image (arm-none-eabi-size, text+data):
+#   cargo defaults (opt=3, lto=off, cgu=16) ... 729 KiB
+#   opt="s" + lto=fat + cgu=1 ................. 549 KiB
+#   opt="z" + lto=fat + cgu=1 ................. 505 KiB  <- chosen
+# Flash is the binding constraint (linker region capped at 2560 KiB, memory.x)
+# and the M33 is near-idle (1 Hz control), so "z" is the right trade: smallest
+# image, and its minor speed cost is irrelevant here. Re-measure if that changes.
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
