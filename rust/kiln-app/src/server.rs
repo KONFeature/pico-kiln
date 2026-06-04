@@ -320,8 +320,12 @@ mod web {
 
     /// Cap on a buffered command/JSON body (`MAX_JSON_BODY`); profiles are small.
     const BODY_CAP: usize = api::MAX_JSON_BODY;
-    /// Working buffer for reading a profile file to parse (profiles are a few KB).
-    const PROFILE_READ_CAP: usize = 8192;
+    /// Working buffer for reading a profile file to parse. Profiles are small —
+    /// the shipped ones are <1 KB and a full `MAX_STEPS` (16) profile is ~1.5 KB —
+    /// so 2 KiB is 2-3× headroom. This buffer lives on the stack of `load_profile`,
+    /// which is held across an await inside every web-worker future, so its size
+    /// is multiplied by the worker pool (web RAM).
+    const PROFILE_READ_CAP: usize = 2048;
     /// Max profiles rendered into the index `{profiles_list}` / collected for a
     /// bulk log delete. The flash holds far fewer; extras are silently dropped.
     const MAX_PROFILES: usize = 32;
@@ -336,6 +340,16 @@ mod web {
     /// Upper bound on one rendered `{"name":..,"size":..,"modified":..}` object:
     /// a `NAME_CAP` (64) name + two 20-digit `u64`s + ~32 bytes of framing.
     const FILE_ENTRY_CAP: usize = 160;
+    /// Cap on a dynamic success-toast message (`{"success":true,"message":"…"}`).
+    /// Owned inside the tiny `ApiResponse::Message`; the longest is
+    /// `"Started profile: <name>"`. Held per route slot, so kept small.
+    const MSG_CAP: usize = 96;
+    /// Per-response JSON render buffer used inside `write_to`. picoserve's serve
+    /// future holds several of these un-overlapped (the recursive router + the
+    /// `Response`/`Typed` move chain), so the size is multiplied across the worker.
+    /// The largest rendered body measured is the config (~1 KB; status ~0.7 KB), so
+    /// 1.5 KiB keeps a safe margin while trimming the chain.
+    const RENDER_CAP: usize = 1536;
 
     /// Router-construction props implementing picoserve 0.18's [`AppBuilder`].
     /// Using the trait (rather than a bare module-level `type Foo = impl ...`)
@@ -472,16 +486,15 @@ mod web {
         ApiResponse::error_text(StatusCode::OK, "")
     }
 
+    // The JSON-body responses carry only their *inputs*; the bytes are rendered in
+    // `ApiResponse::write_to` (a single future → one buffer per connection, not one
+    // per route). See the `ApiResponse` enum.
     async fn status_json(State(state): State<AppState>) -> impl IntoResponse {
-        let mut body = heapless::String::<2048>::new();
-        let _ = json::write_status_json(&mut body, &state.latest());
-        ApiResponse::json(StatusCode::OK, body)
+        ApiResponse::Status(state)
     }
 
     async fn scheduled_json(State(state): State<AppState>) -> impl IntoResponse {
-        let mut body = heapless::String::<2048>::new();
-        let _ = json::write_scheduled_endpoint(&mut body, &state.latest());
-        ApiResponse::json(StatusCode::OK, body)
+        ApiResponse::Scheduled(state)
     }
 
     /// Enqueue a typed command, returning the reference's
@@ -491,9 +504,9 @@ mod web {
     /// success toast reads identically.
     fn enqueue(state: &AppState, cmd: Command, ok_message: &str) -> ApiResponse {
         if state.commands.try_send(cmd).is_ok() {
-            let mut body = heapless::String::<2048>::new();
-            let _ = write!(body, "{{\"success\":true,\"message\":\"{}\"}}", ok_message);
-            ApiResponse::json(StatusCode::OK, body)
+            let mut msg = heapless::String::<MSG_CAP>::new();
+            let _ = msg.push_str(ok_message); // owns the (possibly dynamic) toast text
+            ApiResponse::Message(msg)
         } else {
             ApiResponse::static_json(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -511,9 +524,7 @@ mod web {
     }
 
     async fn config_get(State(state): State<AppState>) -> impl IntoResponse {
-        let mut body = heapless::String::<2048>::new();
-        let _ = state.config.write_json(&mut body);
-        ApiResponse::json(StatusCode::OK, body)
+        ApiResponse::Config(state)
     }
 
     async fn config_post(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
@@ -666,43 +677,11 @@ mod web {
         dir: heapless::String<16>,
         State(state): State<AppState>,
     ) -> impl IntoResponse {
-        let directory = match file_guard(&state, &dir, None) {
-            Ok(d) => d,
-            Err(resp) => return resp,
-        };
-        // Render each entry's JSON object once into a packed byte arena, then
-        // stream it back chunked (see `FileList`). Peak RAM stays flat and — unlike
-        // the old single 2 KB `String` build, which silently truncated to invalid
-        // JSON past ~30 files — the emitted body is always well-formed.
-        let mut body = FileList {
-            directory,
-            arena: heapless::Vec::new(),
-            lens: heapless::Vec::new(),
-        };
-        state
-            .storage
-            .for_each(directory, &mut |name, size, modified| {
-                if body.lens.len() >= body.lens.capacity() {
-                    return; // entry cap reached; emit a valid (shorter) list
-                }
-                let mut rec = heapless::String::<FILE_ENTRY_CAP>::new();
-                // A name longer than fits (or huge numbers) overflows `rec`; skip
-                // that entry rather than emit a half-written, malformed object.
-                if write!(
-                    rec,
-                    "{{\"name\":\"{}\",\"size\":{},\"modified\":{}}}",
-                    name, size, modified
-                )
-                .is_err()
-                {
-                    return;
-                }
-                if body.arena.len() + rec.len() <= body.arena.capacity() {
-                    let _ = body.arena.extend_from_slice(rec.as_bytes());
-                    let _ = body.lens.push(rec.len() as u16);
-                }
-            });
-        ApiResponse::FileList(body)
+        // Guard here (cheap); the directory scan + streaming run in `write_to`.
+        match file_guard(&state, &dir, None) {
+            Ok(directory) => ApiResponse::FileList(state, directory),
+            Err(resp) => resp,
+        }
     }
 
     async fn file_get(
@@ -739,16 +718,13 @@ mod web {
         match upload.outcome {
             UploadOutcome::Ok(written) => {
                 if state.storage.upload_commit(directory, &file).is_ok() {
-                    // `{success, message, filename, size}` — the reference's
-                    // upload envelope; the web app's ProfileEditor reads
-                    // `filename`/`size` off it.
-                    let mut body = heapless::String::<2048>::new();
-                    let _ = write!(
-                        body,
-                        "{{\"success\":true,\"message\":\"Uploaded {}\",\"filename\":\"{}\",\"size\":{}}}",
-                        file, file, written
-                    );
-                    ApiResponse::json(StatusCode::OK, body)
+                    // `{success, message, filename, size}` — the reference's upload
+                    // envelope (the web app's ProfileEditor reads `filename`/`size`).
+                    // Rendered in `write_to`; we carry only the name + byte count.
+                    ApiResponse::Uploaded {
+                        name: file,
+                        written,
+                    }
                 } else {
                     ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to write file")
                 }
@@ -787,9 +763,10 @@ mod web {
     }
 
     /// `DELETE /api/files/logs/all` — bulk-delete every log (`web_server.py`
-    /// `handle_api_files_delete_all`). Idle-gated and logs-only; returns
-    /// `{success, deleted_count, deleted_files:[...]}`. The file list is capped at
-    /// `MAX_PROFILES` for the response, but `remove_all` clears the whole dir.
+    /// `handle_api_files_delete_all`). Idle-gated and logs-only. Returns
+    /// `{success, deleted_count, deleted_files:[...]}`; the listing (capped at
+    /// `MAX_PROFILES`) is collected, `remove_all` run, and the result streamed —
+    /// all in `write_to`, so the names list never bloats the per-route response.
     fn file_delete_all(state: &AppState, dir: &str) -> ApiResponse {
         let directory = match file_guard(state, dir, None) {
             Ok(d) => d,
@@ -801,68 +778,13 @@ mod web {
                 "Bulk delete only allowed for logs directory",
             );
         }
-        // Snapshot names (capped) for the response, count all, then clear the dir.
-        let mut names: heapless::Vec<heapless::String<NAME_CAP>, MAX_PROFILES> =
-            heapless::Vec::new();
-        let mut total = 0usize;
-        state
-            .storage
-            .for_each(directory, &mut |name, _size, _modified| {
-                total += 1;
-                if names.len() < names.capacity() {
-                    let mut s = heapless::String::<NAME_CAP>::new();
-                    if s.push_str(name).is_ok() {
-                        let _ = names.push(s);
-                    }
-                }
-            });
-        if state.storage.remove_all(directory).is_err() {
-            return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete files");
-        }
-        let mut body = heapless::String::<2048>::new();
-        let _ = write!(
-            body,
-            "{{\"success\":true,\"deleted_count\":{},\"deleted_files\":[",
-            total
-        );
-        for (i, name) in names.iter().enumerate() {
-            if i > 0 {
-                let _ = body.push(',');
-            }
-            let _ = write!(body, "\"{}\"", name);
-        }
-        let _ = body.push_str("]}");
-        ApiResponse::json(StatusCode::OK, body)
+        ApiResponse::DeleteAll(*state, directory)
     }
 
     async fn page_index(State(state): State<AppState>) -> impl IntoResponse {
-        let bytes = match state.storage.static_asset("index.html") {
-            Some(b) => b,
-            None => return ApiResponse::error_text(StatusCode::NOT_FOUND, "Not found"),
-        };
-        // Fill the `{profiles_list}` placeholder the way `main.py` prerendered it.
-        // If absent (unexpected), fall back to serving the bytes verbatim.
-        match html::split_profiles_placeholder(bytes) {
-            None => ApiResponse::Asset {
-                bytes,
-                content_type: "text/html",
-            },
-            Some((pre, post)) => {
-                let mut names: heapless::Vec<heapless::String<NAME_CAP>, MAX_PROFILES> =
-                    heapless::Vec::new();
-                state
-                    .storage
-                    .for_each(Directory::Profiles, &mut |name, _size, _modified| {
-                        if let Some(stem) = html::profile_display_name(name) {
-                            let mut s = heapless::String::<NAME_CAP>::new();
-                            if s.push_str(stem).is_ok() {
-                                let _ = names.push(s);
-                            }
-                        }
-                    });
-                ApiResponse::Index(IndexBody { pre, post, names })
-            }
-        }
+        // The asset fetch, `{profiles_list}` placeholder split, and profile-list
+        // collection all run in `write_to` (one buffer per connection).
+        ApiResponse::Index(state)
     }
 
     async fn page_tuning(State(state): State<AppState>) -> impl IntoResponse {
@@ -897,45 +819,74 @@ mod web {
         size: u64,
     }
 
-    /// Every handler returns one of these; `IntoResponse` is implemented once,
-    /// adding the CORS headers the reference attaches to every response.
+    /// Every handler returns one of these; `IntoResponse` renders it once (adding
+    /// the CORS headers the reference attaches to every response).
+    ///
+    /// RAM NOTE: picoserve embeds each route's handler future **additively** in the
+    /// per-worker serve future, so this type is replicated across every route slot.
+    /// It therefore carries **only the inputs** a response needs — never a body
+    /// buffer. All buffering (the JSON render `String`, the streamed-list
+    /// collections) happens inside [`write_to`](IntoResponse::write_to), which is a
+    /// *single* future — so those buffers cost one-per-connection, not one-per-route.
+    /// Keep every variant small.
     pub(super) enum ApiResponse {
-        Json {
-            status: StatusCode,
-            body: heapless::String<2048>,
+        /// `GET /api/status` — rendered from `state.latest()` in `write_to`.
+        Status(AppState),
+        /// `GET /api/scheduled` — rendered in `write_to`.
+        Scheduled(AppState),
+        /// `GET /api/config` — rendered from `state.config` in `write_to`.
+        Config(AppState),
+        /// The index page: asset + `{profiles_list}` split + streamed profile list,
+        /// all built in `write_to`.
+        Index(AppState),
+        /// `GET /api/files/{dir}` — directory scanned + streamed in `write_to`.
+        FileList(AppState, Directory),
+        /// `DELETE /api/files/logs/all` — names collected, dir cleared, result
+        /// streamed, all in `write_to`.
+        DeleteAll(AppState, Directory),
+        /// `{"success":true,"message":"<msg>"}` with an owned (dynamic) message.
+        Message(heapless::String<MSG_CAP>),
+        /// The upload-success envelope `{success,message,filename,size}`.
+        Uploaded {
+            name: heapless::String<64>,
+            written: usize,
         },
-        StaticJson {
+        /// `{"success":false,"error":"<message>"}` envelope (the message is static).
+        Fail {
+            status: StatusCode,
+            message: &'static str,
+        },
+        /// A pre-formed JSON literal, sent verbatim as `application/json`.
+        Json {
             status: StatusCode,
             body: &'static str,
         },
+        /// A plain-text body.
         Text {
             status: StatusCode,
             body: &'static str,
         },
+        /// A compiled-in asset (HTML), served verbatim.
         Asset {
             bytes: &'static [u8],
             content_type: &'static str,
         },
+        /// A streamed file download (refs + size only).
         Download(Download),
-        Index(IndexBody),
-        FileList(FileList),
     }
 
     impl ApiResponse {
-        fn json(status: StatusCode, body: heapless::String<2048>) -> Self {
+        /// A pre-formed JSON literal sent verbatim.
+        fn static_json(status: StatusCode, body: &'static str) -> Self {
             ApiResponse::Json { status, body }
         }
-        fn static_json(status: StatusCode, body: &'static str) -> Self {
-            ApiResponse::StaticJson { status, body }
-        }
+        /// A plain-text body.
         fn error_text(status: StatusCode, body: &'static str) -> Self {
             ApiResponse::Text { status, body }
         }
-        /// A `{"success": false, "error": "..."}` envelope with `status`.
-        fn error(status: StatusCode, message: &str) -> Self {
-            let mut body = heapless::String::<2048>::new();
-            let _ = write!(body, "{{\"success\":false,\"error\":\"{}\"}}", message);
-            ApiResponse::Json { status, body }
+        /// A `{"success":false,"error":"..."}` envelope (rendered in `write_to`).
+        fn error(status: StatusCode, message: &'static str) -> Self {
+            ApiResponse::Fail { status, message }
         }
     }
 
@@ -966,6 +917,54 @@ mod web {
         }
     }
 
+    /// Send `body` as a CORS response with `content_type` and `status`. One place
+    /// for every JSON/text/asset arm of [`ApiResponse::write_to`]; the render
+    /// buffers it is handed are locals of `write_to`, so one per connection.
+    async fn respond<R, W, C>(
+        status: StatusCode,
+        content_type: &'static str,
+        body: C,
+        connection: picoserve::response::Connection<'_, R>,
+        response_writer: W,
+    ) -> Result<picoserve::ResponseSent, W::Error>
+    where
+        R: picoserve::io::Read,
+        W: picoserve::response::ResponseWriter<Error = R::Error>,
+        C: Content,
+    {
+        picoserve::response::Response::new(status, Typed(body, content_type))
+            .with_headers(CORS)
+            .write_to(connection, response_writer)
+            .await
+    }
+
+    /// Render each entry of `dir` into `body`'s packed arena (bounded; entries past
+    /// the cap drop at an object boundary, so the JSON stays well-formed). Shared by
+    /// the `FileList` response arm; runs inside `write_to`.
+    fn collect_file_list(storage: &dyn Storage, dir: Directory, body: &mut FileList) {
+        storage.for_each(dir, &mut |name, size, modified| {
+            if body.lens.len() >= body.lens.capacity() {
+                return;
+            }
+            let mut rec = heapless::String::<FILE_ENTRY_CAP>::new();
+            // A name longer than fits (or huge numbers) overflows `rec`; skip that
+            // entry rather than emit a half-written, malformed object.
+            if write!(
+                rec,
+                "{{\"name\":\"{}\",\"size\":{},\"modified\":{}}}",
+                name, size, modified
+            )
+            .is_err()
+            {
+                return;
+            }
+            if body.arena.len() + rec.len() <= body.arena.capacity() {
+                let _ = body.arena.extend_from_slice(rec.as_bytes());
+                let _ = body.lens.push(rec.len() as u16);
+            }
+        });
+    }
+
     impl IntoResponse for ApiResponse {
         async fn write_to<
             R: picoserve::io::Read,
@@ -977,32 +976,60 @@ mod web {
         ) -> Result<picoserve::ResponseSent, W::Error> {
             use picoserve::response::Response;
             match self {
-                ApiResponse::Json { status, body } => {
-                    Response::new(status, Typed(body, "application/json"))
-                        .with_headers(CORS)
-                        .write_to(connection, response_writer)
-                        .await
+                // --- JSON bodies rendered into a single per-connection buffer ---
+                ApiResponse::Status(state) => {
+                    let mut b = heapless::String::<RENDER_CAP>::new();
+                    let _ = json::write_status_json(&mut b, &state.latest());
+                    respond(StatusCode::OK, "application/json", b, connection, response_writer).await
                 }
-                ApiResponse::StaticJson { status, body } => {
-                    Response::new(status, Typed(body, "application/json"))
-                        .with_headers(CORS)
-                        .write_to(connection, response_writer)
-                        .await
+                ApiResponse::Scheduled(state) => {
+                    let mut b = heapless::String::<RENDER_CAP>::new();
+                    let _ = json::write_scheduled_endpoint(&mut b, &state.latest());
+                    respond(StatusCode::OK, "application/json", b, connection, response_writer).await
+                }
+                ApiResponse::Config(state) => {
+                    let mut b = heapless::String::<RENDER_CAP>::new();
+                    let _ = state.config.write_json(&mut b);
+                    respond(StatusCode::OK, "application/json", b, connection, response_writer).await
+                }
+                ApiResponse::Message(msg) => {
+                    let mut b = heapless::String::<RENDER_CAP>::new();
+                    let _ = write!(b, "{{\"success\":true,\"message\":\"{}\"}}", msg);
+                    respond(StatusCode::OK, "application/json", b, connection, response_writer).await
+                }
+                ApiResponse::Uploaded { name, written } => {
+                    let mut b = heapless::String::<RENDER_CAP>::new();
+                    let _ = write!(
+                        b,
+                        "{{\"success\":true,\"message\":\"Uploaded {}\",\"filename\":\"{}\",\"size\":{}}}",
+                        name, name, written
+                    );
+                    respond(StatusCode::OK, "application/json", b, connection, response_writer).await
+                }
+                ApiResponse::Fail { status, message } => {
+                    let mut b = heapless::String::<RENDER_CAP>::new();
+                    let _ = write!(b, "{{\"success\":false,\"error\":\"{}\"}}", message);
+                    respond(status, "application/json", b, connection, response_writer).await
+                }
+                // --- verbatim bodies ---
+                ApiResponse::Json { status, body } => {
+                    respond(status, "application/json", body, connection, response_writer).await
                 }
                 ApiResponse::Text { status, body } => {
-                    Response::new(status, Typed(body, "text/plain"))
-                        .with_headers(CORS)
-                        .write_to(connection, response_writer)
-                        .await
+                    respond(status, "text/plain", body, connection, response_writer).await
                 }
                 ApiResponse::Asset {
                     bytes,
                     content_type,
                 } => {
-                    Response::new(StatusCode::OK, Typed(bytes, content_type))
-                        .with_headers(CORS)
-                        .write_to(connection, response_writer)
-                        .await
+                    respond(
+                        StatusCode::OK,
+                        content_type,
+                        bytes,
+                        connection,
+                        response_writer,
+                    )
+                    .await
                 }
                 // A file download has a known size, so it goes out with a real
                 // `Content-Length` (browser progress) and `Content-Disposition:
@@ -1018,15 +1045,104 @@ mod web {
                         .write_to(connection, response_writer)
                         .await
                 }
-                ApiResponse::Index(body) => {
+                // --- streamed bodies (collection runs here, once per connection) ---
+                ApiResponse::Index(state) => {
+                    let bytes = match state.storage.static_asset("index.html") {
+                        Some(b) => b,
+                        None => {
+                            return respond(
+                                StatusCode::NOT_FOUND,
+                                "text/plain",
+                                "Not found",
+                                connection,
+                                response_writer,
+                            )
+                            .await
+                        }
+                    };
+                    // Fill the `{profiles_list}` placeholder as `main.py` prerendered
+                    // it; serve the asset verbatim if the placeholder is absent.
+                    match html::split_profiles_placeholder(bytes) {
+                        None => {
+                            respond(
+                                StatusCode::OK,
+                                "text/html",
+                                bytes,
+                                connection,
+                                response_writer,
+                            )
+                            .await
+                        }
+                        Some((pre, post)) => {
+                            let mut names: heapless::Vec<heapless::String<NAME_CAP>, MAX_PROFILES> =
+                                heapless::Vec::new();
+                            state.storage.for_each(
+                                Directory::Profiles,
+                                &mut |name, _size, _modified| {
+                                    if let Some(stem) = html::profile_display_name(name) {
+                                        if names.len() < names.capacity() {
+                                            let mut s = heapless::String::new();
+                                            if s.push_str(stem).is_ok() {
+                                                let _ = names.push(s);
+                                            }
+                                        }
+                                    }
+                                },
+                            );
+                            ChunkedResponse::new(IndexBody { pre, post, names })
+                                .into_response()
+                                .with_headers(CORS)
+                                .write_to(connection, response_writer)
+                                .await
+                        }
+                    }
+                }
+                ApiResponse::FileList(state, dir) => {
+                    let mut body = FileList {
+                        directory: dir,
+                        arena: heapless::Vec::new(),
+                        lens: heapless::Vec::new(),
+                    };
+                    collect_file_list(state.storage, dir, &mut body);
                     ChunkedResponse::new(body)
                         .into_response()
                         .with_headers(CORS)
                         .write_to(connection, response_writer)
                         .await
                 }
-                ApiResponse::FileList(body) => {
-                    ChunkedResponse::new(body)
+                ApiResponse::DeleteAll(state, dir) => {
+                    // Collect the (capped) names BEFORE clearing, then clear, then
+                    // stream the result. The destructive op runs here, but the route
+                    // is idle-gated by `file_delete_all`, so it is safe.
+                    let mut names: heapless::Vec<heapless::String<NAME_CAP>, MAX_PROFILES> =
+                        heapless::Vec::new();
+                    let mut total = 0usize;
+                    state.storage.for_each(dir, &mut |name, _size, _modified| {
+                        total += 1;
+                        if names.len() < names.capacity() {
+                            let mut s = heapless::String::new();
+                            if s.push_str(name).is_ok() {
+                                let _ = names.push(s);
+                            }
+                        }
+                    });
+                    if state.storage.remove_all(dir).is_err() {
+                        let mut b = heapless::String::<RENDER_CAP>::new();
+                        let _ = write!(
+                            b,
+                            "{{\"success\":false,\"error\":\"{}\"}}",
+                            "Failed to delete files"
+                        );
+                        return respond(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "application/json",
+                            b,
+                            connection,
+                            response_writer,
+                        )
+                        .await;
+                    }
+                    ChunkedResponse::new(DeleteAllBody { names, total })
                         .into_response()
                         .with_headers(CORS)
                         .write_to(connection, response_writer)
@@ -1082,6 +1198,43 @@ mod web {
             let mut suffix = heapless::String::<24>::new();
             let _ = write!(suffix, "],\"count\":{}}}", self.lens.len());
             chunk_writer.write_chunk(suffix.as_bytes()).await?;
+            chunk_writer.finalize().await
+        }
+    }
+
+    /// `DELETE /api/files/logs/all` result, streamed: `{success, deleted_count,
+    /// deleted_files:[...]}`. Holds the (capped) deleted names plus the full count;
+    /// built and consumed inside `write_to`, so it never sits in a per-route slot.
+    pub(super) struct DeleteAllBody {
+        names: heapless::Vec<heapless::String<NAME_CAP>, MAX_PROFILES>,
+        total: usize,
+    }
+
+    impl Chunks for DeleteAllBody {
+        fn content_type(&self) -> &'static str {
+            "application/json"
+        }
+
+        async fn write_chunks<W: picoserve::io::Write>(
+            self,
+            mut chunk_writer: ChunkWriter<W>,
+        ) -> Result<ChunksWritten, W::Error> {
+            let mut head = heapless::String::<80>::new();
+            let _ = write!(
+                head,
+                "{{\"success\":true,\"deleted_count\":{},\"deleted_files\":[",
+                self.total
+            );
+            chunk_writer.write_chunk(head.as_bytes()).await?;
+            for (i, name) in self.names.iter().enumerate() {
+                if i > 0 {
+                    chunk_writer.write_chunk(b",").await?;
+                }
+                chunk_writer.write_chunk(b"\"").await?;
+                chunk_writer.write_chunk(name.as_bytes()).await?;
+                chunk_writer.write_chunk(b"\"").await?;
+            }
+            chunk_writer.write_chunk(b"]}").await?;
             chunk_writer.finalize().await
         }
     }

@@ -12,12 +12,25 @@
 
 use kiln_core::tuner::TuningMode;
 
-/// Max simultaneous TCP connections (`MAX_CONCURRENT_CONNECTIONS`).
-pub const MAX_CONCURRENT_CONNECTIONS: usize = 3;
+/// Max simultaneous TCP connections (`MAX_CONCURRENT_CONNECTIONS`), and thus the
+/// picoserve worker-pool size — **the single biggest static-RAM lever** on the
+/// device. Each worker future is ~84 KB, dominated by picoserve's own `select`
+/// serve loop (it holds the request-reader, dispatch, and response-writer branches
+/// concurrently); that floor is not reducible from handler code. The response
+/// layer keeps `ApiResponse` tiny (render inputs only, buffered once in `write_to`)
+/// — worth ~12 KB/worker and makes new routes cheap, but it does not move that
+/// floor. 2 is ample for a single-user LAN kiln UI (status polling + the occasional
+/// action); a 3rd concurrent connection queues in the TCP backlog until a worker
+/// frees. The reference used 3.
+pub const MAX_CONCURRENT_CONNECTIONS: usize = 2;
 /// Max upload size in bytes (`MAX_UPLOAD_SIZE`, 500 KB).
 pub const MAX_UPLOAD_SIZE: u32 = 512_000;
-/// Max buffered non-upload request body (`MAX_JSON_BODY`).
-pub const MAX_JSON_BODY: usize = 4096;
+/// Max buffered non-upload request body (`MAX_JSON_BODY`). Command/config JSON
+/// bodies are small (a config POST is ~1 KB); profile uploads take the separate
+/// streamed `Upload` path (`MAX_UPLOAD_SIZE`), not this buffer. 2 KiB keeps ample
+/// headroom while halving the `JsonBody` extractor that sits in every POST
+/// handler's future (web-worker RAM).
+pub const MAX_JSON_BODY: usize = 2048;
 /// File streaming chunk size (`FILE_CHUNK_SIZE`).
 pub const FILE_CHUNK_SIZE: usize = 1024;
 
