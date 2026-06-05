@@ -41,51 +41,17 @@ export interface ConfigSectionDef {
 }
 
 /**
- * Firmware defaults. Used to fill keys the GET response may omit (LCD_*), so the
- * form can render every field and an untouched value produces no diff.
+ * Firmware defaults for the only keys GET /api/config may omit: the LCD_* block,
+ * which the firmware emits solely when the LCD is enabled (see kiln-app
+ * config.rs `write_json`). Every other key is always present in the response, so
+ * listing it here would only duplicate a firmware constant and risk silent
+ * drift. Used to fill the LCD section so it stays editable and an untouched
+ * value produces no diff.
  */
-export const DEFAULTS: KilnConfig = {
-	MAX31856_SPI_ID: 0,
-	MAX31856_SCK_PIN: 18,
-	MAX31856_MOSI_PIN: 19,
-	MAX31856_MISO_PIN: 16,
-	MAX31856_CS_PIN: 28,
-	SSR_PIN: [15],
-	WIFI_SSID: "",
-	WIFI_PASSWORD: "",
-	WIFI_STATIC_IP: null,
-	WIFI_SUBNET: null,
-	WIFI_GATEWAY: null,
-	WIFI_DNS: null,
-	WEB_SERVER_HOST: "0.0.0.0",
-	WEB_SERVER_PORT: 80,
-	THERMOCOUPLE_TYPE: "K",
-	TEMP_UNITS: "c",
-	THERMOCOUPLE_OFFSET: 0,
-	MAINS_FREQUENCY: 60,
-	THERMOCOUPLE_AVERAGING: 8,
-	TEMP_MEDIAN_WINDOW: 3,
-	TEMP_READ_INTERVAL: 1,
-	PID_UPDATE_INTERVAL: 1,
-	STATUS_UPDATE_INTERVAL: 5,
-	SSR_UPDATE_INTERVAL: 0.1,
-	PID_KP_BASE: 25,
-	PID_KI_BASE: 0.14,
-	PID_KD_BASE: 160,
-	THERMAL_H: 0,
-	THERMAL_T_AMBIENT: 25,
-	SSR_CYCLE_TIME: 20,
-	SSR_STAGGER_DELAY: 0.01,
-	MAX_TEMP: 1300,
-	STALL_CHECK_INTERVAL: 60,
-	STALL_CONSECUTIVE_FAILS: 3,
-	STALL_MIN_STEP_TIME: 600,
-	RATE_MEASUREMENT_WINDOW: 600,
-	RATE_RECORDING_INTERVAL: 10,
-	MAX_RECOVERY_TEMP_DELTA: 30,
-	LOGGING_INTERVAL: 30,
-	ENABLE_WATCHDOG: false,
-	WATCHDOG_TIMEOUT: 8000,
+const LCD_DEFAULTS: Pick<
+	KilnConfig,
+	"LCD_I2C_ID" | "LCD_I2C_SCL" | "LCD_I2C_SDA" | "LCD_I2C_FREQ" | "LCD_I2C_ADDR"
+> = {
 	LCD_I2C_ID: 0,
 	LCD_I2C_SCL: 21,
 	LCD_I2C_SDA: 20,
@@ -537,13 +503,9 @@ export const SECTIONS: ConfigSectionDef[] = [
 /** Flat list of every field def, in section order. */
 export const ALL_FIELDS: ConfigFieldDef[] = SECTIONS.flatMap((s) => s.fields);
 
-const FIELD_BY_KEY = new Map<string, ConfigFieldDef>(
-	ALL_FIELDS.map((f) => [f.key as string, f]),
-);
-
-/** Fill any keys missing from the GET response with firmware defaults. */
-export function withDefaults(raw: Partial<KilnConfig>): KilnConfig {
-	return { ...DEFAULTS, ...raw };
+/** Fill the LCD_* keys the GET response omits when the LCD is disabled. */
+export function withDefaults(raw: KilnConfig): KilnConfig {
+	return { ...LCD_DEFAULTS, ...raw };
 }
 
 /**
@@ -551,10 +513,7 @@ export function withDefaults(raw: Partial<KilnConfig>): KilnConfig {
  * empty ip strings, coerces numeric inputs/selects to numbers, leaves arrays and
  * booleans as-is.
  */
-export function normalize(
-	def: ConfigFieldDef,
-	value: ConfigValue,
-): ConfigValue {
+function normalize(def: ConfigFieldDef, value: ConfigValue): ConfigValue {
 	if (def.type === "ip") {
 		const s = typeof value === "string" ? value.trim() : "";
 		return s.length === 0 ? null : s;
@@ -592,8 +551,4 @@ export function buildPatch(
 		}
 	}
 	return patch;
-}
-
-export function getFieldDef(key: string): ConfigFieldDef | undefined {
-	return FIELD_BY_KEY.get(key);
 }

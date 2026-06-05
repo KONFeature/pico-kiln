@@ -138,13 +138,17 @@ describe("parseDraftProfile", () => {
 	});
 
 	it("survives a localStorage JSON round-trip with empty fields dropped", () => {
-		const restored = parseDraftProfile(JSON.parse(JSON.stringify(incompleteDraft)));
+		const restored = parseDraftProfile(
+			JSON.parse(JSON.stringify(incompleteDraft)),
+		);
 		expect(restored?.steps[0]).toEqual({ type: "ramp" });
 	});
 
 	it("rejects structurally impossible payloads", () => {
 		expect(parseDraftProfile(null)).toBeNull();
-		expect(parseDraftProfile({ ...incompleteDraft, temp_units: "k" })).toBeNull();
+		expect(
+			parseDraftProfile({ ...incompleteDraft, temp_units: "k" }),
+		).toBeNull();
 		expect(parseDraftProfile({ ...incompleteDraft, steps: "x" })).toBeNull();
 		expect(
 			parseDraftProfile({ ...incompleteDraft, steps: [{ type: "blast" }] }),

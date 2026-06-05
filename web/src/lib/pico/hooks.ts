@@ -6,7 +6,7 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import { PicoAPIError } from "./client";
+import { type PicoAPIClient, PicoAPIError } from "./client";
 import { usePico } from "./context";
 import { isLogicalFailure } from "./errors";
 import type {
@@ -58,6 +58,19 @@ function unwrap<
 	return res;
 }
 
+/**
+ * Narrow the optional Pico client to a guaranteed instance, throwing a uniform
+ * PicoAPIError when no client is configured yet. Lets every hook drop its own
+ * `if (!client)` guard.
+ */
+function assertClient(
+	client: PicoAPIClient | null | undefined,
+): asserts client is PicoAPIClient {
+	if (!client) {
+		throw new PicoAPIError("Pico client not initialized");
+	}
+}
+
 // === Status Hooks ===
 
 /**
@@ -71,9 +84,7 @@ export function useKilnStatus(
 	return useQuery<KilnStatus, PicoAPIError>({
 		queryKey: picoKeys.status,
 		queryFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return await client.getStatus();
 		},
 		enabled: isConfigured && Boolean(client),
@@ -118,9 +129,7 @@ export function useRunProfile() {
 
 	return useMutation<RunProfileResponse, PicoAPIError, string>({
 		mutationFn: async (profileName: string) => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return unwrap(
 				await client.runProfile(profileName),
 				"Failed to start profile",
@@ -142,9 +151,7 @@ export function useStopProfile() {
 
 	return useMutation<StopResponse, PicoAPIError, void>({
 		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return unwrap(await client.stopProfile(), "Failed to stop profile");
 		},
 		onSuccess: () => {
@@ -162,9 +169,7 @@ export function useShutdown() {
 
 	return useMutation<ShutdownResponse, PicoAPIError, void>({
 		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return unwrap(await client.shutdown(), "Failed to shut down kiln");
 		},
 		onSuccess: () => {
@@ -182,9 +187,7 @@ export function useClearError() {
 
 	return useMutation({
 		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return unwrap(await client.clearError(), "Failed to clear error");
 		},
 		onSuccess: () => {
@@ -204,9 +207,7 @@ export function useReboot() {
 	return useMutation<{ success: boolean; message: string }, PicoAPIError, void>(
 		{
 			mutationFn: async () => {
-				if (!client) {
-					throw new PicoAPIError("Pico client not initialized");
-				}
+				assertClient(client);
 				try {
 					return unwrap(await client.reboot(), "Failed to reboot");
 				} catch (error) {
@@ -248,9 +249,7 @@ export function useStartTuning() {
 
 	return useMutation<StartTuningResponse, PicoAPIError, StartTuningParams>({
 		mutationFn: async ({ mode, maxTemp }) => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return unwrap(
 				await client.startTuning(mode, maxTemp),
 				"Failed to start tuning",
@@ -271,9 +270,7 @@ export function useStopTuning() {
 
 	return useMutation<StopTuningResponse, PicoAPIError, void>({
 		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return unwrap(await client.stopTuning(), "Failed to stop tuning");
 		},
 		onSuccess: () => {
@@ -302,9 +299,7 @@ export function useScheduleProfile() {
 		ScheduleProfileParams
 	>({
 		mutationFn: async ({ profileName, startTime }) => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return unwrap(
 				await client.scheduleProfile(profileName, startTime),
 				"Failed to schedule profile",
@@ -328,9 +323,7 @@ export function useScheduledStatus(
 	return useQuery<ScheduledStatusResponse, PicoAPIError>({
 		queryKey: picoKeys.scheduledStatus,
 		queryFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return await client.getScheduledStatus();
 		},
 		enabled: isConfigured && Boolean(client),
@@ -350,9 +343,7 @@ export function useCancelScheduled() {
 
 	return useMutation<CancelScheduledResponse, PicoAPIError, void>({
 		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return unwrap(
 				await client.cancelScheduled(),
 				"Failed to cancel scheduled profile",
@@ -376,9 +367,7 @@ export function useTestConnection() {
 
 	return useMutation<boolean, PicoAPIError, void>({
 		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return await client.testConnection();
 		},
 		onSuccess: (isConnected) => {
@@ -407,9 +396,7 @@ export function useListFiles(
 	return useQuery<ListFilesResponse, PicoAPIError>({
 		queryKey: picoKeys.files(directory),
 		queryFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return await client.listFiles(directory);
 		},
 		enabled: isConfigured && Boolean(client),
@@ -445,9 +432,7 @@ export function useDeleteFile() {
 		{ directory: FileDirectory; filename: string }
 	>({
 		mutationFn: async ({ directory, filename }) => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return unwrap(
 				await client.deleteFile(directory, filename),
 				"Failed to delete file",
@@ -474,9 +459,7 @@ export function useDeleteAllLogs() {
 
 	return useMutation<DeleteAllFilesResponse, PicoAPIError, void>({
 		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return unwrap(await client.deleteAllLogs(), "Failed to delete logs");
 		},
 		onSuccess: () => {
@@ -500,9 +483,7 @@ export function useUploadFile() {
 		{ directory: FileDirectory; filename: string; content: string }
 	>({
 		mutationFn: async ({ directory, filename, content }) => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return unwrap(
 				await client.uploadFile(directory, filename, content),
 				"Failed to upload file",
@@ -533,9 +514,7 @@ export function useKilnConfig(
 	return useQuery<KilnConfig, PicoAPIError>({
 		queryKey: picoKeys.config,
 		queryFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return await client.getConfig();
 		},
 		enabled: isConfigured && Boolean(client),
@@ -557,9 +536,7 @@ export function useSaveConfig() {
 	return useMutation<SaveConfigResponse, PicoAPIError, Record<string, unknown>>(
 		{
 			mutationFn: async (patch) => {
-				if (!client) {
-					throw new PicoAPIError("Pico client not initialized");
-				}
+				assertClient(client);
 				return unwrap(await client.saveConfig(patch), "Failed to save config");
 			},
 			onSuccess: () => {

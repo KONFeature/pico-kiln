@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useConfigDraft } from "@/lib/config/draft-context";
 import { buildPatch, SECTIONS, withDefaults } from "@/lib/config/schema";
 import { useKilnConfig, useKilnStatus, useSaveConfig } from "@/lib/pico/hooks";
-import type { ConfigValue, KilnConfig } from "@/lib/pico/types";
+import type { ConfigValue, KilnConfig, KilnState } from "@/lib/pico/types";
 import { ConfigSection } from "./ConfigSection";
 import { RebootDialog } from "./RebootDialog";
 import { UnsavedBar } from "./UnsavedBar";
@@ -24,8 +24,6 @@ function toFormValues(config: KilnConfig): FormValues {
 export function ConfigPage() {
 	const configQuery = useKilnConfig();
 	const { data: status } = useKilnStatus();
-
-	const locked = status?.state === "RUNNING" || status?.state === "TUNING";
 
 	if (configQuery.isLoading) {
 		return <p className="text-muted-foreground">Loading configuration…</p>;
@@ -52,19 +50,18 @@ export function ConfigPage() {
 	return (
 		<ConfigForm
 			serverConfig={withDefaults(configQuery.data)}
-			locked={locked}
-			lockedState={status?.state}
+			state={status?.state}
 		/>
 	);
 }
 
 interface ConfigFormProps {
 	serverConfig: KilnConfig;
-	locked: boolean;
-	lockedState?: string;
+	state?: KilnState;
 }
 
-function ConfigForm({ serverConfig, locked, lockedState }: ConfigFormProps) {
+function ConfigForm({ serverConfig, state }: ConfigFormProps) {
+	const locked = state === "RUNNING" || state === "TUNING";
 	const save = useSaveConfig();
 	const { draft, isDirty, setDraft, clearDraft } = useConfigDraft();
 	const [rebootOpen, setRebootOpen] = useState(false);
@@ -115,8 +112,8 @@ function ConfigForm({ serverConfig, locked, lockedState }: ConfigFormProps) {
 				<Alert>
 					<AlertTitle>Kiln is firing — configuration locked</AlertTitle>
 					<AlertDescription>
-						The kiln is currently {lockedState?.toLowerCase()}. Settings are
-						read-only until it finishes. Stop the run to make changes.
+						The kiln is currently {state?.toLowerCase()}. Settings are read-only
+						until it finishes. Stop the run to make changes.
 					</AlertDescription>
 				</Alert>
 			)}

@@ -46,14 +46,10 @@ export function ipv4Optional(): Validator {
 	};
 }
 
-/** A host string: empty rejected, max 64 chars. */
+/** A host string: trimmed, empty rejected, max 64 chars. */
 export function host(): Validator {
-	return (value) => {
-		const s = typeof value === "string" ? value.trim() : "";
-		if (s.length === 0) return "Required";
-		if (s.length > 64) return "Must be at most 64 characters";
-		return undefined;
-	};
+	const check = str(64);
+	return (value) => check(typeof value === "string" ? value.trim() : value);
 }
 
 /**

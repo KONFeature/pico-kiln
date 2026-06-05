@@ -219,7 +219,7 @@ export type ThermocoupleType =
  * Full kiln configuration as served by GET /api/config. Field names are
  * UPPER_SNAKE_CASE to match the firmware wire format exactly. LCD_* keys may be
  * absent in the response when the LCD is not configured; the client fills them
- * with firmware defaults for editing (see lib/config/schema.ts DEFAULTS).
+ * with firmware defaults for editing (see lib/config/schema.ts LCD_DEFAULTS).
  */
 export interface KilnConfig {
 	// Hardware (GPIO / SPI)

@@ -24,6 +24,11 @@ interface ConfigFieldProps {
 	disabled?: boolean;
 }
 
+/** Render a config value for a text/number/select input: null/undefined -> "". */
+function toInputStr(value: ConfigValue): string {
+	return value === null || value === undefined ? "" : String(value);
+}
+
 /** Parse "15, 14" -> [15, 14]; non-numeric tokens become NaN (caught by validator). */
 function parsePinList(raw: string): number[] {
 	return raw
@@ -59,7 +64,7 @@ export function ConfigField({ form, def, disabled }: ConfigFieldProps) {
 				if (def.options) {
 					control = (
 						<Select
-							value={value === null || value === undefined ? "" : String(value)}
+							value={toInputStr(value)}
 							onValueChange={(v) =>
 								field.handleChange(def.type === "number" ? Number(v) : v)
 							}
@@ -82,7 +87,7 @@ export function ConfigField({ form, def, disabled }: ConfigFieldProps) {
 						<Switch
 							id={fieldId}
 							checked={Boolean(value)}
-							onCheckedChange={(c) => field.handleChange(c)}
+							onCheckedChange={field.handleChange}
 							disabled={disabled}
 							aria-label={def.label}
 						/>
@@ -106,7 +111,7 @@ export function ConfigField({ form, def, disabled }: ConfigFieldProps) {
 							id={fieldId}
 							type="number"
 							inputMode="decimal"
-							value={value === null || value === undefined ? "" : String(value)}
+							value={toInputStr(value)}
 							onChange={(e) =>
 								field.handleChange(
 									e.target.value === "" ? "" : Number(e.target.value),
