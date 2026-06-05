@@ -39,8 +39,20 @@ use crate::{config, csv, html, json, profile_json};
 pub const COMMAND_DEPTH: usize = 3;
 /// Latest-status broadcast consumers: web pollers + CSV logger + LCD + recovery.
 pub const STATUS_CONSUMERS: usize = 4;
-/// picoserve worker pool size — the reference's `MAX_CONCURRENT_CONNECTIONS`.
+/// picoserve worker pool size for the *primary* interface (WiFi STA) — the
+/// reference's `MAX_CONCURRENT_CONNECTIONS`.
 pub const WEB_TASK_POOL_SIZE: usize = api::MAX_CONCURRENT_CONNECTIONS;
+
+/// Web workers per *secondary* interface (USB-NCM, fallback SoftAP). Provisioning
+/// and USB file access are single-user, so one connection each is enough — and a
+/// picoserve worker future is ~84 KB, so each extra worker is the dominant RAM
+/// cost (see the RAM notes in [[rust-reliability-sprint]]).
+pub const SECONDARY_WEB_WORKERS: usize = 1;
+
+/// Total `web_task` instances that can be live at once = the macro `pool_size`.
+/// Worst case is configured boot: STA (`WEB_TASK_POOL_SIZE`) + USB-NCM
+/// (`SECONDARY_WEB_WORKERS`). Unconfigured boot uses fewer (SoftAP 1 + NCM 1).
+pub const WEB_TASK_POOL_TOTAL: usize = WEB_TASK_POOL_SIZE + SECONDARY_WEB_WORKERS;
 
 /// Core 0 → Core 1 command channel (typed [`Command`], no heap).
 pub type CommandChannel = Channel<CriticalSectionRawMutex, Command, COMMAND_DEPTH>;
@@ -1558,7 +1570,7 @@ mod web {
     /// inherently "all interfaces"; only the port is actionable. picoserve 0.18
     /// replaces the free `listen_and_serve_with_state` function with the
     /// `Server` builder.
-    #[embassy_executor::task(pool_size = WEB_TASK_POOL_SIZE)]
+    #[embassy_executor::task(pool_size = WEB_TASK_POOL_TOTAL)]
     pub async fn web_task(
         id: usize,
         stack: embassy_net::Stack<'static>,
