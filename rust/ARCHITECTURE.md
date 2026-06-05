@@ -280,7 +280,56 @@ other. Porting to a new chip means writing one new `kiln-firmware` (plus the
 
 ---
 
-## 6. Gotchas (none fatal, all real)
+## 6. Provisioning: USB-NCM + fallback SoftAP
+
+A fresh board has no WiFi credentials, but credentials are set through the web
+API, which (historically) needed WiFi — a chicken-and-egg. Two extra network
+interfaces break it. Both serve the **same** picoserve router as WiFi, so
+`/api/config` and `/api/files/*` (config, profiles, run logs) work over either.
+
+| Interface | When | Device IP | Client gets | Notes |
+|---|---|---|---|---|
+| **USB-CDC-NCM** | always, when the cable is enumerated | `192.168.7.1/24` | DHCP `.2–.15` | radio-independent wired escape hatch |
+| **SoftAP** (open) | only when WiFi is **unconfigured** | `192.168.4.1/24` | DHCP `.2–.15` | SSID `pico-kiln-setup`, ch 6 |
+| **WiFi STA** | when configured | DHCP or static | — | retry-forever on failure (today's behaviour) |
+
+cyw43 cannot run STA and SoftAP at once, so the radio is **one or the other**,
+chosen at boot from `KilnConfig::wifi_is_configured()` (non-empty SSID that isn't
+the `your_wifi_ssid` placeholder). USB-NCM is on the USB peripheral, independent
+of the radio, so it is always available. DHCP for the AP/NCM links is served by
+`leasehund` (`src/dhcp.rs`, `pool_size = 2` so both can lease at once). There is
+no captive-portal DNS — reach the UI by IP.
+
+**First-time setup**
+- *USB (recommended):* plug into a macOS / Linux / Windows 11 host (Windows 10
+  has no in-box NCM driver — use SoftAP there). A USB ethernet NIC appears →
+  browse `http://192.168.7.1` → set WiFi in config → reboot.
+- *SoftAP (no cable):* join the open `pico-kiln-setup` network from a phone →
+  browse `http://192.168.4.1` → set WiFi → reboot.
+- *Recovery:* a configured board that can't reach its saved WiFi blinks and
+  retries forever; plug in USB to fix the credentials.
+
+> **SECURITY (open AP).** While unconfigured the SoftAP is open, so anyone in
+> range reaches the full control API (incl. starting a firing). This is the
+> accepted trade for cable-free first-time setup: it is reached only when WiFi is
+> unconfigured, disappears once the board joins WiFi and reboots, and runs with no
+> NTP so NTP-gated firings stay gated. Provision somewhere you trust. Switching to
+> a WPA2 AP later is a one-line change (`start_ap_wpa2`).
+
+> **Android USB-NCM quirk.** A host MAC with the locally-administered bit set is
+> rejected by Android; the firmware uses `0x88…` (bit clear) for exactly this.
+
+**Device verification checklist** (requires hardware — not run in CI):
+1. Configured board + USB on macOS/Linux → NIC + DHCP lease → UI at 192.168.7.1 →
+   edit a profile → persists across reboot.
+2. Wipe `WIFI_SSID` → reboot → `pico-kiln-setup` visible → phone joins →
+   192.168.4.1 → set WiFi → reboot → joins STA.
+3. Configured board, AP off → STA blink/retry → plug USB → reachable at
+   192.168.7.1.
+
+---
+
+## 7. Gotchas (none fatal, all real)
 
 1. **Crate boundaries don't enforce core affinity.** Code in `kiln-control` is
    not *automatically* on Core 1 — the shim's `spawn_core1` placement is what
@@ -304,7 +353,7 @@ other. Porting to a new chip means writing one new `kiln-firmware` (plus the
 
 ---
 
-## 7. Build & test targets
+## 8. Build & test targets
 
 | Action | Command |
 |--------|---------|
@@ -319,7 +368,7 @@ platform-generic, `kiln-sim` can run **the real loop** on the host (via
 
 ---
 
-## 8. Status & roadmap
+## 9. Status & roadmap
 
 - ✅ `kiln-core`: **all 11 decision modules ported**, 60 unit + 12 replay tests green.
 - ✅ `kiln-hal`: `max31856` + `ssr` drivers over `embedded-hal`, 12 tests green.
