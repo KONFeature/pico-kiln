@@ -677,7 +677,10 @@ mod web {
 
     async fn run(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
         if !state.clock_synced() {
-            return ApiResponse::error(StatusCode::SERVICE_UNAVAILABLE, api::CLOCK_NOT_SYNCED_MESSAGE);
+            return ApiResponse::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                api::CLOCK_NOT_SYNCED_MESSAGE,
+            );
         }
         let name = match api::json_get_str(body.as_str(), "profile") {
             Some(n) if !n.is_empty() => n,
@@ -698,7 +701,10 @@ mod web {
 
     async fn schedule(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
         if !state.clock_synced() {
-            return ApiResponse::error(StatusCode::SERVICE_UNAVAILABLE, api::CLOCK_NOT_SYNCED_MESSAGE);
+            return ApiResponse::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                api::CLOCK_NOT_SYNCED_MESSAGE,
+            );
         }
         let name = api::json_get_str(body.as_str(), "profile");
         let start = api::json_get_f64(body.as_str(), "start_time");
@@ -732,7 +738,10 @@ mod web {
 
     async fn tuning_start(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
         if !state.clock_synced() {
-            return ApiResponse::error(StatusCode::SERVICE_UNAVAILABLE, api::CLOCK_NOT_SYNCED_MESSAGE);
+            return ApiResponse::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                api::CLOCK_NOT_SYNCED_MESSAGE,
+            );
         }
         let mode_str = api::json_get_str(body.as_str(), "mode").unwrap_or("STANDARD");
         let mode = match api::parse_tuning_mode(mode_str) {
@@ -1128,22 +1137,50 @@ mod web {
                 ApiResponse::Status(state) => {
                     let mut b = heapless::String::<RENDER_CAP>::new();
                     let _ = json::write_status_json(&mut b, &state.latest());
-                    respond(StatusCode::OK, "application/json", b, connection, response_writer).await
+                    respond(
+                        StatusCode::OK,
+                        "application/json",
+                        b,
+                        connection,
+                        response_writer,
+                    )
+                    .await
                 }
                 ApiResponse::Scheduled(state) => {
                     let mut b = heapless::String::<RENDER_CAP>::new();
                     let _ = json::write_scheduled_endpoint(&mut b, &state.latest());
-                    respond(StatusCode::OK, "application/json", b, connection, response_writer).await
+                    respond(
+                        StatusCode::OK,
+                        "application/json",
+                        b,
+                        connection,
+                        response_writer,
+                    )
+                    .await
                 }
                 ApiResponse::Config(state) => {
                     let mut b = heapless::String::<RENDER_CAP>::new();
                     let _ = state.config.write_json(&mut b);
-                    respond(StatusCode::OK, "application/json", b, connection, response_writer).await
+                    respond(
+                        StatusCode::OK,
+                        "application/json",
+                        b,
+                        connection,
+                        response_writer,
+                    )
+                    .await
                 }
                 ApiResponse::Message(msg) => {
                     let mut b = heapless::String::<RENDER_CAP>::new();
                     let _ = write!(b, "{{\"success\":true,\"message\":\"{}\"}}", msg);
-                    respond(StatusCode::OK, "application/json", b, connection, response_writer).await
+                    respond(
+                        StatusCode::OK,
+                        "application/json",
+                        b,
+                        connection,
+                        response_writer,
+                    )
+                    .await
                 }
                 ApiResponse::Uploaded { name, written } => {
                     let mut b = heapless::String::<RENDER_CAP>::new();
@@ -1152,7 +1189,14 @@ mod web {
                         "{{\"success\":true,\"message\":\"Uploaded {}\",\"filename\":\"{}\",\"size\":{}}}",
                         name, name, written
                     );
-                    respond(StatusCode::OK, "application/json", b, connection, response_writer).await
+                    respond(
+                        StatusCode::OK,
+                        "application/json",
+                        b,
+                        connection,
+                        response_writer,
+                    )
+                    .await
                 }
                 ApiResponse::Fail { status, message } => {
                     let mut b = heapless::String::<RENDER_CAP>::new();
@@ -1161,7 +1205,14 @@ mod web {
                 }
                 // --- verbatim bodies ---
                 ApiResponse::Json { status, body } => {
-                    respond(status, "application/json", body, connection, response_writer).await
+                    respond(
+                        status,
+                        "application/json",
+                        body,
+                        connection,
+                        response_writer,
+                    )
+                    .await
                 }
                 ApiResponse::Text { status, body } => {
                     respond(status, "text/plain", body, connection, response_writer).await

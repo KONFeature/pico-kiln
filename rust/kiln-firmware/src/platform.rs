@@ -221,9 +221,8 @@ pub fn build_kiln_io(
     // values fall back to the kiln defaults (8 samples / 60 Hz), matching the
     // reference's `unwrap_or_default` behaviour.
     let _ = sensor.init(cfg.thermocouple_type);
-    let _ = sensor.set_averaging(
-        Averaging::from_samples(cfg.thermocouple_averaging).unwrap_or_default(),
-    );
+    let _ = sensor
+        .set_averaging(Averaging::from_samples(cfg.thermocouple_averaging).unwrap_or_default());
     let _ = sensor.set_noise_filter(NoiseFilter::from_hz(cfg.mains_frequency).unwrap_or_default());
     let _ = sensor.start_autoconverting();
 
@@ -243,10 +242,7 @@ pub fn build_kiln_io(
     }
     // Fallback: no configured pin matched the pool → use the default PIN_15.
     if relays.is_empty() {
-        if let Some(slot) = pool
-            .iter_mut()
-            .find(|s| matches!(s, Some((15, _))))
-        {
+        if let Some(slot) = pool.iter_mut().find(|s| matches!(s, Some((15, _)))) {
             let (num, out) = slot.take().unwrap();
             let _ = relays.push(out);
             mask |= 1 << num;
@@ -812,7 +808,12 @@ impl LcdDisplay {
         use core::fmt::Write;
 
         let mut row1 = heapless::String::<24>::new();
-        let _ = write!(row1, "{:4.0}C {}", status.current_temp, state_label(status.state));
+        let _ = write!(
+            row1,
+            "{:4.0}C {}",
+            status.current_temp,
+            state_label(status.state)
+        );
         self.lcd.print_row(0, &row1)?;
 
         let mut row2 = heapless::String::<24>::new();
@@ -1134,10 +1135,7 @@ const AP_CHANNEL: u8 = 6;
 /// first-time setup — it is only reached when WiFi is unconfigured, and it
 /// disappears the moment the board is provisioned and reboots into STA. See the
 /// provisioning design spec.
-pub async fn init_softap(
-    spawner: &embassy_executor::Spawner,
-    p: Core0Periphs,
-) -> Stack<'static> {
+pub async fn init_softap(spawner: &embassy_executor::Spawner, p: Core0Periphs) -> Stack<'static> {
     let (net_device, mut control) = init_cyw43(spawner, p).await;
 
     let mut rng = RoscRng;
@@ -1203,9 +1201,8 @@ pub async fn wifi_monitor_task(
             {
                 // Bound the DHCP/static-config wait so an association that never
                 // gets an address re-attempts instead of blocking here forever.
-                let _ =
-                    embassy_time::with_timeout(Duration::from_secs(15), stack.wait_config_up())
-                        .await;
+                let _ = embassy_time::with_timeout(Duration::from_secs(15), stack.wait_config_up())
+                    .await;
             }
             if !stack.is_link_up() {
                 led = !led;
@@ -1267,7 +1264,10 @@ async fn usb_net_task(mut runner: embassy_net::Runner<'static, NcmDevice<'static
 /// Bring up USB-CDC-NCM → an always-on `embassy-net` `Stack` at a fixed IP, with
 /// a DHCP server for the host. The wired escape hatch for (re)configuring WiFi
 /// and browsing files. Returns the stack the web workers serve on.
-pub fn init_usb_ncm(spawner: &embassy_executor::Spawner, usb: Peri<'static, USB>) -> Stack<'static> {
+pub fn init_usb_ncm(
+    spawner: &embassy_executor::Spawner,
+    usb: Peri<'static, USB>,
+) -> Stack<'static> {
     let driver = UsbDriver::new(usb, Irqs);
 
     let mut config = UsbConfig::new(0xc0de, 0xcafe);
@@ -1295,7 +1295,12 @@ pub fn init_usb_ncm(spawner: &embassy_executor::Spawner, usb: Peri<'static, USB>
     );
 
     static NCM_STATE: StaticCell<NcmState> = StaticCell::new();
-    let class = CdcNcmClass::new(&mut builder, NCM_STATE.init(NcmState::new()), NCM_HOST_MAC, 64);
+    let class = CdcNcmClass::new(
+        &mut builder,
+        NCM_STATE.init(NcmState::new()),
+        NCM_HOST_MAC,
+        64,
+    );
 
     let usb_device = builder.build();
     spawner.spawn(usb_device_task(usb_device).unwrap());
@@ -1639,11 +1644,13 @@ async fn ntp_query(stack: Stack<'static>) -> Option<u64> {
     let ctx = NtpContext::new(NtpTimestamps::default());
     let server_addr = SocketAddr::new(server, 123);
     // Bound the recv: a silent server would otherwise wait forever.
-    let result =
-        embassy_time::with_timeout(Duration::from_secs(10), sntpc::get_time(server_addr, &ntp, ctx))
-            .await
-            .ok()?
-            .ok()?;
+    let result = embassy_time::with_timeout(
+        Duration::from_secs(10),
+        sntpc::get_time(server_addr, &ntp, ctx),
+    )
+    .await
+    .ok()?
+    .ok()?;
     Some((result.seconds as u64).saturating_sub(NTP_UNIX_DELTA))
 }
 
@@ -1673,4 +1680,3 @@ pub async fn reboot_task(reboot: &'static RebootSignal) -> ! {
     embassy_time::Timer::after(Duration::from_millis(500)).await;
     cortex_m::peripheral::SCB::sys_reset()
 }
-

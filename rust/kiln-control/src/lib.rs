@@ -202,7 +202,10 @@ mod tests {
         // Still within the 5 s window (last publish t=500): a normal tick must not
         // publish — this establishes status_due is false here.
         let pre = c.iterate(None, 1_500, 1);
-        assert!(pre.publish.is_none(), "status_due should be false mid-window");
+        assert!(
+            pre.publish.is_none(),
+            "status_due should be false mid-window"
+        );
 
         // Median now crosses max_temp → Running→Error. Must force a publish despite
         // status_due still being false.
@@ -216,7 +219,10 @@ mod tests {
             .publish
             .expect("clean→Error transition must publish for logging");
         assert_eq!(snap.state, KilnState::Error);
-        assert!(matches!(snap.error, Some(KilnError::MaxTempExceeded { .. })));
+        assert!(matches!(
+            snap.error,
+            Some(KilnError::MaxTempExceeded { .. })
+        ));
 
         // Already in Error, still mid-window: must not republish every tick.
         let o2 = c.iterate(None, 2_500, 2);

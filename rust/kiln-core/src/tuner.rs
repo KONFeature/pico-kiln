@@ -25,7 +25,6 @@ pub enum TuningStage {
     Error,
 }
 
-
 const PLATEAU_WINDOW: usize = 5;
 const PLATEAU_CHECK_INTERVAL_MS: i64 = 60_000; // compared against a monotonic-ms delta
 const PLATEAU_RANGE: f32 = 0.5;
@@ -169,8 +168,7 @@ impl TuningStep {
                     if self.target_reached_time.is_none() {
                         self.target_reached_time = Some(now_ms);
                     }
-                    let hold_elapsed =
-                        (now_ms - self.target_reached_time.unwrap()) as f32 / 1000.0;
+                    let hold_elapsed = (now_ms - self.target_reached_time.unwrap()) as f32 / 1000.0;
                     if hold_elapsed >= self.hold_time {
                         return (self.ssr_percent, true);
                     }

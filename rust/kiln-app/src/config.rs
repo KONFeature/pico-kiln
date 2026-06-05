@@ -955,7 +955,10 @@ mod tests {
     fn wifi_is_configured_truth_table() {
         let mut c = KilnConfig::default();
         // default SSID is empty
-        assert!(!c.wifi_is_configured(), "empty SSID must read as unconfigured");
+        assert!(
+            !c.wifi_is_configured(),
+            "empty SSID must read as unconfigured"
+        );
 
         c.wifi_ssid = Str::from_text("your_wifi_ssid").unwrap();
         assert!(
@@ -964,7 +967,10 @@ mod tests {
         );
 
         c.wifi_ssid = Str::from_text("home").unwrap();
-        assert!(c.wifi_is_configured(), "a real SSID must read as configured");
+        assert!(
+            c.wifi_is_configured(),
+            "a real SSID must read as configured"
+        );
     }
 
     #[test]
