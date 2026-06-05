@@ -261,6 +261,18 @@ impl Default for KilnConfig {
 }
 
 impl KilnConfig {
+    /// The WiFi placeholder that `config.example.json` ships (asserted verbatim by
+    /// `config_example_json_is_valid`).
+    const WIFI_SSID_PLACEHOLDER: &'static str = "your_wifi_ssid";
+
+    /// True when WiFi station credentials are usable: a non-empty SSID that is not
+    /// the shipped placeholder. Drives the firmware boot choice between STA and the
+    /// provisioning SoftAP (`core0_main`).
+    pub fn wifi_is_configured(&self) -> bool {
+        let ssid = self.wifi_ssid.as_str();
+        !ssid.is_empty() && ssid != Self::WIFI_SSID_PLACEHOLDER
+    }
+
     /// The safety/rate/stall subset, as the `kiln-core` controller wants it.
     pub fn controller_config(&self) -> ControllerConfig {
         ControllerConfig {
@@ -937,6 +949,22 @@ mod tests {
         assert_eq!(c.wifi_password.as_str(), "secret");
         assert_eq!(c.wifi_static_ip.as_ref().unwrap().as_str(), "192.168.1.100");
         assert_eq!(c.wifi_dns, None);
+    }
+
+    #[test]
+    fn wifi_is_configured_truth_table() {
+        let mut c = KilnConfig::default();
+        // default SSID is empty
+        assert!(!c.wifi_is_configured(), "empty SSID must read as unconfigured");
+
+        c.wifi_ssid = Str::from_text("your_wifi_ssid").unwrap();
+        assert!(
+            !c.wifi_is_configured(),
+            "the config.example placeholder must read as unconfigured"
+        );
+
+        c.wifi_ssid = Str::from_text("home").unwrap();
+        assert!(c.wifi_is_configured(), "a real SSID must read as configured");
     }
 
     #[test]
