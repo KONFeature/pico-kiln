@@ -883,8 +883,14 @@ use embassy_net::{IpEndpoint, Ipv4Address, Ipv4Cidr, Stack, StaticConfigV4};
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::RoscRng;
 use embassy_rp::dma::{self, Channel};
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
+use embassy_rp::peripherals::{DMA_CH0, PIO0, USB};
 use embassy_rp::pio::{self, Pio};
+use embassy_rp::usb::{Driver as UsbDriver, InterruptHandler as UsbInterruptHandler};
+use embassy_usb::class::cdc_ncm::embassy_net::{
+    Device as NcmDevice, Runner as NcmRunner, State as NcmNetState,
+};
+use embassy_usb::class::cdc_ncm::{CdcNcmClass, State as NcmState};
+use embassy_usb::{Builder as UsbBuilder, Config as UsbConfig, UsbDevice};
 use sntpc::{NtpContext, NtpTimestampGenerator, NtpUdpSocket};
 
 // PIO0 drives the cyw43 SPI; one DMA channel moves the transfers. Both their
@@ -892,6 +898,8 @@ use sntpc::{NtpContext, NtpTimestampGenerator, NtpUdpSocket};
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => pio::InterruptHandler<PIO0>;
     DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
+    // USB controller — drives the CDC-NCM device (always-on USB provisioning).
+    USBCTRL_IRQ => UsbInterruptHandler<USB>;
 });
 
 /// Total smoltcp socket slots: the web worker pool (TCP) + the NTP UDP socket +
@@ -1002,35 +1010,7 @@ pub async fn init_network(
     p: Core0Periphs,
     config: &'static KilnConfig,
 ) -> (Stack<'static>, Control<'static>) {
-    let fw = cyw43::aligned_bytes!("../cyw43-firmware/43439A0.bin");
-    let clm = cyw43::aligned_bytes!("../cyw43-firmware/43439A0_clm.bin");
-    let nvram = cyw43::aligned_bytes!("../cyw43-firmware/nvram_rp2040.bin");
-
-    // PIO-driven SPI to the on-board CYW43439 (fixed Pico 2 W wiring). The RM2
-    // module needs the slower `RM2_CLOCK_DIVIDER` (embassy #3960).
-    let pwr = Output::new(p.wl_pwr, Level::Low);
-    let cs = Output::new(p.wl_cs, Level::High);
-    let mut pio = Pio::new(p.pio, Irqs);
-    let spi = PioSpi::new(
-        &mut pio.common,
-        pio.sm0,
-        RM2_CLOCK_DIVIDER,
-        pio.irq0,
-        cs,
-        p.wl_dio,
-        p.wl_clk,
-        Channel::new(p.dma, Irqs),
-    );
-
-    static STATE: StaticCell<cyw43::State> = StaticCell::new();
-    let state = STATE.init(cyw43::State::new());
-    let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
-    spawner.spawn(cyw43_task(runner).unwrap());
-
-    control.init(clm).await;
-    control
-        .set_power_management(PowerManagementMode::PowerSave)
-        .await;
+    let (net_device, mut control) = init_cyw43(spawner, p).await;
 
     // Static IP when WIFI_STATIC_IP+subnet+gateway+dns are all set, else DHCP.
     // Seed the TCP/UDP RNG from the ring oscillator.
@@ -1081,6 +1061,103 @@ pub async fn init_network(
     (stack, control)
 }
 
+/// Shared cyw43 bring-up: blobs, PIO SPI, `cyw43::new`, runner spawn,
+/// `control.init` + power management — everything up to (but not including) the
+/// `embassy-net` stack. Used by both the STA path ([`init_network`]) and the
+/// provisioning SoftAP path ([`init_softap`]); exactly one runs per boot, since
+/// cyw43 cannot do STA and AP at once.
+async fn init_cyw43(
+    spawner: &embassy_executor::Spawner,
+    p: Core0Periphs,
+) -> (cyw43::NetDriver<'static>, Control<'static>) {
+    let fw = cyw43::aligned_bytes!("../cyw43-firmware/43439A0.bin");
+    let clm = cyw43::aligned_bytes!("../cyw43-firmware/43439A0_clm.bin");
+    let nvram = cyw43::aligned_bytes!("../cyw43-firmware/nvram_rp2040.bin");
+
+    // PIO-driven SPI to the on-board CYW43439 (fixed Pico 2 W wiring). The RM2
+    // module needs the slower `RM2_CLOCK_DIVIDER` (embassy #3960).
+    let pwr = Output::new(p.wl_pwr, Level::Low);
+    let cs = Output::new(p.wl_cs, Level::High);
+    let mut pio = Pio::new(p.pio, Irqs);
+    let spi = PioSpi::new(
+        &mut pio.common,
+        pio.sm0,
+        RM2_CLOCK_DIVIDER,
+        pio.irq0,
+        cs,
+        p.wl_dio,
+        p.wl_clk,
+        Channel::new(p.dma, Irqs),
+    );
+
+    static STATE: StaticCell<cyw43::State> = StaticCell::new();
+    let state = STATE.init(cyw43::State::new());
+    let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
+    spawner.spawn(cyw43_task(runner).unwrap());
+
+    control.init(clm).await;
+    control
+        .set_power_management(PowerManagementMode::PowerSave)
+        .await;
+
+    (net_device, control)
+}
+
+/// Sockets for the SoftAP stack: secondary web workers (TCP) + 1 DHCP UDP + margin.
+const AP_NET_SOCKETS: usize = kiln_app::server::SECONDARY_WEB_WORKERS + 2;
+/// Open provisioning AP SSID + 2.4 GHz channel.
+const AP_SSID: &str = "pico-kiln-setup";
+const AP_CHANNEL: u8 = 6;
+
+/// Provisioning SoftAP, used when WiFi is unconfigured. Brings up an **open** AP
+/// on a fixed /24 with a DHCP server, returning the stack the web workers serve
+/// on. cyw43 cannot run STA and AP at once, so this is mutually exclusive with
+/// [`init_network`].
+///
+/// SECURITY: the AP is open, so anyone in range reaches the full control API while
+/// the kiln is in this mode. That is the user-accepted trade for cable-free
+/// first-time setup — it is only reached when WiFi is unconfigured, and it
+/// disappears the moment the board is provisioned and reboots into STA. See the
+/// provisioning design spec.
+pub async fn init_softap(
+    spawner: &embassy_executor::Spawner,
+    p: Core0Periphs,
+) -> Stack<'static> {
+    let (net_device, mut control) = init_cyw43(spawner, p).await;
+
+    let mut rng = RoscRng;
+    let seed = rng.next_u64();
+    let dns_servers: heapless_v09::Vec<Ipv4Address, 3> = heapless_v09::Vec::new();
+    let net_config = embassy_net::Config::ipv4_static(StaticConfigV4 {
+        address: Ipv4Cidr::new(Ipv4Address::new(192, 168, 4, 1), 24),
+        gateway: None,
+        dns_servers,
+    });
+    static RES: StaticCell<embassy_net::StackResources<AP_NET_SOCKETS>> = StaticCell::new();
+    let (stack, net_runner) = embassy_net::new(
+        net_device,
+        net_config,
+        RES.init(embassy_net::StackResources::new()),
+        seed,
+    );
+    spawner.spawn(net_task(net_runner).unwrap());
+
+    control.start_ap_open(AP_SSID, AP_CHANNEL).await;
+    control.gpio_set(STATUS_LED_GPIO, true).await; // solid: AP up
+
+    spawner.spawn(
+        crate::dhcp::dhcp_server_task(
+            stack,
+            core::net::Ipv4Addr::new(192, 168, 4, 1),
+            core::net::Ipv4Addr::new(192, 168, 4, 2),
+            core::net::Ipv4Addr::new(192, 168, 4, 15),
+        )
+        .unwrap(),
+    );
+
+    stack
+}
+
 /// WiFi reconnect monitor — the steady-state half of `wifi_manager.monitor`
 /// (`wifi_manager.py:139-180`). Parks until the link drops, then re-joins with a
 /// 2 s backoff until it sticks and DHCP reconfigures. cyw43 auto-reconnects a
@@ -1113,6 +1190,118 @@ pub async fn wifi_monitor_task(
         }
         stack.wait_config_up().await;
     }
+}
+
+// ===========================================================================
+// USB-CDC-NCM (USB ethernet) — the always-on wired provisioning + file-access
+// interface. Independent of the radio, so it is up whenever the cable is
+// enumerated. Reuses the same picoserve router as WiFi; file/config writes still
+// go through the flash handshake. See the provisioning design spec.
+// ===========================================================================
+
+/// USB-NCM ethernet MTU (standard frame; matches the embassy example).
+const NCM_MTU: usize = 1514;
+/// Device IP on the USB link (smoltcp type, for the embassy-net stack config).
+const NCM_DEVICE_IP: Ipv4Address = Ipv4Address::new(192, 168, 7, 1);
+/// Same address as `core::net` (for the leasehund DHCP server, a different type).
+const NCM_GATEWAY: core::net::Ipv4Addr = core::net::Ipv4Addr::new(192, 168, 7, 1);
+const NCM_POOL_START: core::net::Ipv4Addr = core::net::Ipv4Addr::new(192, 168, 7, 2);
+const NCM_POOL_END: core::net::Ipv4Addr = core::net::Ipv4Addr::new(192, 168, 7, 15);
+/// Sockets for the NCM stack: secondary web workers (TCP) + 1 DHCP UDP + margin.
+const NCM_NET_SOCKETS: usize = kiln_app::server::SECONDARY_WEB_WORKERS + 2;
+
+/// Concrete USB driver type, named so the `#[task]`s below stay non-generic.
+type NcmUsbDriver = UsbDriver<'static, USB>;
+
+/// MAC addresses for the USB-NCM link. The HOST mac must NOT have the
+/// locally-administered bit (bit 1 of byte 0) set, or Android refuses the device;
+/// `0x88`/`0xCC` keep it clear. (Matches the embassy `usb_ethernet` example.)
+const NCM_OUR_MAC: [u8; 6] = [0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC];
+const NCM_HOST_MAC: [u8; 6] = [0x88, 0x88, 0x88, 0x88, 0x88, 0x88];
+
+/// Drives the USB device (control transfers, enumeration).
+#[embassy_executor::task]
+async fn usb_device_task(mut device: UsbDevice<'static, NcmUsbDriver>) -> ! {
+    device.run().await
+}
+
+/// Drives the CDC-NCM class (USB bulk RX/TX ↔ the embassy-net device).
+#[embassy_executor::task]
+async fn usb_ncm_task(runner: NcmRunner<'static, NcmUsbDriver, NCM_MTU>) -> ! {
+    runner.run().await
+}
+
+/// Drives the `embassy-net` stack riding on the USB-NCM device.
+#[embassy_executor::task]
+async fn usb_net_task(mut runner: embassy_net::Runner<'static, NcmDevice<'static, NCM_MTU>>) -> ! {
+    runner.run().await
+}
+
+/// Bring up USB-CDC-NCM → an always-on `embassy-net` `Stack` at a fixed IP, with
+/// a DHCP server for the host. The wired escape hatch for (re)configuring WiFi
+/// and browsing files. Returns the stack the web workers serve on.
+pub fn init_usb_ncm(spawner: &embassy_executor::Spawner, usb: Peri<'static, USB>) -> Stack<'static> {
+    let driver = UsbDriver::new(usb, Irqs);
+
+    let mut config = UsbConfig::new(0xc0de, 0xcafe);
+    config.manufacturer = Some("pico-kiln");
+    config.product = Some("pico-kiln (USB-NCM)");
+    config.serial_number = Some("kiln-0001");
+    config.max_power = 100;
+    config.max_packet_size_0 = 64;
+    // CDC-NCM enumerates as a composite device with an Interface Association Desc.
+    config.device_class = 0xEF;
+    config.device_sub_class = 0x02;
+    config.device_protocol = 0x01;
+    config.composite_with_iads = true;
+
+    static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+    static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+    static CONTROL_BUF: StaticCell<[u8; 128]> = StaticCell::new();
+    let mut builder = UsbBuilder::new(
+        driver,
+        config,
+        CONFIG_DESC.init([0; 256]),
+        BOS_DESC.init([0; 256]),
+        &mut [], // no Microsoft OS descriptors
+        CONTROL_BUF.init([0; 128]),
+    );
+
+    static NCM_STATE: StaticCell<NcmState> = StaticCell::new();
+    let class = CdcNcmClass::new(&mut builder, NCM_STATE.init(NcmState::new()), NCM_HOST_MAC, 64);
+
+    let usb_device = builder.build();
+    spawner.spawn(usb_device_task(usb_device).unwrap());
+
+    static NET_STATE: StaticCell<NcmNetState<NCM_MTU, 4, 4>> = StaticCell::new();
+    let (runner, device) = class
+        .into_embassy_net_device::<NCM_MTU, 4, 4>(NET_STATE.init(NcmNetState::new()), NCM_OUR_MAC);
+    spawner.spawn(usb_ncm_task(runner).unwrap());
+
+    // Static IP: this device is the gateway on the USB /24. No DNS (no portal).
+    let dns_servers: heapless_v09::Vec<Ipv4Address, 3> = heapless_v09::Vec::new();
+    let net_config = embassy_net::Config::ipv4_static(StaticConfigV4 {
+        address: Ipv4Cidr::new(NCM_DEVICE_IP, 24),
+        gateway: None,
+        dns_servers,
+    });
+    let mut rng = RoscRng;
+    let seed = rng.next_u64();
+    static RES: StaticCell<embassy_net::StackResources<NCM_NET_SOCKETS>> = StaticCell::new();
+    let (stack, net_runner) = embassy_net::new(
+        device,
+        net_config,
+        RES.init(embassy_net::StackResources::new()),
+        seed,
+    );
+    spawner.spawn(usb_net_task(net_runner).unwrap());
+
+    // Lease addresses to the USB host.
+    spawner.spawn(
+        crate::dhcp::dhcp_server_task(stack, NCM_GATEWAY, NCM_POOL_START, NCM_POOL_END).unwrap(),
+    );
+
+    stack
 }
 
 /// Mount littlefs and return the shared [`FlashStorage`]. Called from `main()`

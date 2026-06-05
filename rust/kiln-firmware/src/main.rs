@@ -36,6 +36,7 @@ use kiln_app::config::KilnConfig;
 use kiln_app::server::{AppState, CommandChannel, RebootSignal, StatusWatch};
 use kiln_control::Controller;
 
+mod dhcp;
 mod flash_handshake;
 mod lcd;
 mod platform;
@@ -130,12 +131,21 @@ fn main() -> ! {
         scl: p.PIN_21,
     };
 
+    // Core 0's non-cyw43 peripherals: the optional LCD plus the USB controller for
+    // the always-on CDC-NCM provisioning interface. Bundled into `AuxPeriphs`
+    // because `init_network` consumes `Core0Periphs` by value, so these travel
+    // separately. `p.USB` is disjoint from the cyw43/LCD pins.
+    let aux = AuxPeriphs {
+        lcd: lcd_periphs,
+        usb: p.USB,
+    };
+
     let executor0 = EXECUTOR0.init(Executor::new());
     executor0.run(|spawner| {
         spawner.spawn(
             core0_main(
                 core0_periphs,
-                lcd_periphs,
+                aux,
                 storage,
                 config,
                 commands.sender(),
@@ -285,6 +295,15 @@ struct LcdPeriphs {
     scl: Peri<'static, embassy_rp::peripherals::PIN_21>,
 }
 
+/// Core 0 peripherals beyond the cyw43 radio: the optional LCD and the USB
+/// controller (always-on CDC-NCM provisioning). Bundled so `core0_main` stays
+/// within clippy's argument limit, and kept out of [`Core0Periphs`] because
+/// `init_network`/`init_softap` consume that by value before these are used.
+struct AuxPeriphs {
+    lcd: LcdPeriphs,
+    usb: Peri<'static, embassy_rp::peripherals::USB>,
+}
+
 /// Core 0 setup task: bring up cyw43 → an `embassy-net` `Stack`, mount flash,
 /// wait for Core 1's ready handshake, run crash recovery, build the picoserve app
 /// with shared state, and spawn the worker pool plus the CSV-logging,
@@ -293,7 +312,7 @@ struct LcdPeriphs {
 #[embassy_executor::task]
 async fn core0_main(
     p: Core0Periphs,
-    lcd: LcdPeriphs,
+    aux: AuxPeriphs,
     storage: &'static FlashStorage,
     config: &'static KilnConfig,
     commands: kiln_app::server::CommandSender,
@@ -303,6 +322,7 @@ async fn core0_main(
     // SAFETY: `core0_main` runs as a task on Core 0's embassy executor, which is
     // exactly the precondition embassy-executor 0.10 requires for this call.
     let spawner = unsafe { embassy_executor::Spawner::for_current_executor() }.await;
+    let AuxPeriphs { lcd, usb } = aux;
 
     // --- Network-independent bring-up first ---------------------------------
     // Build the wall clock and shared AppState. None of this needs WiFi, so crash
@@ -343,49 +363,70 @@ async fn core0_main(
         kiln_app::server::csv_logger_task(status, storage, clock, config, recovery).unwrap(),
     );
 
-    // --- Network bring-up ---------------------------------------------------
-    // cyw43 firmware blobs + PIO SPI + embassy-net stack + WiFi join + DHCP.
-    // Returns the Stack the web workers serve on and the cyw43 `Control` the WiFi
-    // monitor re-joins with. Everything below this line genuinely needs the network.
-    let (stack, control) = platform::init_network(&spawner, p, config).await;
+    // --- USB-NCM: always on (radio-independent), the wired escape hatch -------
+    // Comes up whenever the cable is enumerated, serving the same router as WiFi,
+    // so config + files are reachable over USB regardless of WiFi state. This is
+    // what breaks the provisioning chicken-and-egg.
+    let usb_stack = platform::init_usb_ncm(&spawner, usb);
 
     // `make_app` bakes the shared `AppState` into the router; picoserve 0.18 then
     // serves the stateless `Router<P>` aliased as `AppRouter`, stored in a
     // StaticCell so the `#[task]` web_task stays non-generic. (`AppState` is
-    // `Copy`, so recovery's borrow above leaves `state` usable here.)
+    // `Copy`, so recovery's borrow above leaves `state` usable here.) The one
+    // router is shared across every stack.
     static APP: StaticCell<kiln_app::server::AppRouter> = StaticCell::new();
     let app: &'static _ = APP.init(kiln_app::server::make_app(state));
     let web_cfg = platform::web_config();
+    let port = config.web_server_port;
 
-    // embassy-executor 0.10: `#[task]` fns return `Result<SpawnToken, _>` and
-    // `Spawner::spawn` returns `()`, so each token is unwrapped before spawning.
-    for id in 0..kiln_app::server::WEB_TASK_POOL_SIZE {
+    // --- Radio: STA when configured, else the provisioning SoftAP ------------
+    // cyw43 cannot do STA and AP at once. A configured board retries STA forever
+    // (`init_network`; USB is the recovery path if the saved creds are wrong); an
+    // unconfigured board serves the open setup AP instead.
+    if config.wifi_is_configured() {
+        let (sta_stack, control) = platform::init_network(&spawner, p, config).await;
+        // Primary interface: the full worker pool.
+        for id in 0..kiln_app::server::WEB_TASK_POOL_SIZE {
+            spawner.spawn(kiln_app::server::web_task(id, sta_stack, app, web_cfg, port).unwrap());
+        }
+        // WiFi reconnect monitor (`wifi_manager.monitor`) + NTP — STA only: there
+        // is no upstream network in AP mode. The `Control` handle is moved into
+        // the monitor (nothing else uses it after this).
         spawner.spawn(
-            kiln_app::server::web_task(id, stack, app, web_cfg, config.web_server_port).unwrap(),
+            platform::wifi_monitor_task(
+                control,
+                sta_stack,
+                config.wifi_ssid.as_str(),
+                config.wifi_password.as_str(),
+            )
+            .unwrap(),
         );
+        spawner.spawn(platform::ntp_task(clock, sta_stack).unwrap());
+    } else {
+        // Unconfigured: open SoftAP for first-time provisioning. No NTP (so
+        // NTP-gated runs stay gated — fine, you're here to set WiFi, not fire).
+        let ap_stack = platform::init_softap(&spawner, p).await;
+        for id in 0..kiln_app::server::SECONDARY_WEB_WORKERS {
+            spawner.spawn(kiln_app::server::web_task(id, ap_stack, app, web_cfg, port).unwrap());
+        }
     }
-    // WiFi reconnect monitor (`wifi_manager.monitor`): re-join on link failure.
-    // Takes the `Control` handle (moved here — nothing else uses it) plus the
-    // SSID/password, which live in the `'static` config.
-    spawner.spawn(
-        platform::wifi_monitor_task(
-            control,
-            stack,
-            config.wifi_ssid.as_str(),
-            config.wifi_password.as_str(),
-        )
-        .unwrap(),
-    );
+
+    // USB-NCM workers, always. IDs are offset past the primary pool so every
+    // live `web_task` instance has a distinct id (pool size = WEB_TASK_POOL_TOTAL).
+    for i in 0..kiln_app::server::SECONDARY_WEB_WORKERS {
+        let id = kiln_app::server::WEB_TASK_POOL_SIZE + i;
+        spawner.spawn(kiln_app::server::web_task(id, usb_stack, app, web_cfg, port).unwrap());
+    }
+
     // LCD status line (`server/lcd_manager.py`), optional. Built only when
     // `LCD_ENABLED`; a missing/mis-wired backpack disables it without affecting
     // the web server or WiFi. The kiln-app `lcd_task` renders each status change
-    // through the firmware `Display`.
+    // through the firmware `Display`. Works in either radio mode.
     if config.lcd_enabled {
         if let Some(display) = platform::init_display(lcd, config) {
             spawner.spawn(kiln_app::server::lcd_task(status, display).unwrap());
         }
     }
-    spawner.spawn(platform::ntp_task(clock, stack).unwrap());
     spawner.spawn(platform::reboot_task(reboot).unwrap());
 }
 
