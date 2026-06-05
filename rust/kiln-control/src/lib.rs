@@ -177,6 +177,56 @@ mod tests {
     }
 
     #[test]
+    fn over_temp_in_run_publishes_error_once_off_cycle() {
+        // The normal (non-fault) path only checks status_due to publish. A clean
+        // Running→Error transition (over-temp) landing inside the 5 s status window
+        // must still publish once, or Core 0 never logs the terminal ERROR row /
+        // fixes the recovery pointer. `faulted` must stay false (soft-recoverable).
+        let mut c = new_controller();
+        let profile = Profile::new(&[Step::hold(100.0, 100_000.0)]).unwrap();
+        c.iterate(None, 500, 0); // warm-up: first status publish (t=500)
+        c.iterate(
+            Some(Command::RunProfile {
+                profile: name("glaze.json"),
+                parsed: profile,
+            }),
+            1_000,
+            1,
+        );
+        assert_eq!(c.state(), KilnState::Running);
+
+        // 1400 °C is in-range (≤1500) so it is an over-temp, not a sensor fault.
+        // With a 3-sample median, the second reading carries the median over 1300.
+        c.sensor_mut().set_temp(1400.0);
+
+        // Still within the 5 s window (last publish t=500): a normal tick must not
+        // publish — this establishes status_due is false here.
+        let pre = c.iterate(None, 1_500, 1);
+        assert!(pre.publish.is_none(), "status_due should be false mid-window");
+
+        // Median now crosses max_temp → Running→Error. Must force a publish despite
+        // status_due still being false.
+        let o = c.iterate(None, 2_000, 2);
+        assert!(
+            !o.faulted,
+            "over-temp is soft-recoverable: faulted must stay false"
+        );
+        assert_eq!(c.state(), KilnState::Error);
+        let snap = o
+            .publish
+            .expect("clean→Error transition must publish for logging");
+        assert_eq!(snap.state, KilnState::Error);
+        assert!(matches!(snap.error, Some(KilnError::MaxTempExceeded { .. })));
+
+        // Already in Error, still mid-window: must not republish every tick.
+        let o2 = c.iterate(None, 2_500, 2);
+        assert!(
+            o2.publish.is_none(),
+            "must not republish while already in Error mid-window"
+        );
+    }
+
+    #[test]
     fn shutdown_forces_ssr_off_and_returns_to_idle() {
         let mut c = new_controller();
         let profile = Profile::new(&[Step::hold(100.0, 10_000.0)]).unwrap();

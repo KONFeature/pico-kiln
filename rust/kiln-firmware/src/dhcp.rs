@@ -24,8 +24,11 @@ pub async fn dhcp_server_task(
     pool_end: Ipv4Addr,
 ) -> ! {
     // leasehund 0.5.1: `DhcpServer::<MAX_CLIENTS, N_DNS>::new(server_ip, mask,
-    // router, dns, pool_start, pool_end)`. One DNS slot (= the gateway).
-    let mut server: DhcpServer<32, 1> = DhcpServer::new(
+    // router, dns, pool_start, pool_end)`. One DNS slot (= the gateway). These are
+    // setup-only links (a single phone/USB host at a time); a 4-lease table is
+    // ample headroom over the one expected client (covers a reconnect with a stale
+    // lease still outstanding) and saves the static RAM a 32-entry table cost ×2.
+    let mut server: DhcpServer<4, 1> = DhcpServer::new(
         gateway,                          // server IP
         Ipv4Addr::new(255, 255, 255, 0),  // /24 subnet mask
         gateway,                          // router/gateway = this device

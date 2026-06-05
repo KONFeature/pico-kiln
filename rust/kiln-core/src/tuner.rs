@@ -304,6 +304,15 @@ impl ZieglerNicholsTuner {
     /// Advance tuning with the latest `current_temp` at time `now_ms` (monotonic
     /// ms). Returns `(ssr_output, continue_tuning)`. Mirrors `ZieglerNicholsTuner.update`.
     pub fn update(&mut self, current_temp: f32, now_ms: i64) -> (f32, bool) {
+        // Terminal-state guard: once tuning has finished (Complete) or aborted
+        // (Error), `current_step_index` may equal `n_steps`, so indexing
+        // `self.steps[current_step_index]` below would re-run a placeholder step
+        // (or panic if a mode ever reaches `MAX_TUNING_STEPS`). `(0.0, false)` is
+        // exactly the terminal return, so a post-completion call is a safe no-op.
+        if self.stage != TuningStage::Running {
+            return (0.0, false);
+        }
+
         if current_temp > self.max_temp {
             self.stage = TuningStage::Error;
             return (0.0, false);
@@ -454,6 +463,21 @@ mod tests {
 
         t.update(35.0, 7000);
         assert_eq!(t.step_peak_temp(), 35.0);
+    }
+
+    #[test]
+    fn update_after_terminal_stage_is_noop() {
+        // Drive into Error via over-temp, then keep calling update: it must stay
+        // terminal and never index past the end (the guard).
+        let mut t = ZieglerNicholsTuner::new(TuningMode::Safe, Some(100.0));
+        t.start(0);
+        let (ssr, cont) = t.update(150.0, 1000); // over max_temp -> Error
+        assert_eq!((ssr, cont), (0.0, false));
+        assert_eq!(t.stage(), TuningStage::Error);
+        // A further call is a safe no-op regardless of the temperature.
+        assert_eq!(t.update(20.0, 2000), (0.0, false));
+        assert_eq!(t.update(20.0, 3000), (0.0, false));
+        assert_eq!(t.stage(), TuningStage::Error);
     }
 
     #[test]

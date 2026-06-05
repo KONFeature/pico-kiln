@@ -197,6 +197,10 @@ where
             }
         };
 
+        // Snapshot the error state before `state.update` so a clean→Error
+        // transition this tick (e.g. over-temp / MaxTempExceeded) can be force-
+        // published below, even outside the status_due window.
+        let was_error = self.state.state == KilnState::Error;
         let target = self.state.update(temp, mono_ms);
 
         let ssr_output = if self.state.state == KilnState::Running {
@@ -216,7 +220,13 @@ where
             let _ = self.ssr_out.force_off();
         }
 
-        if pending.is_none() && self.status_due(now_ms) {
+        // A clean→Error transition (over-temp from `state.update`) must publish
+        // once so Core 0 logs the terminal ERROR row and fixes the recovery
+        // pointer — otherwise it only surfaces if it happens to land in the
+        // status_due window. `faulted` stays false: over-temp is soft-recoverable
+        // (sensor OK, relay already forced off above, operator clears on cooldown).
+        let entered_error = !was_error && self.state.state == KilnState::Error;
+        if pending.is_none() && (entered_error || self.status_due(now_ms)) {
             pending = Some(self.publish_now(now_ms, wall_s));
         }
 

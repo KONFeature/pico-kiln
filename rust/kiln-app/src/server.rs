@@ -137,6 +137,11 @@ pub trait Storage {
     /// on a *declined* recovery so a stale interrupted run is considered at most
     /// once and can never be auto-resumed on a later boot.
     fn clear_active_run(&self);
+    /// Free space on the filesystem, in bytes. Used by the pre-run gate so a
+    /// firing can't start without room to log its CSV (which would exhaust flash
+    /// mid-run). Conservative (the backend may under-report); `Err` on any
+    /// filesystem error so the gate fails closed.
+    fn available_bytes(&self) -> Result<u64, StorageError>;
 }
 
 /// The character LCD status line (`main.py`'s monitor), behind a trait so the
@@ -623,6 +628,19 @@ mod web {
         }
     }
 
+    /// Pre-run flash headroom gate. Returns the rejection `ApiResponse` when free
+    /// space is below [`api::MIN_FREE_BYTES_FOR_RUN`], or when the free-space query
+    /// itself fails (fail closed). `None` means there is room to start a firing.
+    fn reject_if_low_on_flash(state: &AppState) -> Option<ApiResponse> {
+        match state.storage.available_bytes() {
+            Ok(free) if free >= api::MIN_FREE_BYTES_FOR_RUN => None,
+            _ => Some(ApiResponse::error(
+                StatusCode::new(507), // Insufficient Storage
+                "Not enough flash free to start a run (need 200 KB free); delete old logs.",
+            )),
+        }
+    }
+
     async fn reboot(State(state): State<AppState>) -> impl IntoResponse {
         state.reboot.signal(());
         ApiResponse::static_json(
@@ -667,6 +685,9 @@ mod web {
         };
         match load_profile(&state, name).await {
             Ok((profile, parsed)) => {
+                if let Some(reject) = reject_if_low_on_flash(&state) {
+                    return reject;
+                }
                 let mut msg = heapless::String::<96>::new();
                 let _ = write!(msg, "Started profile: {}", name);
                 enqueue(&state, Command::RunProfile { profile, parsed }, &msg)
@@ -690,6 +711,9 @@ mod web {
         }
         match load_profile(&state, name).await {
             Ok((profile, parsed)) => {
+                if let Some(reject) = reject_if_low_on_flash(&state) {
+                    return reject;
+                }
                 let mut msg = heapless::String::<96>::new();
                 let _ = write!(msg, "Scheduled profile: {}", name);
                 enqueue(
@@ -790,7 +814,7 @@ mod web {
             if !api::safe_filename(f) {
                 return Err(ApiResponse::error(
                     StatusCode::BAD_REQUEST,
-                    "Invalid filename",
+                    "Invalid filename: use only letters, numbers, dot, dash, underscore",
                 ));
             }
         }

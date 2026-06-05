@@ -379,10 +379,22 @@ async fn core0_main(
     let web_cfg = platform::web_config();
     let port = config.web_server_port;
 
+    // USB-NCM workers, always — spawned BEFORE the radio branch so the wired web
+    // UI is reachable even while STA bring-up is still in its (bounded) connect
+    // window, and can never be starved by a slow/failed WiFi join. IDs are offset
+    // past the primary pool so every live `web_task` has a distinct id (pool size
+    // = WEB_TASK_POOL_TOTAL).
+    for i in 0..kiln_app::server::SECONDARY_WEB_WORKERS {
+        let id = kiln_app::server::WEB_TASK_POOL_SIZE + i;
+        spawner.spawn(kiln_app::server::web_task(id, usb_stack, app, web_cfg, port).unwrap());
+    }
+
     // --- Radio: STA when configured, else the provisioning SoftAP ------------
-    // cyw43 cannot do STA and AP at once. A configured board retries STA forever
-    // (`init_network`; USB is the recovery path if the saved creds are wrong); an
-    // unconfigured board serves the open setup AP instead.
+    // cyw43 cannot do STA and AP at once. A configured board makes a bounded STA
+    // connect attempt (`init_network`) then hands off to `wifi_monitor_task`, which
+    // keeps retrying the join in the background — boot never blocks on WiFi, and
+    // USB-NCM is the recovery path if the saved creds are wrong. An unconfigured
+    // board serves the open setup AP instead.
     if config.wifi_is_configured() {
         let (sta_stack, control) = platform::init_network(&spawner, p, config).await;
         // Primary interface: the full worker pool.
@@ -409,13 +421,6 @@ async fn core0_main(
         for id in 0..kiln_app::server::SECONDARY_WEB_WORKERS {
             spawner.spawn(kiln_app::server::web_task(id, ap_stack, app, web_cfg, port).unwrap());
         }
-    }
-
-    // USB-NCM workers, always. IDs are offset past the primary pool so every
-    // live `web_task` instance has a distinct id (pool size = WEB_TASK_POOL_TOTAL).
-    for i in 0..kiln_app::server::SECONDARY_WEB_WORKERS {
-        let id = kiln_app::server::WEB_TASK_POOL_SIZE + i;
-        spawner.spawn(kiln_app::server::web_task(id, usb_stack, app, web_cfg, port).unwrap());
     }
 
     // LCD status line (`server/lcd_manager.py`), optional. Built only when

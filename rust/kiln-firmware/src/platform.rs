@@ -761,6 +761,13 @@ impl kiln_app::server::Storage for FlashStorage {
         // Idempotent: a missing pointer (already cleared / never set) is fine.
         let _ = self.with_flash_paused(|| self.with_fs(|fs| fs.remove(path!("active_run"))));
     }
+
+    fn available_bytes(&self) -> Result<u64, StorageError> {
+        // littlefs's `available_space()` = block_size × free blocks (via
+        // `lfs_fs_size`). A read-only query, so no flash-write handshake; any lfs
+        // error collapses to StorageError and the run gate fails closed.
+        self.with_fs(|fs| fs.available_space()).map(|n| n as u64)
+    }
 }
 
 // === LCD ====================================================================
@@ -1045,18 +1052,26 @@ pub async fn init_network(
         embassy_time::Timer::after(Duration::from_secs(1)).await;
     }
 
-    // Join, blinking, until the first association sticks.
-    while control
-        .join(ssid, JoinOptions::new(password.as_bytes()))
-        .await
-        .is_err()
-    {
-        led = !led;
-        control.gpio_set(STATUS_LED_GPIO, led).await;
-        embassy_time::Timer::after(Duration::from_secs(2)).await;
-    }
-    stack.wait_config_up().await;
-    control.gpio_set(STATUS_LED_GPIO, true).await; // solid on once connected
+    // Best-effort initial association — BOUNDED so a missing/misconfigured AP or a
+    // silent DHCP server can never block boot. The remaining Core 0 tasks spawn
+    // after this returns, and `wifi_monitor_task` owns continued join/DHCP retry in
+    // the background. USB-NCM is reachable throughout regardless of the radio, so a
+    // never-connecting STA degrades gracefully instead of hanging the executor.
+    let boot_connect = async {
+        while control
+            .join(ssid, JoinOptions::new(password.as_bytes()))
+            .await
+            .is_err()
+        {
+            led = !led;
+            control.gpio_set(STATUS_LED_GPIO, led).await;
+            embassy_time::Timer::after(Duration::from_secs(2)).await;
+        }
+        stack.wait_config_up().await;
+    };
+    let _ = embassy_time::with_timeout(Duration::from_secs(20), boot_connect).await;
+    // Solid LED only if actually up; if it timed out the monitor keeps blinking.
+    control.gpio_set(STATUS_LED_GPIO, stack.is_link_up()).await;
 
     (stack, control)
 }
@@ -1173,22 +1188,34 @@ pub async fn wifi_monitor_task(
     password: &'static str,
 ) -> ! {
     loop {
-        stack.wait_link_up().await;
+        // (Re)establish the association. Covers BOTH a dropped link and the
+        // never-connected boot case where init_network's bounded attempt timed out
+        // (stale creds / AP absent / DHCP silent): without the `is_link_up` guard a
+        // boot that never associated would `wait_link_up()` forever with nobody
+        // calling `join()`. cyw43 auto-reconnects a *dropped* link, so when it has
+        // already done so this falls straight through to the solid LED.
+        let mut led = false;
+        while !stack.is_link_up() {
+            if control
+                .join(ssid, JoinOptions::new(password.as_bytes()))
+                .await
+                .is_ok()
+            {
+                // Bound the DHCP/static-config wait so an association that never
+                // gets an address re-attempts instead of blocking here forever.
+                let _ =
+                    embassy_time::with_timeout(Duration::from_secs(15), stack.wait_config_up())
+                        .await;
+            }
+            if !stack.is_link_up() {
+                led = !led;
+                control.gpio_set(STATUS_LED_GPIO, led).await;
+                embassy_time::Timer::after(Duration::from_secs(2)).await;
+            }
+        }
         control.gpio_set(STATUS_LED_GPIO, true).await; // connected: solid on
         stack.wait_link_down().await;
         control.gpio_set(STATUS_LED_GPIO, false).await; // dropped: off
-
-        let mut led = false;
-        while control
-            .join(ssid, JoinOptions::new(password.as_bytes()))
-            .await
-            .is_err()
-        {
-            led = !led;
-            control.gpio_set(STATUS_LED_GPIO, led).await;
-            embassy_time::Timer::after(Duration::from_secs(2)).await;
-        }
-        stack.wait_config_up().await;
     }
 }
 

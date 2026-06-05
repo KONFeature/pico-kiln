@@ -51,7 +51,10 @@ impl SsrSchedule {
     /// (`int(cycle_time * 1000)`).
     pub fn new(cycle_time_s: f32, now_ms: u64) -> Self {
         Self {
-            cycle_time_ms: (cycle_time_s * 1000.0) as u32,
+            // Floor at 1 ms: a 0 (or sub-0.001 s, or negative) cycle would make
+            // `update` advance the boundary by 0 forever and compute `on_time_ms`
+            // as 0, silently wedging the relay permanently OFF (heating disabled).
+            cycle_time_ms: ((cycle_time_s * 1000.0) as u32).max(1),
             duty_cycle: 0.0,
             duty_cycle_locked: 0.0,
             cycle_start_ms: now_ms,
@@ -215,5 +218,16 @@ mod tests {
         // 0.0015 s -> int(1.5) = 1 ms, mirroring the reference constructor.
         let s = SsrSchedule::new(0.0015, 0);
         assert_eq!(s.cycle_time_ms(), 1);
+    }
+
+    #[test]
+    fn degenerate_cycle_time_is_clamped_to_one_ms() {
+        // A 0 (or negative) cycle must not wedge the relay off forever.
+        assert_eq!(SsrSchedule::new(0.0, 0).cycle_time_ms(), 1);
+        assert_eq!(SsrSchedule::new(-5.0, 0).cycle_time_ms(), 1);
+        // Full duty on a clamped cycle still drives the relay ON.
+        let mut s = SsrSchedule::new(0.0, 0);
+        s.set_output(100.0);
+        assert!(s.update(1)); // boundary at 1 ms locks 100% -> ON
     }
 }

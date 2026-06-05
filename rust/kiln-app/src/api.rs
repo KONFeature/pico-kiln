@@ -33,6 +33,11 @@ pub const MAX_UPLOAD_SIZE: u32 = 512_000;
 pub const MAX_JSON_BODY: usize = 2048;
 /// File streaming chunk size (`FILE_CHUNK_SIZE`).
 pub const FILE_CHUNK_SIZE: usize = 1024;
+/// Minimum free flash (bytes) required before a firing may start. The CSV logger
+/// appends rows for the whole run; starting near-full risks exhausting flash
+/// mid-firing. 200 KB is generous headroom for a long run's log on the ~1.5 MB
+/// littlefs partition. Enforced by the `/api/run` and `/api/schedule` gate.
+pub const MIN_FREE_BYTES_FOR_RUN: u64 = 200 * 1024;
 
 /// `", ".join(VALID_TUNING_MODES)` — the order is SAFE, STANDARD, THOROUGH,
 /// HIGH_TEMP, embedded in the invalid-mode message.
@@ -72,13 +77,17 @@ impl Directory {
     }
 }
 
-/// Whether a filename is safe from directory traversal (`safe_filename`):
-/// no `/`, `\`, or `..`; non-empty; not a dotfile.
+/// Whether a filename is safe (`safe_filename`). An allowlist: only ASCII
+/// alphanumerics plus `.`, `-`, `_`; non-empty; not a dotfile; no `..`. This
+/// blocks directory traversal (`/`, `\`, `..`) *and* any byte that would corrupt
+/// the JSON/HTML the name is echoed into (`"`, `<`, `>`, control chars, spaces).
 pub fn safe_filename(filename: &str) -> bool {
-    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+    if filename.is_empty() || filename.starts_with('.') || filename.contains("..") {
         return false;
     }
-    !filename.is_empty() && !filename.starts_with('.')
+    filename
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
 
 /// Whether file operations are permitted — only while IDLE (`check_idle_state`).
@@ -255,6 +264,18 @@ mod tests {
         assert!(!safe_filename("a\\b.json"));
         assert!(!safe_filename(""));
         assert!(!safe_filename(".hidden"));
+    }
+
+    #[test]
+    fn safe_filename_rejects_injection_chars() {
+        // Allowlist: anything outside [A-Za-z0-9._-] is rejected so the name can
+        // never corrupt the JSON/HTML it is echoed into.
+        assert!(!safe_filename("a\".json")); // double quote (JSON breakout)
+        assert!(!safe_filename("x\"><script>")); // HTML/JS injection
+        assert!(!safe_filename("has space.json"));
+        assert!(!safe_filename("bell\x07.json")); // control char
+        assert!(!safe_filename("emoji🔥.json")); // non-ASCII
+        assert!(!safe_filename("a..b")); // embedded ..
     }
 
     #[test]
