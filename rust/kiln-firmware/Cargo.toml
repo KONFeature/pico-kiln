@@ -59,6 +59,20 @@ sntpc = { version = "0.10", default-features = false }
 # `lfs.c` references at link time, since this bare-metal image links no libc.
 littlefs2 = { version = "0.7", features = ["c-stubs"] }
 
+# USB device stack for CDC-NCM (USB ethernet) — the always-on wired provisioning
+# + file-access interface. 0.5.x is the release that uses `embassy-usb-driver`
+# **0.2.2** (the exact version embassy-rp 0.10 implements, so they unify) and
+# `embassy-net` 0.9.1 (ours). Do NOT bump to 0.6 without re-checking the driver
+# version — a mismatch makes `embassy_rp::usb::Driver` unusable with the Builder.
+# `embassy-net-driver-channel` is NOT a direct dep — it is re-exported via
+# `embassy_usb::class::cdc_ncm::embassy_net`. (cargo-verified 2026-06-05.)
+embassy-usb = "0.5"
+# Instance-based DHCP server (one `DhcpServer` value per stack) so the fallback
+# SoftAP and the USB-NCM stack can each lease addresses at the same time. 0.5.x
+# resolves against embassy-net 0.9.1 + smoltcp 0.13.1 (ours) — a single net
+# stack, no duplicate. (0.2.x pulled embassy-net 0.7; cargo-verified 2026-06-05.)
+leasehund = "0.5"
+
 # NOTE: no `panic-halt` — `main.rs` defines its own `#[panic_handler]` that
 # de-energises the SSR before halting (two handlers would collide).
 
