@@ -22,7 +22,7 @@
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::channel::{Channel, TrySendError};
 use embassy_sync::signal::Signal;
@@ -43,21 +43,28 @@ pub const RING_CAP: usize = 8 * 1024;
 /// One formatted log line.
 pub type LogLine = heapless::String<LINE_CAP>;
 
-/// Producer -> drain task.
+/// Producer -> drain task. `CriticalSectionRawMutex` is REQUIRED: producers are on
+/// BOTH cores (the Core 1 control loop logs too), so the send must take the
+/// cross-core critical section.
 pub(crate) static LOG_CHANNEL: Channel<CriticalSectionRawMutex, LogLine, CHAN_CAP> = Channel::new();
-/// Drain task -> flash-writer task.
-pub(crate) static FLASH_LOG_CHANNEL: Channel<CriticalSectionRawMutex, LogLine, FLASH_CHAN_CAP> =
+/// Drain task -> flash-writer task. Both ends are Core 0 tasks (the drain feeds, the
+/// flusher receives), so a `ThreadModeRawMutex` is correct and skips the cross-core CS.
+pub(crate) static FLASH_LOG_CHANNEL: Channel<ThreadModeRawMutex, LogLine, FLASH_CHAN_CAP> =
     Channel::new();
-/// The live-tail snapshot ring (written only by the drain task; read by the
-/// snapshot handler). `RefCell` interior mutability is sound because the only
-/// accessors are Core 0 tasks and the lock is never held across an `.await`.
-pub(crate) static LOG_RING: BlockingMutex<
-    CriticalSectionRawMutex,
-    RefCell<kiln_log::Ring<RING_CAP>>,
-> = BlockingMutex::new(RefCell::new(kiln_log::Ring::new()));
+/// The live-tail snapshot ring (written only by the drain task; read by the snapshot
+/// handler). Both accessors are Core 0 tasks on the same executor, so a
+/// `ThreadModeRawMutex` is sound — and it MATTERS here: a `CriticalSectionRawMutex` would
+/// hold the cross-core critical section for the full `RING_CAP` byte-by-byte
+/// `snapshot` copy, stalling Core 1's per-tick wall-clock CS on every `/api/logs`
+/// poll. `RefCell` interior mutability is sound for the same reason (single
+/// executor, lock never held across an `.await`).
+pub(crate) static LOG_RING: BlockingMutex<ThreadModeRawMutex, RefCell<kiln_log::Ring<RING_CAP>>> =
+    BlockingMutex::new(RefCell::new(kiln_log::Ring::new()));
 /// Whether flash persistence is enabled (the `LOG_TO_FLASH` knob).
 pub(crate) static FLASH_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Late-bound wall clock (set once Core 0 builds it). Reads fall back to uptime.
+/// `CriticalSectionRawMutex` is REQUIRED: read from BOTH cores (Core 1 stamps its own
+/// log lines via [`now_secs`]).
 static LOG_CLOCK: BlockingMutex<
     CriticalSectionRawMutex,
     Cell<Option<&'static (dyn Clock + Sync)>>,
@@ -67,8 +74,9 @@ static LOG_CLOCK: BlockingMutex<
 //
 // The CSV logger accumulates steady-state rows here; [`flash_flush_task`] persists
 // them coalesced with the diag log. Only Core 0 touches these (the CSV task pushes,
-// the flusher copies+clears), so the blocking mutexes never contend cross-core and
-// are held only for the O(n) buffer copy — never across the flash write.
+// the flusher copies+clears), so they use `ThreadModeRawMutex` — a `CriticalSectionRawMutex`
+// would hold the cross-core CS for the O(n) `CSV_BUF_CAP` buffer copy, needlessly
+// stalling Core 1.
 
 /// CSV run-log filename cap (mirrors `Status::filename`).
 const CSV_NAME_CAP: usize = 96;
@@ -82,16 +90,17 @@ const CSV_HIGH_WATER: usize = CSV_BUF_CAP * 3 / 4;
 
 /// Steady-state CSV rows awaiting flush (filled by [`csv_push_row`], drained by the
 /// flusher). Not the recovery-critical edge writes — those stay direct.
-static CSV_PENDING: BlockingMutex<CriticalSectionRawMutex, RefCell<heapless::String<CSV_BUF_CAP>>> =
+static CSV_PENDING: BlockingMutex<ThreadModeRawMutex, RefCell<heapless::String<CSV_BUF_CAP>>> =
     BlockingMutex::new(RefCell::new(heapless::String::new()));
 /// The active run-log filename the pending rows belong to.
-static CSV_NAME: BlockingMutex<CriticalSectionRawMutex, RefCell<heapless::String<CSV_NAME_CAP>>> =
+static CSV_NAME: BlockingMutex<ThreadModeRawMutex, RefCell<heapless::String<CSV_NAME_CAP>>> =
     BlockingMutex::new(RefCell::new(heapless::String::new()));
-/// CSV → flusher nudge: "flush soon" (run start, leaving, or high-water).
-static FLUSH_NOW: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// CSV → flusher nudge: "flush soon" (run start, leaving, or high-water). Core-0-only
+/// (CSV task signals, flusher waits) ⇒ `ThreadModeRawMutex`.
+static FLUSH_NOW: Signal<ThreadModeRawMutex, ()> = Signal::new();
 /// Flusher → CSV ack: signalled after every flush so [`flush_and_wait`] can block
-/// the run-end path until the pending rows are durable.
-static FLUSH_DONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// the run-end path until the pending rows are durable. Core-0-only ⇒ `ThreadModeRawMutex`.
+static FLUSH_DONE: Signal<ThreadModeRawMutex, ()> = Signal::new();
 
 /// Append a rendered CSV row to the pending batch. Returns `true` once the buffer
 /// has crossed the high-water mark, signalling the caller to [`request_flush`]. A
@@ -273,7 +282,13 @@ use crate::timefmt::write_iso;
 use embassy_futures::select::{select, Either};
 
 /// Diag-line batch buffer. Lines (≤[`LINE_CAP`]) accumulate here between flushes.
-const DIAG_BUF_CAP: usize = 2048;
+/// Sized at 8 KiB (≈64 lines) so a verbose/debug log burst fills it slowly: the
+/// high-water early flush — which forces an SSR-pausing flash write — fires roughly
+/// every ~48 lines instead of ~12, so noisy logging perturbs the control loop far
+/// less. The [`FLUSH_INTERVAL_S`] timer still bounds how stale a quiet log gets, and
+/// the RAM ring (`/api/logs`) keeps the live view, so the only cost of buffering
+/// more is a larger power-cut loss window of (droppable) diagnostic lines.
+const DIAG_BUF_CAP: usize = 8 * 1024;
 /// Push past this and the diag side asks for a flush this iteration. With ≤128 B
 /// lines and a same-iteration flush, the buffer peaks at `DIAG_HIGH_WATER + one
 /// line` (< `DIAG_BUF_CAP`), so a line is never dropped to overflow.
@@ -561,11 +576,14 @@ use picoserve::response::IntoResponse;
 
 /// Lazy snapshot body, sent with **chunked transfer encoding** (no
 /// `Content-Length`). Two reasons:
-/// 1. The 8 KiB snapshot buffer is confined to the leaf `write_chunks` future. It
-///    is held across the chunk-write awaits (so it does count toward that
-///    future's size), but it is NOT duplicated across picoserve's nested router
-///    response future the way an owned `Content` body would be — that multiplied
-///    copy is what blows the RAM budget, and chunking avoids it.
+/// 1. The `RING_CAP` snapshot buffer is confined to the leaf `write_chunks` future.
+///    It is held across the chunk-write awaits, but the serve future is an enum
+///    sized to its largest arm (picoserve's ~77 KB request-reader/dispatch branch),
+///    and the response-writer arm holding this buffer sits under that max — so it
+///    costs no extra per-worker RAM. (A shared static instead would be pure added
+///    `.bss`: measured +8 KB. An owned `Content` body, by contrast, WOULD duplicate
+///    the copy across picoserve's nested router response future — that is what blows
+///    the RAM budget, and chunking avoids it.)
 /// 2. The ring is taken in ONE snapshot inside `write_chunks`, so there is no
 ///    `Content-Length`-vs-body mismatch (a `Content` impl would have to measure
 ///    and write in two separate snapshots, and a line arriving between them would
