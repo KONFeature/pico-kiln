@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { usePico } from "@/lib/pico/context";
 import { useTestConnection } from "@/lib/pico/hooks";
+import { PicoQuickConnect } from "./PicoQuickConnect";
 
 interface PicoConnectionDialogProps {
 	open: boolean;
@@ -74,8 +75,15 @@ export function PicoConnectionDialog({
 				</DialogHeader>
 
 				<div className="space-y-4 py-4">
+					<PicoQuickConnect
+						onPick={setInputURL}
+						onConnected={() => onOpenChange(false)}
+					/>
+
 					<div className="space-y-2">
-						<Label htmlFor="pico-url-dialog">Pico URL</Label>
+						<Label htmlFor="pico-url-dialog">
+							Or enter address (LAN / mDNS)
+						</Label>
 						<Input
 							id="pico-url-dialog"
 							type="text"

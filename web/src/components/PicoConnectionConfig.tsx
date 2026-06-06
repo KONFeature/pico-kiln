@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { usePico } from "@/lib/pico/context";
 import { useTestConnection } from "@/lib/pico/hooks";
 import { ConnectionStatusDetailed } from "./ConnectionStatus";
+import { PicoQuickConnect } from "./PicoQuickConnect";
 
 interface PicoConnectionConfigProps {
 	onConnected?: () => void;
@@ -64,8 +65,10 @@ export function PicoConnectionConfig({
 				</CardDescription>
 			</CardHeader>
 			<CardContent className="space-y-4">
+				<PicoQuickConnect onPick={setInputURL} onConnected={onConnected} />
+
 				<div className="space-y-2">
-					<Label htmlFor="pico-url">Pico URL</Label>
+					<Label htmlFor="pico-url">Or enter address (LAN / mDNS)</Label>
 					<div className="flex gap-2">
 						<Input
 							id="pico-url"
