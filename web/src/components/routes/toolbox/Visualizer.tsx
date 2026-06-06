@@ -1,4 +1,4 @@
-import { Activity, LineChart, Zap } from "lucide-react";
+import { Activity, LineChart, ScrollText, Zap } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -8,11 +8,12 @@ import {
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
+import { DiagVisualizer } from "./DiagVisualizer";
 import { ProfileVisualizer } from "./ProfileVisualizer";
 import { RunVisualizer } from "./RunVisualizer";
 import { TuningPhasesVisualizer } from "./TuningPhasesVisualizer";
 
-type VisualizerType = "profile" | "run" | "tuning";
+type VisualizerType = "profile" | "run" | "tuning" | "diag";
 
 export function Visualizer() {
 	const [visualizerType, setVisualizerType] =
@@ -38,7 +39,7 @@ export function Visualizer() {
 								Choose what type of data you want to visualize
 							</p>
 						</div>
-						<div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+						<div className="grid grid-cols-1 md:grid-cols-4 gap-2">
 							<Button
 								variant={visualizerType === "profile" ? "default" : "outline"}
 								onClick={() => setVisualizerType("profile")}
@@ -74,6 +75,17 @@ export function Visualizer() {
 									<div className="text-xs opacity-80">PID phase detection</div>
 								</div>
 							</Button>
+							<Button
+								variant={visualizerType === "diag" ? "default" : "outline"}
+								onClick={() => setVisualizerType("diag")}
+								className="flex items-center gap-2 h-auto py-3 px-4"
+							>
+								<ScrollText className="w-5 h-5 flex-shrink-0" />
+								<div className="text-left">
+									<div className="font-semibold">Diag</div>
+									<div className="text-xs opacity-80">Firmware diagnostics</div>
+								</div>
+							</Button>
 						</div>
 					</div>
 				</CardContent>
@@ -83,6 +95,7 @@ export function Visualizer() {
 			{visualizerType === "profile" && <ProfileVisualizer />}
 			{visualizerType === "run" && <RunVisualizer />}
 			{visualizerType === "tuning" && <TuningPhasesVisualizer />}
+			{visualizerType === "diag" && <DiagVisualizer />}
 		</div>
 	);
 }

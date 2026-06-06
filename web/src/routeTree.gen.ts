@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as VisualizerRouteImport } from './routes/visualizer'
+import { Route as LogsRouteImport } from './routes/logs'
 import { Route as FilesRouteImport } from './routes/files'
 import { Route as EditorRouteImport } from './routes/editor'
 import { Route as ConfigRouteImport } from './routes/config'
@@ -18,6 +19,11 @@ import { Route as IndexRouteImport } from './routes/index'
 const VisualizerRoute = VisualizerRouteImport.update({
   id: '/visualizer',
   path: '/visualizer',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LogsRoute = LogsRouteImport.update({
+  id: '/logs',
+  path: '/logs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FilesRoute = FilesRouteImport.update({
@@ -46,6 +52,7 @@ export interface FileRoutesByFullPath {
   '/config': typeof ConfigRoute
   '/editor': typeof EditorRoute
   '/files': typeof FilesRoute
+  '/logs': typeof LogsRoute
   '/visualizer': typeof VisualizerRoute
 }
 export interface FileRoutesByTo {
@@ -53,6 +60,7 @@ export interface FileRoutesByTo {
   '/config': typeof ConfigRoute
   '/editor': typeof EditorRoute
   '/files': typeof FilesRoute
+  '/logs': typeof LogsRoute
   '/visualizer': typeof VisualizerRoute
 }
 export interface FileRoutesById {
@@ -61,14 +69,22 @@ export interface FileRoutesById {
   '/config': typeof ConfigRoute
   '/editor': typeof EditorRoute
   '/files': typeof FilesRoute
+  '/logs': typeof LogsRoute
   '/visualizer': typeof VisualizerRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/config' | '/editor' | '/files' | '/visualizer'
+  fullPaths: '/' | '/config' | '/editor' | '/files' | '/logs' | '/visualizer'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/config' | '/editor' | '/files' | '/visualizer'
-  id: '__root__' | '/' | '/config' | '/editor' | '/files' | '/visualizer'
+  to: '/' | '/config' | '/editor' | '/files' | '/logs' | '/visualizer'
+  id:
+    | '__root__'
+    | '/'
+    | '/config'
+    | '/editor'
+    | '/files'
+    | '/logs'
+    | '/visualizer'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -76,6 +92,7 @@ export interface RootRouteChildren {
   ConfigRoute: typeof ConfigRoute
   EditorRoute: typeof EditorRoute
   FilesRoute: typeof FilesRoute
+  LogsRoute: typeof LogsRoute
   VisualizerRoute: typeof VisualizerRoute
 }
 
@@ -86,6 +103,13 @@ declare module '@tanstack/react-router' {
       path: '/visualizer'
       fullPath: '/visualizer'
       preLoaderRoute: typeof VisualizerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/logs': {
+      id: '/logs'
+      path: '/logs'
+      fullPath: '/logs'
+      preLoaderRoute: typeof LogsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/files': {
@@ -124,6 +148,7 @@ const rootRouteChildren: RootRouteChildren = {
   ConfigRoute: ConfigRoute,
   EditorRoute: EditorRoute,
   FilesRoute: FilesRoute,
+  LogsRoute: LogsRoute,
   VisualizerRoute: VisualizerRoute,
 }
 export const routeTree = rootRouteImport

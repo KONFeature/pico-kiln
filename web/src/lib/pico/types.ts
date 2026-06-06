@@ -165,7 +165,7 @@ export interface ConnectionHealth {
 }
 
 // File Management API types
-export type FileDirectory = "profiles" | "logs";
+export type FileDirectory = "profiles" | "logs" | "diag";
 
 export interface FileMetadata {
 	name: string;

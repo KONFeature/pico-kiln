@@ -1,0 +1,9 @@
+[package]
+name = "kiln-log"
+version = "0.1.0"
+edition = "2021"
+description = "Pure, dependency-free logging primitives for the pico-kiln firmware: a byte ring buffer, the plain-text line formatter, and the flash rotation/retention policy. Host-tested; no embassy, no heapless, no log — so it never pulls a build script into the pure host-test build (see ../TESTING.md)."
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+[dependencies]

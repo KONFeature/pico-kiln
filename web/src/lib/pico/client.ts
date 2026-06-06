@@ -132,6 +132,26 @@ export class PicoAPIClient {
 		return this.request<KilnStatus>("/api/tuning/status");
 	}
 
+	// === Logs Endpoints ===
+
+	/**
+	 * Fetch the live log tail: a plain-text snapshot of the firmware RAM ring
+	 * (GET /api/logs). Polled by the client to tail logs. Returns the raw text
+	 * body (not JSON), so it bypasses the JSON `request` helper.
+	 */
+	async getLogs(): Promise<string> {
+		const url = `${this.baseURL}/api/logs`;
+		const response = await this.fetchWithTimeout(url);
+		if (!response.ok) {
+			const errorText = await response.text().catch(() => "Unknown error");
+			throw new PicoAPIError(
+				`HTTP ${response.status}: ${errorText}`,
+				response.status,
+			);
+		}
+		return await response.text();
+	}
+
 	// === Control Endpoints ===
 
 	async runProfile(profileName: string): Promise<RunProfileResponse> {

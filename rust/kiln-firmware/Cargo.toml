@@ -22,16 +22,16 @@ kiln-app = { path = "../kiln-app", features = ["embassy"] }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
 # embassy-rp 0.10 is the release that pins embassy-executor 0.10 / embassy-sync
 # 0.8 / embassy-time 0.5; cyw43 0.7 + cyw43-pio 0.10 are from the same set.
-embassy-rp = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl"] }
+embassy-rp = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl", "log"] }
 embassy-time = "0.5"
 embassy-sync = "0.8"
-embassy-net = { version = "0.9", features = ["tcp", "udp", "dns", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
+embassy-net = { version = "0.9", features = ["tcp", "udp", "dns", "dhcpv4", "medium-ethernet", "proto-ipv4", "log"] }
 embassy-futures = "0.1"
 
-cyw43 = { version = "0.7", features = ["firmware-logs"] }
+cyw43 = { version = "0.7", features = ["firmware-logs", "log"] }
 cyw43-pio = "0.10"
 
-picoserve = { version = "0.18", features = ["embassy"] }
+picoserve = { version = "0.18", features = ["embassy", "log"] }
 
 embedded-hal = "1.0"
 embedded-hal-bus = "0.3"

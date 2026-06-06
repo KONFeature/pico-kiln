@@ -128,6 +128,42 @@ pub enum ConfigError {
     BadValue,
 }
 
+/// Diagnostic log verbosity, mapped to `log::LevelFilter` by `kiln-app::logging`.
+/// Kept as a local enum so the pure config layer pulls in no `log` dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    Off,
+    Error,
+    Warn,
+    Info,
+    Debug,
+}
+
+impl LogLevel {
+    /// Parse the `LOG_LEVEL` string; `None` for an unknown value.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "off" => LogLevel::Off,
+            "error" => LogLevel::Error,
+            "warn" => LogLevel::Warn,
+            "info" => LogLevel::Info,
+            "debug" => LogLevel::Debug,
+            _ => return None,
+        })
+    }
+
+    /// The lowercase wire string (for `write_json`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Off => "off",
+            LogLevel::Error => "error",
+            LogLevel::Warn => "warn",
+            LogLevel::Info => "info",
+            LogLevel::Debug => "debug",
+        }
+    }
+}
+
 /// Every tunable the firmware reads, flattened to the `config.py` names. Edit one
 /// place, in JSON; [`KilnConfig::default`] is the `config.example.py` baseline.
 #[derive(Debug, Clone, PartialEq)]
@@ -188,6 +224,8 @@ pub struct KilnConfig {
     pub max_recovery_temp_delta: f64,
     pub enable_watchdog: bool,
     pub watchdog_timeout: u32,
+    pub log_level: LogLevel,
+    pub log_to_flash: bool,
 
     // --- LCD (disabled unless any `LCD_I2C_*` key is present) ---
     pub lcd_enabled: bool,
@@ -249,6 +287,8 @@ impl Default for KilnConfig {
             max_recovery_temp_delta: 30.0,
             enable_watchdog: false,
             watchdog_timeout: 8000,
+            log_level: LogLevel::Info,
+            log_to_flash: true,
 
             lcd_enabled: false,
             lcd_i2c_id: 0,
@@ -370,6 +410,8 @@ impl KilnConfig {
         j.float("MAX_RECOVERY_TEMP_DELTA", self.max_recovery_temp_delta)?;
         j.boolean("ENABLE_WATCHDOG", self.enable_watchdog)?;
         j.int("WATCHDOG_TIMEOUT", self.watchdog_timeout as u64)?;
+        j.string("LOG_LEVEL", self.log_level.as_str())?;
+        j.boolean("LOG_TO_FLASH", self.log_to_flash)?;
 
         if self.lcd_enabled {
             j.int("LCD_I2C_ID", self.lcd_i2c_id as u64)?;
@@ -476,6 +518,10 @@ fn apply_key(cfg: &mut KilnConfig, key: &str, r: &mut Reader) -> Result<(), Conf
         "MAX_RECOVERY_TEMP_DELTA" => cfg.max_recovery_temp_delta = r.parse_number()?,
         "ENABLE_WATCHDOG" => cfg.enable_watchdog = r.parse_bool()?,
         "WATCHDOG_TIMEOUT" => cfg.watchdog_timeout = r.parse_number()? as u32,
+        "LOG_LEVEL" => {
+            cfg.log_level = LogLevel::parse(r.parse_string()?).ok_or(ConfigError::BadValue)?
+        }
+        "LOG_TO_FLASH" => cfg.log_to_flash = r.parse_bool()?,
 
         "LCD_I2C_ID" => {
             cfg.lcd_enabled = true;
@@ -1027,6 +1073,43 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.pid_kd_base, 99.0);
+    }
+
+    #[test]
+    fn log_level_defaults_to_info_and_flash_on() {
+        let c = KilnConfig::default();
+        assert_eq!(c.log_level, LogLevel::Info);
+        assert!(c.log_to_flash);
+    }
+
+    #[test]
+    fn parse_overrides_log_keys() {
+        let c = parse(r#"{"LOG_LEVEL": "debug", "LOG_TO_FLASH": false}"#).unwrap();
+        assert_eq!(c.log_level, LogLevel::Debug);
+        assert!(!c.log_to_flash);
+    }
+
+    #[test]
+    fn parse_log_level_off() {
+        let c = parse(r#"{"LOG_LEVEL": "off"}"#).unwrap();
+        assert_eq!(c.log_level, LogLevel::Off);
+    }
+
+    #[test]
+    fn bad_log_level_is_an_error() {
+        assert!(parse(r#"{"LOG_LEVEL": "verbose"}"#).is_err());
+    }
+
+    #[test]
+    fn write_json_round_trips_log_keys() {
+        let mut c = KilnConfig::default();
+        c.log_level = LogLevel::Warn;
+        c.log_to_flash = false;
+        let mut out = String::new();
+        c.write_json(&mut out).unwrap();
+        let reparsed = parse(&out).unwrap();
+        assert_eq!(reparsed.log_level, LogLevel::Warn);
+        assert!(!reparsed.log_to_flash);
     }
 
     #[test]

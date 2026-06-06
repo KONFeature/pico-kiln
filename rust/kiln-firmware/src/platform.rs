@@ -22,7 +22,7 @@ use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_time::{Duration, Instant};
 use kiln_app::api::Directory;
 use kiln_app::config::KilnConfig;
-use kiln_app::server::{AppState, Clock, Display, RebootSignal, Storage, StorageError};
+use kiln_app::server::{AppState, BatchWrite, Clock, Display, RebootSignal, Storage, StorageError};
 use kiln_control::ControlParams;
 use kiln_core::protocol::{Command, ProfileName, Status};
 use kiln_core::state::KilnState;
@@ -486,6 +486,7 @@ fn dir_prefix(dir: Directory) -> &'static str {
     match dir {
         Directory::Profiles => "profiles/",
         Directory::Logs => "logs/",
+        Directory::Diag => "diag/",
     }
 }
 
@@ -494,6 +495,7 @@ fn dir_root(dir: Directory) -> &'static Path {
     match dir {
         Directory::Profiles => path!("profiles"),
         Directory::Logs => path!("logs"),
+        Directory::Diag => path!("diag"),
     }
 }
 
@@ -604,25 +606,44 @@ impl kiln_app::server::Storage for FlashStorage {
         bytes: &[u8],
         create: bool,
     ) -> Result<(), StorageError> {
-        let path = fs_path(dir_prefix(dir), name).ok_or(StorageError)?;
+        // A single-file batch: same pause/mount semantics as before.
+        self.write_batch(&[BatchWrite {
+            dir,
+            name,
+            bytes,
+            create,
+        }])
+    }
+
+    fn write_batch(&self, writes: &[BatchWrite<'_>]) -> Result<(), StorageError> {
+        if writes.is_empty() {
+            return Ok(()); // no pause, no mount
+        }
+        // ONE flash-paused window + ONE mount for every write. Core 1 de-energises the
+        // SSR and parks in RAM once; the SSR pause and littlefs mount are not repeated
+        // per file (the point of batching the CSV-row and diag-line flushes together).
         self.with_flash_paused(|| {
             self.with_fs(|fs| {
-                fs.open_file_with_options_and_then(
-                    |o| {
-                        if create {
-                            // New run: truncate and write the header.
-                            o.write(true).create(true).truncate(true)
-                        } else {
-                            // Subsequent rows / a recovery resume: append.
-                            o.write(true).create(true).append(true)
-                        }
-                    },
-                    &path,
-                    |file| {
-                        file.write(bytes)?;
-                        file.sync()
-                    },
-                )?;
+                for w in writes {
+                    let path =
+                        fs_path(dir_prefix(w.dir), w.name).ok_or(littlefs2::io::Error::INVALID)?;
+                    fs.open_file_with_options_and_then(
+                        |o| {
+                            if w.create {
+                                // New file: truncate and write the header.
+                                o.write(true).create(true).truncate(true)
+                            } else {
+                                // Subsequent rows / a recovery resume: append.
+                                o.write(true).create(true).append(true)
+                            }
+                        },
+                        &path,
+                        |file| {
+                            file.write(w.bytes)?;
+                            file.sync()
+                        },
+                    )?;
+                }
                 Ok(())
             })
         })
@@ -1351,10 +1372,11 @@ pub fn init_storage(flash: Peri<'static, FLASH>) -> &'static FlashStorage {
     if Filesystem::mount_and_then(&mut dev, |_fs| Ok(())).is_err() {
         let _ = Filesystem::format(&mut dev);
     }
-    // Ensure the profiles/ and logs/ directories exist (idempotent across boots).
+    // Ensure the profiles/ and logs/ and diag/ directories exist (idempotent across boots).
     let _ = Filesystem::mount_and_then(&mut dev, |fs| {
         let _ = fs.create_dir(path!("profiles"));
         let _ = fs.create_dir(path!("logs"));
+        let _ = fs.create_dir(path!("diag"));
         Ok(())
     });
     STORAGE.init(FlashStorage {

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kiln-core", "kiln-hal", "kiln-control", "kiln-app", "kiln-sim"]
+members = ["kiln-core", "kiln-hal", "kiln-control", "kiln-app", "kiln-sim", "kiln-log"]
 # Excluded (not a member): RP2350-only binary; would break host `cargo test`.
 exclude = ["kiln-firmware"]
 
