@@ -73,6 +73,11 @@ fn main() -> ! {
     let storage = platform::init_storage(p.FLASH);
     let config = platform::load_config(storage);
 
+    // Install the global logger BEFORE the core split so both cores can log from
+    // the outset. The wall clock is bound later (in `core0_main`, once it exists);
+    // until then lines carry an uptime timestamp.
+    kiln_app::logging::init(config.log_level, config.log_to_flash);
+
     // Core 1: the control loop, and nothing else. It receives commands and
     // publishes status; it never touches the network or flash.
     let core1_periphs = Core1Periphs {
@@ -362,6 +367,16 @@ async fn core0_main(
     spawner.spawn(
         kiln_app::server::csv_logger_task(status, storage, clock, config, recovery).unwrap(),
     );
+
+    // Logging tasks: bind the wall clock and start the Core 0 drain + unified flash
+    // flusher. The global logger was installed in `main` before the split, so any
+    // lines emitted during bring-up are already queued; the drain task fans them to
+    // the RAM ring (`/api/logs` snapshot) and — when LOG_TO_FLASH — the flash
+    // channel. `flash_flush_task` persists the diag log and the CSV rows coalesced
+    // into one flash-paused window, running a diag boot prune first.
+    kiln_app::logging::set_clock(clock);
+    spawner.spawn(kiln_app::logging::log_drain_task().unwrap());
+    spawner.spawn(kiln_app::logging::flash_flush_task(storage, clock).unwrap());
 
     // --- USB-NCM: always on (radio-independent), the wired escape hatch -------
     // Comes up whenever the cable is enumerated, serving the same router as WiFi,

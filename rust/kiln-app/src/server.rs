@@ -77,6 +77,19 @@ pub trait Clock {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StorageError;
 
+/// One file write inside a batched, single-pause / single-mount flush window (see
+/// [`Storage::write_batch`]).
+pub struct BatchWrite<'a> {
+    /// Target directory.
+    pub dir: Directory,
+    /// File name within `dir`.
+    pub name: &'a str,
+    /// Bytes to write.
+    pub bytes: &'a [u8],
+    /// `true` truncates first (a new file's header); `false` appends.
+    pub create: bool,
+}
+
 /// The flash filesystem (`profiles/`, `logs/`) and the compiled-in static assets,
 /// behind a trait so this crate never names littlefs. Methods are synchronous —
 /// littlefs is blocking and flash reads are fast, exactly as the reference's
@@ -108,6 +121,12 @@ pub trait Storage {
         bytes: &[u8],
         create: bool,
     ) -> Result<(), StorageError>;
+    /// Apply every write inside ONE flash-paused + ONE filesystem-mount window, so a
+    /// CSV-row batch and a diag-line batch cost a single SSR pause and a single mount
+    /// instead of two of each (the unified log/CSV flusher). An empty slice is a
+    /// no-op — no pause, no mount. On error nothing is guaranteed written; the caller
+    /// keeps its buffers and retries.
+    fn write_batch(&self, writes: &[BatchWrite<'_>]) -> Result<(), StorageError>;
     /// Begin a streamed upload to a scratch file (clears any prior scratch).
     fn upload_begin(&self) -> Result<(), StorageError>;
     /// Append a streamed-upload chunk.
@@ -227,31 +246,24 @@ pub struct RecoveryLog {
     pub elapsed_seconds: f32,
 }
 
-/// Defer the flash write of buffered CSV rows by at most this long (monotonic
-/// seconds). One flash program per *flush* instead of one per *row* — far fewer
-/// flash-pause events (each one de-energises the SSR and busy-spins Core 0; see
-/// the flash handshake), which matters most during TUNING (a row every 2 s) — and
-/// far less flash wear. Trade-off: a power cut loses up to this much logged data.
-/// That is safe: crash recovery resumes from the last *flushed* row, and its
-/// safety gate is the current-vs-logged **temperature delta**, not the exact
-/// elapsed (`kiln_core::recovery`), so a slightly stale resume still gates
-/// correctly and the controller re-derives the step from temp.
-const CSV_FLUSH_INTERVAL_S: u64 = 120;
 /// One rendered CSV row's upper bound (matches the per-row render `String`).
 const CSV_ROW_CAP: usize = 256;
-/// RAM accumulator for un-flushed rows. Sized to hold one flush interval at the
-/// fastest cadence (TUNING: 120 s / 2 s = 60 rows × ~130 B ≈ 7.8 KB) with margin;
-/// a row that would overflow forces an early flush, so nothing is ever dropped.
-const CSV_BUF_CAP: usize = 8192;
 
 /// CSV logging — the `data_logger.py` half that owns timing and the file handle.
-/// Subscribes to the status broadcast and writes a row through [`Storage`] when
-/// the interval has elapsed (`LOGGING_INTERVAL` normally, 2 s while TUNING), using
-/// the verified [`csv`] formatters. On the IDLE→RUNNING/TUNING edge it starts a
-/// new file (header) — or, for a crash-recovery resume, **appends** to the
-/// interrupted run's file (no header) and writes a one-shot `RECOVERY` event row
-/// (`data_logger.log_recovery_event`). Forces a final terminal-state row on the
-/// way out — `data_logger.update`.
+/// Subscribes to the status broadcast and renders a row (`LOGGING_INTERVAL`
+/// normally, 2 s while TUNING) via the verified [`csv`] formatters. On the
+/// IDLE→RUNNING/TUNING edge it starts a new file (header) — or, for a crash-recovery
+/// resume, **appends** to the interrupted run's file (no header) and writes a
+/// one-shot `RECOVERY` event row (`data_logger.log_recovery_event`). Forces a final
+/// terminal-state row on the way out — `data_logger.update`.
+///
+/// FLUSH OWNERSHIP. Steady-state rows are handed to [`crate::logging`] (`csv_push_row`)
+/// and persisted by the unified [`crate::logging::flash_flush_task`], coalesced with
+/// the diag log into one flash-paused window. The **recovery-critical edge writes**
+/// stay direct here: the header (`create`), the RECOVERY row, and the run-end flush
+/// ([`crate::logging::flush_and_wait`]) — the last is synchronous so the terminal row
+/// is durable and `CSV_PENDING` is drained to the *ending* run's file before
+/// `active_run` is cleared and the next run can remap the pending-row filename.
 ///
 /// Also owns the `active_run` recovery pointer (see [`Storage::write_active_run`]):
 /// it records the live firing's log filename on the IDLE→RUNNING edge and clears
@@ -266,18 +278,11 @@ pub async fn csv_logger_task(
     config: &'static KilnConfig,
     mut recovery: Option<RecoveryLog>,
 ) -> ! {
-    use embassy_time::Instant;
     use kiln_core::state::KilnState;
     let mut rx = status.receiver().unwrap();
     let mut logging = false;
     let mut filename = heapless::String::<96>::new();
     let mut last_log: i64 = 0;
-    // Rows accumulate here and flush to flash in batches (see CSV_FLUSH_INTERVAL_S).
-    let mut buf = heapless::String::<CSV_BUF_CAP>::new();
-    // Monotonic, so the flush cadence holds even before NTP sync. `None` until the
-    // first flush of a run, which is taken promptly so the file gains a RUNNING
-    // row early and recovery stays possible from near the start.
-    let mut last_flush: Option<Instant> = None;
     let mut prev_state = KilnState::Idle;
 
     loop {
@@ -286,7 +291,9 @@ pub async fn csv_logger_task(
         let active = matches!(s.state, KilnState::Running | KilnState::Tuning);
 
         if active && !logging {
-            buf.clear();
+            // Discard any rows left pending from a failed prior flush so they can't
+            // bleed into this run's file (mirrors the reference's `buf.clear()`).
+            crate::logging::csv_reset();
             if let Some(rec) = recovery.take() {
                 // Recovery resume: continue the interrupted run's file (append,
                 // no header) and write the one-shot RECOVERY marker row using the
@@ -310,7 +317,9 @@ pub async fn csv_logger_task(
                 {
                     logging = true;
                     last_log = 0;
-                    last_flush = None;
+                    // Steady rows now flow to this file via the unified flusher.
+                    crate::logging::csv_set_name(&filename);
+                    crate::logging::request_flush();
                 }
             } else {
                 // Pick the log stem: a fixed "tuning" while TUNING (the
@@ -334,7 +343,11 @@ pub async fn csv_logger_task(
                     {
                         logging = true;
                         last_log = 0;
-                        last_flush = None;
+                        // Steady rows now flow to this file via the unified flusher;
+                        // nudge it so the first rows land early (recovery stays
+                        // possible from near the start).
+                        crate::logging::csv_set_name(&filename);
+                        crate::logging::request_flush();
                         // Mark this as the live firing for crash recovery — but
                         // only a real RUN; tuning is not recovery-eligible.
                         if s.state == KilnState::Running {
@@ -353,44 +366,26 @@ pub async fn csv_logger_task(
             };
             let leaving = matches!(prev_state, KilnState::Running | KilnState::Tuning) && !active;
 
-            // Accumulate a row at the logging cadence (and a final row on the way
-            // out). Cadence/granularity are unchanged — only the flash write is
-            // deferred. If the next row would overflow the buffer, flush first so
-            // a row is never dropped.
+            // Render a row at the logging cadence (and a final row on the way out)
+            // and hand it to the unified flusher. Cadence/granularity unchanged —
+            // only the flash write is deferred and coalesced with the diag log.
+            // `csv_push_row` returning true means we crossed the high-water mark;
+            // nudge the flusher so the pending batch never approaches overflow.
             if leaving || (now - last_log) >= interval {
                 let mut row = heapless::String::<CSV_ROW_CAP>::new();
                 let _ = csv::write_row(&mut row, &s);
-                if buf.len() + row.len() > buf.capacity()
-                    && storage
-                        .append(Directory::Logs, &filename, buf.as_bytes(), false)
-                        .is_ok()
-                {
-                    buf.clear();
-                    last_flush = Some(Instant::now());
+                if crate::logging::csv_push_row(&row) {
+                    crate::logging::request_flush();
                 }
-                let _ = buf.push_str(&row);
                 last_log = now;
-            }
-
-            // Flush the batch on the way out, or once the defer window elapses.
-            // `last_flush == None` (the first batch of a run) flushes promptly so
-            // the file holds a RUNNING row early and recovery stays possible.
-            let due = match last_flush {
-                None => true,
-                Some(t) => Instant::now().duration_since(t).as_secs() >= CSV_FLUSH_INTERVAL_S,
-            };
-            if !buf.is_empty()
-                && (leaving || due)
-                && storage
-                    .append(Directory::Logs, &filename, buf.as_bytes(), false)
-                    .is_ok()
-            {
-                buf.clear();
-                last_flush = Some(Instant::now());
             }
 
             if leaving {
                 logging = false;
+                // Synchronously drain the pending rows (incl. the terminal row just
+                // pushed) to the ENDING run's file BEFORE clearing `active_run` and
+                // before the next run can remap the pending-row filename.
+                crate::logging::flush_and_wait().await;
                 // Clean run/tuning end → no interrupted run to recover. Clearing
                 // here (and on a declined recovery) is what stops a stale run from
                 // ever being auto-resumed on a later boot. Idempotent if absent.
@@ -542,6 +537,10 @@ mod web {
                     .options(cors_preflight),
                 )
                 .route("/api/reboot", post(reboot).options(cors_preflight))
+                .route(
+                    "/api/logs",
+                    get(crate::logging::logs_snapshot).options(cors_preflight),
+                )
                 .route(
                     "/api/config",
                     get(config_get).post(config_post).options(cors_preflight),

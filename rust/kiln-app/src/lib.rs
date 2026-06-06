@@ -27,4 +27,6 @@ pub mod timefmt;
 pub mod tuning_names;
 
 #[cfg(feature = "embassy")]
+pub mod logging;
+#[cfg(feature = "embassy")]
 pub mod server;

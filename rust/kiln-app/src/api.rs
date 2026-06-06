@@ -56,15 +56,17 @@ pub const CLOCK_NOT_SYNCED_MESSAGE: &str =
 pub enum Directory {
     Profiles,
     Logs,
+    Diag,
 }
 
 impl Directory {
-    /// Parse the path segment, `None` for anything but `profiles`/`logs`
+    /// Parse the path segment, `None` for anything but `profiles`/`logs`/`diag`
     /// (`validate_directory`).
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "profiles" => Some(Directory::Profiles),
             "logs" => Some(Directory::Logs),
+            "diag" => Some(Directory::Diag),
             _ => None,
         }
     }
@@ -73,6 +75,7 @@ impl Directory {
         match self {
             Directory::Profiles => "profiles",
             Directory::Logs => "logs",
+            Directory::Diag => "diag",
         }
     }
 }
@@ -386,5 +389,16 @@ mod tests {
     fn json_number_without_value_is_none() {
         assert_eq!(json_get_f64(r#"{"max_temp": }"#, "max_temp"), None);
         assert_eq!(json_get_str(r#"{"max_temp": 5}"#, "max_temp"), None);
+    }
+}
+
+#[cfg(test)]
+mod diag_dir_tests {
+    use super::*;
+
+    #[test]
+    fn parses_diag_directory() {
+        assert_eq!(Directory::parse("diag"), Some(Directory::Diag));
+        assert_eq!(Directory::Diag.as_str(), "diag");
     }
 }
