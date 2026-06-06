@@ -180,7 +180,7 @@ export function FileManager() {
 						{/* Directory Selection */}
 						<div>
 							<Label className="text-base">Select Directory</Label>
-							<div className="grid grid-cols-2 gap-2 mt-2">
+							<div className="grid grid-cols-3 gap-2 mt-2">
 								<Button
 									variant={
 										selectedDirectory === "profiles" ? "default" : "outline"
@@ -198,6 +198,14 @@ export function FileManager() {
 								>
 									<Folder className="w-4 h-4 mr-2 flex-shrink-0" />
 									<span className="truncate">Logs</span>
+								</Button>
+								<Button
+									variant={selectedDirectory === "diag" ? "default" : "outline"}
+									size="sm"
+									onClick={() => setSelectedDirectory("diag")}
+								>
+									<Folder className="w-4 h-4 mr-2 flex-shrink-0" />
+									<span className="truncate">Diag</span>
 								</Button>
 							</div>
 						</div>

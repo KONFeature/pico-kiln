@@ -5,6 +5,7 @@ import {
 	FolderOpen,
 	LineChart,
 	Menu,
+	ScrollText,
 	Settings,
 	X,
 } from "lucide-react";
@@ -121,6 +122,16 @@ export default function Header() {
 					>
 						<FolderOpen size={20} />
 						<span className="font-medium">Files</span>
+					</Link>
+
+					<Link
+						to="/logs"
+						onClick={closeMenu}
+						className={navLinkClass}
+						activeProps={{ className: navLinkActiveClass }}
+					>
+						<ScrollText size={20} />
+						<span className="font-medium">Logs</span>
 					</Link>
 
 					<Link

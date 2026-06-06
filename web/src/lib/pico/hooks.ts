@@ -32,6 +32,7 @@ import type {
 // Query keys for TanStack Query
 export const picoKeys = {
 	status: ["pico", "status"] as const,
+	logs: ["pico", "logs"] as const,
 	scheduledStatus: ["pico", "scheduled-status"] as const,
 	files: (directory: string) => ["files", directory] as const,
 	fileContent: (directory: string, filename: string) =>
@@ -497,6 +498,35 @@ export function useUploadFile() {
 				queryKey: picoKeys.fileContent(variables.directory, variables.filename),
 			});
 		},
+	});
+}
+
+// === Logs Hooks ===
+
+/**
+ * Hook to poll the live log tail (GET /api/logs RAM-ring snapshot). Unlike the
+ * diag flash files, this works in ANY kiln state (it reads RAM, no IDLE gate),
+ * so it can monitor a firing in progress. Pass `paused` to stop polling and
+ * `intervalMs` to set the cadence (default 3000ms).
+ */
+export function useLiveLogs(params?: {
+	paused?: boolean;
+	intervalMs?: number;
+}) {
+	const { paused = false, intervalMs = 3000 } = params ?? {};
+	const { client, isConfigured } = usePico();
+
+	return useQuery<string, PicoAPIError>({
+		queryKey: picoKeys.logs,
+		queryFn: async () => {
+			assertClient(client);
+			return await client.getLogs();
+		},
+		enabled: isConfigured && Boolean(client),
+		refetchInterval: paused ? false : intervalMs,
+		staleTime: 0,
+		refetchOnWindowFocus: false,
+		retry: 2,
 	});
 }
 
