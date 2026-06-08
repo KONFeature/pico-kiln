@@ -481,14 +481,8 @@ mod web {
         fn build_app(self) -> picoserve::Router<Self::PathRouter> {
             picoserve::Router::new()
                 .route("/", get(page_index))
-                .route("/index.html", get(page_index))
                 .route("/tuning", get(page_tuning))
-                .route("/tuning.html", get(page_tuning))
                 .route("/api/status", get(status_json).options(cors_preflight))
-                .route(
-                    "/api/tuning/status",
-                    get(status_json).options(cors_preflight),
-                )
                 .route(
                     "/api/scheduled",
                     get(scheduled_json).options(cors_preflight),

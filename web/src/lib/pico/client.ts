@@ -127,11 +127,6 @@ export class PicoAPIClient {
 		return this.request<KilnStatus>("/api/status");
 	}
 
-	async getTuningStatus(): Promise<KilnStatus> {
-		// Same as getStatus - the tuning info is included in the status response
-		return this.request<KilnStatus>("/api/tuning/status");
-	}
-
 	// === Logs Endpoints ===
 
 	/**
