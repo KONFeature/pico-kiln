@@ -18,5 +18,3 @@ pub const MAX_FILE_BYTES: u32 = 64 * 1024;
 pub const MAX_TOTAL_BYTES: u32 = 256 * 1024;
 /// Boot prune deletes oldest-first until total drops below this (¾ of the cap).
 pub const PRUNE_TARGET_BYTES: u32 = 192 * 1024;
-/// Boot prune also drops files older than this (7 days, in seconds).
-pub const MAX_AGE_SECS: i64 = 7 * 24 * 3600;

@@ -200,8 +200,10 @@ impl StepBuf {
         }
     }
     fn push(&mut self, s: TuningStep) {
-        self.steps[self.n] = s;
-        self.n += 1;
+        if self.n < MAX_TUNING_STEPS {
+            self.steps[self.n] = s;
+            self.n += 1;
+        }
     }
 }
 

@@ -455,9 +455,10 @@ mod web {
     /// Per-response JSON render buffer used inside `write_to`. picoserve's serve
     /// future holds several of these un-overlapped (the recursive router + the
     /// `Response`/`Typed` move chain), so the size is multiplied across the worker.
-    /// The largest rendered body measured is the config (~1 KB; status ~0.7 KB), so
-    /// 1.5 KiB keeps a safe margin while trimming the chain.
-    const RENDER_CAP: usize = 1536;
+    /// Sized to match the `config_post` canonical buffer (2 KiB): a config with
+    /// maxed string fields can exceed 1.5 KiB, and `GET /api/config` must never
+    /// emit a silently truncated body.
+    const RENDER_CAP: usize = 2048;
 
     /// Router-construction props implementing picoserve 0.18's [`AppBuilder`].
     /// Using the trait (rather than a bare module-level `type Foo = impl ...`)
@@ -888,6 +889,10 @@ mod web {
             UploadOutcome::Failed => {
                 ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to write file")
             }
+            UploadOutcome::NotIdle => ApiResponse::error(
+                StatusCode::FORBIDDEN,
+                "File operations not allowed while kiln is active. Stop the kiln first.",
+            ),
         }
     }
 
@@ -1570,6 +1575,8 @@ mod web {
         Missing,
         TooLarge,
         Failed,
+        /// Rejected before streaming: file ops are idle-only.
+        NotIdle,
     }
 
     /// A streamed file upload (`handle_api_files_upload`): the body is written to
@@ -1592,6 +1599,15 @@ mod web {
                 .and_then(|v| v.as_str().ok())
                 .and_then(|v| v.parse::<i64>().ok())
                 .unwrap_or(0);
+            // Refuse to stream while the kiln is active: every scratch-file chunk
+            // write pauses Core 1 (SSR off) for the flash window, so a hostile or
+            // mistimed PUT mid-firing would chatter the relay hundreds of times
+            // before the handler's file_guard even runs.
+            if !api::file_ops_allowed(state.latest().state) {
+                return Ok(Upload {
+                    outcome: UploadOutcome::NotIdle,
+                });
+            }
             let outcome = match api::validate_upload_size(content_length) {
                 api::UploadSize::Missing => UploadOutcome::Missing,
                 api::UploadSize::TooLarge => UploadOutcome::TooLarge,

@@ -465,7 +465,10 @@ impl KilnController {
 
         let (calc_index, time_in_step, calc_start_temp) =
             self.find_step_for_elapsed(elapsed_seconds);
-        self.current_step_index = step_index.unwrap_or(calc_index);
+        // The logged index can be stale (profile edited between crash and boot);
+        // clamp it so the step indexing below cannot panic the control loop.
+        let last_step = self.profile.as_ref().unwrap().step_count() - 1;
+        self.current_step_index = step_index.unwrap_or(calc_index).min(last_step);
         self.step_start_time = elapsed_seconds - time_in_step;
 
         let current_step = self.profile.as_ref().unwrap().steps()[self.current_step_index];
@@ -630,5 +633,18 @@ mod tests {
         c.set_error(KilnError::NoActiveProfile);
         assert!(c.clear_error());
         assert_eq!(c.state, KilnState::Idle);
+    }
+
+    #[test]
+    fn resume_clamps_out_of_range_step_index() {
+        // The logged step_index can exceed the step count if the profile JSON was
+        // edited between the crash and this boot; resume must clamp, not panic.
+        let mut c = KilnController::new(cfg());
+        let p = Profile::new(&[Step::hold(100.0, 1000.0), Step::cooling(Some(50.0))]).unwrap();
+        assert!(c.resume_profile(p, 600.0, Some(100.0), Some(98.0), Some(7), 0));
+        assert_eq!(c.current_step_index(), 1);
+        assert_eq!(c.state, KilnState::Running);
+        // The next update must run without panicking on the clamped index.
+        let _ = c.update(98.0, 1_000);
     }
 }

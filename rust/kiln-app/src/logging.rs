@@ -433,7 +433,6 @@ pub async fn flash_flush_task(storage: &'static dyn Storage, clock: &'static dyn
     use embassy_time::{with_timeout, Duration, Instant};
 
     // --- Boot prune + active-file selection ---------------------------------
-    let now0 = clock.unix_seconds().unwrap_or(0);
     let mut entries: heapless::Vec<(u32, kiln_log::DiagEntry), MAX_SCAN_FILES> =
         heapless::Vec::new();
     // Highest suffix seen across ALL diag files, tracked independently of the
@@ -442,18 +441,10 @@ pub async fn flash_flush_task(storage: &'static dyn Storage, clock: &'static dyn
     // even if more than `MAX_SCAN_FILES` diag files coexist (the capped prune is
     // best-effort, but the suffix must never alias).
     let mut max_seen: Option<u32> = None;
-    storage.for_each(Directory::Diag, &mut |name, size, modified| {
+    storage.for_each(Directory::Diag, &mut |name, size, _modified| {
         if let Some(suf) = parse_suffix(name) {
             max_seen = Some(max_seen.map_or(suf, |m| m.max(suf)));
-            let _ = entries.push((
-                suf,
-                kiln_log::DiagEntry {
-                    size: size as u32,
-                    // Saturate rather than wrap a pathological mtime into negative
-                    // (a negative mtime would read as "far future" to the age rule).
-                    mtime: modified.min(i64::MAX as u64) as i64,
-                },
-            ));
+            let _ = entries.push((suf, kiln_log::DiagEntry { size: size as u32 }));
         }
     });
     // Oldest-first (ascending suffix) for the prune policy.
@@ -462,7 +453,7 @@ pub async fn flash_flush_task(storage: &'static dyn Storage, clock: &'static dyn
     for (_, e) in entries.iter() {
         let _ = sorted.push(*e);
     }
-    let drop_k = kiln_log::boot_prune_count(&sorted, now0);
+    let drop_k = kiln_log::boot_prune_count(&sorted);
     for (suf, _) in entries.iter().take(drop_k) {
         let _ = storage.remove(Directory::Diag, &diag_name(*suf));
     }
