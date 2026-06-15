@@ -131,8 +131,6 @@ pub trait Storage {
     fn for_each(&self, dir: Directory, f: &mut dyn FnMut(&str, u64, u64));
     /// Remove `dir/name`.
     fn remove(&self, dir: Directory, name: &str) -> Result<(), StorageError>;
-    /// Remove every file in `dir` (logs bulk delete).
-    fn remove_all(&self, dir: Directory) -> Result<(), StorageError>;
     /// Append `bytes` to `dir/name`; when `create` is set, truncate first (a new
     /// run's header). Used by the CSV logger.
     fn append(
@@ -945,12 +943,8 @@ mod web {
         (dir, file): (heapless::String<16>, heapless::String<64>),
         State(state): State<AppState>,
     ) -> impl IntoResponse {
-        // The web app's "delete all logs" maps to DELETE /api/files/logs/all
-        // (`handle_api_files_delete_all`). Route it before the single-file path so
-        // "all" is never treated as a filename.
-        if file == "all" {
-            return file_delete_all(&state, &dir);
-        }
+        // Bulk delete is handled client-side: the web app issues one DELETE per
+        // file. There is no server-side "delete all" route.
         let directory = match file_guard(&state, &dir, Some(&file)) {
             Ok(d) => d,
             Err(resp) => return resp,
@@ -960,25 +954,6 @@ mod web {
         } else {
             ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete file")
         }
-    }
-
-    /// `DELETE /api/files/logs/all` — bulk-delete every log (`web_server.py`
-    /// `handle_api_files_delete_all`). Idle-gated and logs-only. Returns
-    /// `{success, deleted_count, deleted_files:[...]}`; the listing (capped at
-    /// `MAX_PROFILES`) is collected, `remove_all` run, and the result streamed —
-    /// all in `write_to`, so the names list never bloats the per-route response.
-    fn file_delete_all(state: &AppState, dir: &str) -> ApiResponse {
-        let directory = match file_guard(state, dir, None) {
-            Ok(d) => d,
-            Err(resp) => return resp,
-        };
-        if !api::bulk_delete_allowed(directory) {
-            return ApiResponse::error(
-                StatusCode::FORBIDDEN,
-                "Bulk delete only allowed for logs directory",
-            );
-        }
-        ApiResponse::DeleteAll(*state, directory)
     }
 
     async fn page_index(State(state): State<AppState>) -> impl IntoResponse {
@@ -1041,9 +1016,6 @@ mod web {
         Index(AppState),
         /// `GET /api/files/{dir}` — directory scanned + streamed in `write_to`.
         FileList(AppState, Directory),
-        /// `DELETE /api/files/logs/all` — names collected, dir cleared, result
-        /// streamed, all in `write_to`.
-        DeleteAll(AppState, Directory),
         /// `{"success":true,"message":"<msg>"}` with an owned (dynamic) message.
         Message(heapless::String<MSG_CAP>),
         /// The upload-success envelope `{success,message,filename,size}`.
@@ -1352,43 +1324,6 @@ mod web {
                         .write_to(connection, response_writer)
                         .await
                 }
-                ApiResponse::DeleteAll(state, dir) => {
-                    // Collect the (capped) names BEFORE clearing, then clear, then
-                    // stream the result. The destructive op runs here, but the route
-                    // is idle-gated by `file_delete_all`, so it is safe.
-                    let mut names: heapless::Vec<heapless::String<NAME_CAP>, MAX_PROFILES> =
-                        heapless::Vec::new();
-                    let mut total = 0usize;
-                    state.storage.for_each(dir, &mut |name, _size, _modified| {
-                        total += 1;
-                        if names.len() < names.capacity() {
-                            let mut s = heapless::String::new();
-                            if s.push_str(name).is_ok() {
-                                let _ = names.push(s);
-                            }
-                        }
-                    });
-                    if state.storage.remove_all(dir).is_err() {
-                        let mut b = heapless::String::<RENDER_CAP>::new();
-                        let _ = write!(
-                            b,
-                            "{{\"success\":false,\"error\":\"Failed to delete files\"}}"
-                        );
-                        return respond(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "application/json",
-                            b,
-                            connection,
-                            response_writer,
-                        )
-                        .await;
-                    }
-                    ChunkedResponse::new(DeleteAllBody { names, total })
-                        .into_response()
-                        .with_headers(CORS)
-                        .write_to(connection, response_writer)
-                        .await
-                }
             }
         }
     }
@@ -1439,43 +1374,6 @@ mod web {
             let mut suffix = heapless::String::<24>::new();
             let _ = write!(suffix, "],\"count\":{}}}", self.lens.len());
             chunk_writer.write_chunk(suffix.as_bytes()).await?;
-            chunk_writer.finalize().await
-        }
-    }
-
-    /// `DELETE /api/files/logs/all` result, streamed: `{success, deleted_count,
-    /// deleted_files:[...]}`. Holds the (capped) deleted names plus the full count;
-    /// built and consumed inside `write_to`, so it never sits in a per-route slot.
-    pub(super) struct DeleteAllBody {
-        names: heapless::Vec<heapless::String<NAME_CAP>, MAX_PROFILES>,
-        total: usize,
-    }
-
-    impl Chunks for DeleteAllBody {
-        fn content_type(&self) -> &'static str {
-            "application/json"
-        }
-
-        async fn write_chunks<W: picoserve::io::Write>(
-            self,
-            mut chunk_writer: ChunkWriter<W>,
-        ) -> Result<ChunksWritten, W::Error> {
-            let mut head = heapless::String::<80>::new();
-            let _ = write!(
-                head,
-                "{{\"success\":true,\"deleted_count\":{},\"deleted_files\":[",
-                self.total
-            );
-            chunk_writer.write_chunk(head.as_bytes()).await?;
-            for (i, name) in self.names.iter().enumerate() {
-                if i > 0 {
-                    chunk_writer.write_chunk(b",").await?;
-                }
-                chunk_writer.write_chunk(b"\"").await?;
-                chunk_writer.write_chunk(name.as_bytes()).await?;
-                chunk_writer.write_chunk(b"\"").await?;
-            }
-            chunk_writer.write_chunk(b"]}").await?;
             chunk_writer.finalize().await
         }
     }

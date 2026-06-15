@@ -691,28 +691,6 @@ impl kiln_app::server::Storage for FlashStorage {
         self.with_flash_paused(|| self.with_fs(|fs| fs.remove(&path)))
     }
 
-    fn remove_all(&self, dir: Directory) -> Result<(), StorageError> {
-        self.with_flash_paused(|| {
-            self.with_fs(|fs| {
-                // Collect full paths first — removing during iteration is unsafe.
-                let mut paths: heapless::Vec<PathBuf, 64> = heapless::Vec::new();
-                fs.read_dir_and_then(dir_root(dir), |rd| {
-                    for entry in rd {
-                        let entry = entry?;
-                        if entry.file_type().is_file() {
-                            let _ = paths.push(PathBuf::from(entry.path()));
-                        }
-                    }
-                    Ok(())
-                })?;
-                for p in &paths {
-                    fs.remove(p)?;
-                }
-                Ok(())
-            })
-        })
-    }
-
     fn upload_begin(&self) -> Result<(), StorageError> {
         self.with_flash_paused(|| {
             self.with_fs(|fs| {

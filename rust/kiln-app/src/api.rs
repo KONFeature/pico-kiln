@@ -100,12 +100,6 @@ pub fn file_ops_allowed(state: kiln_core::state::KilnState) -> bool {
     state == kiln_core::state::KilnState::Idle
 }
 
-/// Whether bulk delete is permitted for `dir` — logs only
-/// (`handle_api_files_delete_all`).
-pub fn bulk_delete_allowed(dir: Directory) -> bool {
-    dir == Directory::Logs
-}
-
 /// Parse + validate a tuning mode string against `VALID_TUNING_MODES`.
 pub fn parse_tuning_mode(s: &str) -> Option<TuningMode> {
     match s {
@@ -288,8 +282,6 @@ mod tests {
         assert_eq!(Directory::parse("profiles"), Some(Directory::Profiles));
         assert_eq!(Directory::parse("logs"), Some(Directory::Logs));
         assert_eq!(Directory::parse("etc"), None);
-        assert!(bulk_delete_allowed(Directory::Logs));
-        assert!(!bulk_delete_allowed(Directory::Profiles));
     }
 
     #[test]

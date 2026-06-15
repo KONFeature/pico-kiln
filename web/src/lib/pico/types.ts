@@ -187,13 +187,6 @@ export interface DeleteFileResponse {
 	error?: string;
 }
 
-export interface DeleteAllFilesResponse {
-	success: boolean;
-	deleted_count: number;
-	deleted_files: string[];
-	error?: string;
-}
-
 export interface UploadFileResponse {
 	success: boolean;
 	message?: string;

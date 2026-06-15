@@ -2,7 +2,6 @@
 
 import type {
 	CancelScheduledResponse,
-	DeleteAllFilesResponse,
 	DeleteFileResponse,
 	FileDirectory,
 	KilnConfig,
@@ -333,16 +332,6 @@ export class PicoAPIClient {
 				method: "DELETE",
 			},
 		);
-	}
-
-	/**
-	 * Delete all files in logs directory
-	 * Only allowed for logs directory, only works when kiln is IDLE
-	 */
-	async deleteAllLogs(): Promise<DeleteAllFilesResponse> {
-		return this.request<DeleteAllFilesResponse>("/api/files/logs/all", {
-			method: "DELETE",
-		});
 	}
 
 	/**

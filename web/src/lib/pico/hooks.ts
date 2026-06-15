@@ -6,12 +6,12 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
+import { readFileAsText } from "../utils";
 import { type PicoAPIClient, PicoAPIError } from "./client";
 import { usePico } from "./context";
 import { isLogicalFailure } from "./errors";
 import type {
 	CancelScheduledResponse,
-	DeleteAllFilesResponse,
 	DeleteFileResponse,
 	FileDirectory,
 	KilnConfig,
@@ -26,7 +26,6 @@ import type {
 	StopResponse,
 	StopTuningResponse,
 	TuningMode,
-	UploadFileResponse,
 } from "./types";
 
 // Query keys for TanStack Query
@@ -451,51 +450,104 @@ export function useDeleteFile() {
 }
 
 /**
- * Mutation to delete all log files
- * Only works when kiln is IDLE
+ * Mutation to delete every file in a directory. The Pico has no bulk-delete
+ * endpoint: we issue one DELETE per file, sequentially (it serves one request at
+ * a time over WiFi, so a parallel burst just thrashes it). Only works when IDLE.
  */
-export function useDeleteAllLogs() {
+export function useDeleteAllFiles() {
 	const { client } = usePico();
 	const queryClient = useQueryClient();
 
-	return useMutation<DeleteAllFilesResponse, PicoAPIError, void>({
-		mutationFn: async () => {
+	return useMutation<
+		{ deletedCount: number },
+		Error,
+		{ directory: FileDirectory; filenames: string[] }
+	>({
+		mutationFn: async ({ directory, filenames }) => {
 			assertClient(client);
-			return unwrap(await client.deleteAllLogs(), "Failed to delete logs");
+			const errors: string[] = [];
+			let deletedCount = 0;
+			for (const filename of filenames) {
+				try {
+					unwrap(
+						await client.deleteFile(directory, filename),
+						"Failed to delete file",
+					);
+					deletedCount++;
+				} catch (e) {
+					errors.push(
+						e instanceof Error ? `${filename}: ${e.message}` : filename,
+					);
+				}
+			}
+			if (errors.length > 0) {
+				throw new Error(
+					`Failed to delete ${errors.length} file(s): ${errors.join("; ")}`,
+				);
+			}
+			return { deletedCount };
 		},
-		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: picoKeys.files("logs") });
-			queryClient.removeQueries({ queryKey: ["file-content", "logs"] });
+		onSettled: (_data, _error, variables) => {
+			queryClient.invalidateQueries({
+				queryKey: picoKeys.files(variables.directory),
+			});
+			queryClient.removeQueries({
+				queryKey: ["file-content", variables.directory],
+			});
 		},
 	});
 }
 
 /**
- * Mutation to upload a file
- * Only works when kiln is IDLE
+ * Mutation to upload one or more files. The frontend batches a multi-file
+ * selection into sequential single-file PUTs (the Pico streams one upload at a
+ * time). JSON is minified client-side to save flash. Only works when IDLE.
  */
-export function useUploadFile() {
+export function useUploadFiles() {
 	const { client } = usePico();
 	const queryClient = useQueryClient();
 
 	return useMutation<
-		UploadFileResponse,
-		PicoAPIError,
-		{ directory: FileDirectory; filename: string; content: string }
+		{ uploadedCount: number },
+		Error,
+		{ directory: FileDirectory; files: File[] }
 	>({
-		mutationFn: async ({ directory, filename, content }) => {
+		mutationFn: async ({ directory, files }) => {
 			assertClient(client);
-			return unwrap(
-				await client.uploadFile(directory, filename, content),
-				"Failed to upload file",
-			);
+			const errors: string[] = [];
+			let uploadedCount = 0;
+			for (const file of files) {
+				try {
+					let content = await readFileAsText(file);
+					// Minify JSON to save space on the Pico; upload as-is if it doesn't parse.
+					if (file.name.endsWith(".json")) {
+						try {
+							content = JSON.stringify(JSON.parse(content));
+						} catch {
+							// not valid JSON — leave content untouched
+						}
+					}
+					unwrap(
+						await client.uploadFile(directory, file.name, content),
+						"Failed to upload file",
+					);
+					uploadedCount++;
+				} catch (e) {
+					errors.push(
+						e instanceof Error ? `${file.name}: ${e.message}` : file.name,
+					);
+				}
+			}
+			if (errors.length > 0) {
+				throw new Error(
+					`Failed to upload ${errors.length} file(s): ${errors.join("; ")}`,
+				);
+			}
+			return { uploadedCount };
 		},
-		onSuccess: (_data, variables) => {
+		onSettled: (_data, _error, variables) => {
 			queryClient.invalidateQueries({
 				queryKey: picoKeys.files(variables.directory),
-			});
-			queryClient.invalidateQueries({
-				queryKey: picoKeys.fileContent(variables.directory, variables.filename),
 			});
 		},
 	});

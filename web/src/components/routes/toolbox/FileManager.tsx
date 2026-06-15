@@ -32,14 +32,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { usePico } from "@/lib/pico/context";
 import {
-	useDeleteAllLogs,
+	useDeleteAllFiles,
 	useDeleteFile,
 	useKilnStatus,
 	useListFiles,
-	useUploadFile,
+	useUploadFiles,
 } from "@/lib/pico/hooks";
 import type { FileDirectory } from "@/lib/pico/types";
-import { readFileAsText } from "@/lib/utils";
 
 export function FileManager() {
 	const [selectedDirectory, setSelectedDirectory] =
@@ -49,12 +48,11 @@ export function FileManager() {
 		filename: string;
 	} | null>(null);
 	const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
-	const [uploadFile, setUploadFile] = useState<File | null>(null);
+	const [uploadFiles, setUploadFiles] = useState<File[]>([]);
 	const [uploadDirectory, setUploadDirectory] =
 		useState<FileDirectory>("profiles");
 	const [showUploadDialog, setShowUploadDialog] = useState(false);
 	const [downloadError, setDownloadError] = useState<unknown>(null);
-	const [readError, setReadError] = useState<unknown>(null);
 	const { client, isConfigured } = usePico();
 	const { data: status } = useKilnStatus();
 	const isFileOpsAvailable = status?.state === "IDLE";
@@ -70,11 +68,11 @@ export function FileManager() {
 	// Mutation for deleting a file
 	const deleteMutation = useDeleteFile();
 
-	// Mutation for deleting all logs
-	const deleteAllLogsMutation = useDeleteAllLogs();
+	// Mutation for deleting every file in a directory (sequential, frontend-batched)
+	const deleteAllMutation = useDeleteAllFiles();
 
-	// Mutation for uploading a file
-	const uploadMutation = useUploadFile();
+	// Mutation for uploading one or more files (sequential, frontend-batched)
+	const uploadMutation = useUploadFiles();
 
 	const handleDownloadFile = async (
 		directory: FileDirectory,
@@ -99,40 +97,17 @@ export function FileManager() {
 		}
 	};
 
-	const handleUploadFile = async () => {
-		if (!uploadFile) return;
-		setReadError(null);
-
-		try {
-			let content = await readFileAsText(uploadFile);
-
-			// Minify JSON files to save space on Pico
-			if (uploadFile.name.endsWith(".json")) {
-				try {
-					const parsed = JSON.parse(content);
-					content = JSON.stringify(parsed); // Minified (no indentation)
-				} catch (e) {
-					// If JSON parsing fails, upload as-is
-					console.warn("Failed to minify JSON, uploading as-is:", e);
-				}
-			}
-
-			uploadMutation.mutate(
-				{
-					directory: uploadDirectory,
-					filename: uploadFile.name,
-					content,
+	const handleUploadFiles = () => {
+		if (uploadFiles.length === 0) return;
+		uploadMutation.mutate(
+			{ directory: uploadDirectory, files: uploadFiles },
+			{
+				onSuccess: () => {
+					setShowUploadDialog(false);
+					setUploadFiles([]);
 				},
-				{
-					onSuccess: () => {
-						setShowUploadDialog(false);
-						setUploadFile(null);
-					},
-				},
-			);
-		} catch (error) {
-			setReadError(error);
-		}
+			},
+		);
 	};
 
 	const formatFileSize = (bytes: number): string => {
@@ -240,7 +215,7 @@ export function FileManager() {
 								</Button>
 							</div>
 
-							{selectedDirectory === "logs" && files.length > 0 && (
+							{selectedDirectory !== "profiles" && files.length > 0 && (
 								<Button
 									variant="destructive"
 									size="sm"
@@ -249,7 +224,7 @@ export function FileManager() {
 									className="w-full sm:w-auto"
 								>
 									<Trash2 className="w-4 h-4 mr-2 flex-shrink-0" />
-									<span className="truncate">Delete All Logs</span>
+									<span className="truncate">Delete All</span>
 								</Button>
 							)}
 						</div>
@@ -381,20 +356,20 @@ export function FileManager() {
 				</DialogContent>
 			</Dialog>
 
-			{/* Delete All Logs Dialog */}
+			{/* Delete All Dialog */}
 			<Dialog open={showDeleteAllDialog} onOpenChange={setShowDeleteAllDialog}>
 				<DialogContent>
 					<DialogHeader>
-						<DialogTitle>Delete All Logs</DialogTitle>
+						<DialogTitle>Delete All {selectedDirectory} Files</DialogTitle>
 						<DialogDescription>
-							Are you sure you want to delete ALL log files? This will
-							permanently delete {files.length} file
-							{files.length !== 1 ? "s" : ""} ({formatFileSize(totalSize)}).
-							This action cannot be undone.
+							Are you sure you want to delete ALL files in the{" "}
+							{selectedDirectory} directory? This will permanently delete{" "}
+							{files.length} file{files.length !== 1 ? "s" : ""} (
+							{formatFileSize(totalSize)}). This action cannot be undone.
 						</DialogDescription>
 					</DialogHeader>
-					{deleteAllLogsMutation.isError && (
-						<ErrorAlert error={deleteAllLogsMutation.error} />
+					{deleteAllMutation.isError && (
+						<ErrorAlert error={deleteAllMutation.error} />
 					)}
 					<DialogFooter>
 						<Button
@@ -406,15 +381,21 @@ export function FileManager() {
 						<Button
 							variant="destructive"
 							onClick={() =>
-								deleteAllLogsMutation.mutate(undefined, {
-									onSuccess: () => {
-										setShowDeleteAllDialog(false);
+								deleteAllMutation.mutate(
+									{
+										directory: selectedDirectory,
+										filenames: files.map((f) => f.name),
 									},
-								})
+									{
+										onSuccess: () => {
+											setShowDeleteAllDialog(false);
+										},
+									},
+								)
 							}
-							disabled={deleteAllLogsMutation.isPending}
+							disabled={deleteAllMutation.isPending}
 						>
-							{deleteAllLogsMutation.isPending ? (
+							{deleteAllMutation.isPending ? (
 								<>
 									<Loader2 className="w-4 h-4 mr-2 animate-spin" />
 									Deleting...
@@ -435,46 +416,54 @@ export function FileManager() {
 				open={showUploadDialog}
 				onOpenChange={(open) => {
 					setShowUploadDialog(open);
-					if (!open) setReadError(null);
+					if (!open) setUploadFiles([]);
 				}}
 			>
 				<DialogContent>
 					<DialogHeader>
-						<DialogTitle>Upload File</DialogTitle>
+						<DialogTitle>Upload Files</DialogTitle>
 						<DialogDescription>
-							Upload a file to the {uploadDirectory} directory on your Pico
+							Upload one or more files to the {uploadDirectory} directory on
+							your Pico
 						</DialogDescription>
 					</DialogHeader>
 					<div className="space-y-4">
 						<div>
-							<Label htmlFor="upload-file">Select File</Label>
+							<Label htmlFor="upload-file">Select Files</Label>
 							<Input
 								id="upload-file"
 								type="file"
+								multiple
 								accept={
 									uploadDirectory === "profiles" ? ".json" : ".csv,.log,.txt"
 								}
 								onChange={(e) => {
-									setUploadFile(e.target.files?.[0] || null);
-									setReadError(null);
+									setUploadFiles(Array.from(e.target.files ?? []));
 								}}
 								className="mt-1"
 							/>
-							{uploadFile && (
+							{uploadFiles.length > 0 && (
 								<p className="text-sm text-muted-foreground mt-2">
-									Selected: {uploadFile.name} ({formatFileSize(uploadFile.size)}
+									Selected: {uploadFiles.length} file
+									{uploadFiles.length !== 1 ? "s" : ""} (
+									{formatFileSize(
+										uploadFiles.reduce((sum, f) => sum + f.size, 0),
+									)}
 									)
 								</p>
 							)}
 						</div>
-						{readError != null && <ErrorAlert error={readError} />}
 						{uploadMutation.isError && (
 							<ErrorAlert error={uploadMutation.error} />
 						)}
 						{uploadMutation.isSuccess && (
 							<Alert>
 								<CheckCircle className="h-4 w-4" />
-								<AlertDescription>File uploaded successfully!</AlertDescription>
+								<AlertDescription>
+									{uploadMutation.data.uploadedCount} file
+									{uploadMutation.data.uploadedCount !== 1 ? "s" : ""} uploaded
+									successfully!
+								</AlertDescription>
 							</Alert>
 						)}
 					</div>
@@ -483,14 +472,14 @@ export function FileManager() {
 							variant="outline"
 							onClick={() => {
 								setShowUploadDialog(false);
-								setUploadFile(null);
+								setUploadFiles([]);
 							}}
 						>
 							Cancel
 						</Button>
 						<Button
-							onClick={handleUploadFile}
-							disabled={!uploadFile || uploadMutation.isPending}
+							onClick={handleUploadFiles}
+							disabled={uploadFiles.length === 0 || uploadMutation.isPending}
 						>
 							{uploadMutation.isPending ? (
 								<>
