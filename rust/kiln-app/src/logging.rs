@@ -602,6 +602,19 @@ impl Chunks for RingSnapshot {
 /// `GET /api/logs` — plain-text snapshot of the RAM ring (the "what's on screen
 /// now" view). The ring keeps records line-aligned and valid UTF-8. A client tails
 /// the log by polling this on an interval.
+///
+/// CORS: unlike the `ApiResponse` endpoints (which add CORS via `respond`), this
+/// chunked response must attach the headers itself, or a cross-origin browser
+/// (the dev UI on `localhost:3000` hitting the device IP) blocks the GET for a
+/// missing `Access-Control-Allow-Origin`. Mirrors `server::web::CORS` (kept local
+/// because that const is private to `mod web`).
 pub async fn logs_snapshot() -> impl IntoResponse {
+    const CORS: [(&str, &str); 3] = [
+        ("Access-Control-Allow-Origin", "*"),
+        ("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
+        ("Access-Control-Allow-Headers", "Content-Type"),
+    ];
     ChunkedResponse::new(RingSnapshot)
+        .into_response()
+        .with_headers(CORS)
 }

@@ -78,6 +78,20 @@ fn main() -> ! {
     // until then lines carry an uptime timestamp.
     kiln_app::logging::init(config.log_level, config.log_to_flash);
 
+    // First lines on the wire: what config actually took effect. These queue in the
+    // log channel until Core 0 starts the drain task, then surface in /api/logs.
+    log::info!(target: "boot", "pico-kiln starting");
+    log::debug!(
+        target: "boot",
+        "config: log={} wifi_cfg={} watchdog={} ssr_pins={:?} tc_type={:?} lcd={}",
+        config.log_level.as_str(),
+        config.wifi_is_configured(),
+        config.enable_watchdog,
+        config.ssr_pin.as_slice(),
+        config.thermocouple_type,
+        config.lcd_enabled,
+    );
+
     // Core 1: the control loop, and nothing else. It receives commands and
     // publishes status; it never touches the network or flash.
     let core1_periphs = Core1Periphs {
@@ -201,8 +215,10 @@ async fn control_task(
 ) -> ! {
     // Power/hardware settle before touching the thermocouple (`boot.py:26`) —
     // "especially important when the thermocouple is connected at boot".
+    log::debug!(target: "ctrl", "core1: 500ms hardware settle");
     Timer::after(Duration::from_millis(500)).await;
 
+    // build_kiln_io logs the sensor / SSR / watchdog detail it sets up.
     let (sensor, ssr, watchdog) = platform::build_kiln_io(p, config);
     let mut controller = Controller::new(
         sensor,
@@ -213,6 +229,7 @@ async fn control_task(
     );
 
     // Core 1 hardware is constructed — release Core 0's boot gate (ReadyFlag).
+    log::info!(target: "ctrl", "core1: hardware ready, control loop starting");
     READY.signal(());
 
     let (sub_ticks, sub_ms) = controller.timing();
@@ -371,6 +388,7 @@ async fn core0_main(
         let id = kiln_app::server::WEB_TASK_POOL_SIZE + i;
         spawner.spawn(kiln_app::server::web_task(id, usb_stack, app, web_cfg, port).unwrap());
     }
+    log::info!(target: "boot", "usb-ncm up at 192.168.7.1 ({} workers); web/logs reachable over USB", kiln_app::server::SECONDARY_WEB_WORKERS);
 
     // Gate on Core 1 hardware-ready (`main.py:235-242`, ReadyFlag) — bounded and
     // NON-FATAL. A ready Core 1 unlocks firing; if it never signals, the board
@@ -382,9 +400,10 @@ async fn core0_main(
         .await
         .is_ok();
     if ready {
+        log::info!(target: "boot", "core1 ready — firing enabled");
         kiln_app::server::set_controller_ready();
     } else {
-        log::warn!("Core 1 not ready after 20s — degraded mode: serving logs, firing disabled");
+        log::warn!(target: "boot", "core1 not ready after 20s — degraded mode: serving logs, firing disabled");
     }
 
     // Crash recovery + CSV logging — only with a live controller. Both need Core 1's
@@ -409,7 +428,9 @@ async fn core0_main(
     // USB-NCM is the recovery path if the saved creds are wrong. An unconfigured
     // board serves the open setup AP instead.
     if config.wifi_is_configured() {
+        log::info!(target: "boot", "wifi: STA mode, joining \"{}\"", config.wifi_ssid.as_str());
         let (sta_stack, control) = platform::init_network(&spawner, p, config).await;
+        log::info!(target: "boot", "wifi: boot join {}", if sta_stack.is_link_up() { "up" } else { "pending (monitor retrying)" });
         // Primary interface: the full worker pool.
         for id in 0..kiln_app::server::WEB_TASK_POOL_SIZE {
             spawner.spawn(kiln_app::server::web_task(id, sta_stack, app, web_cfg, port).unwrap());
@@ -430,6 +451,7 @@ async fn core0_main(
     } else {
         // Unconfigured: open SoftAP for first-time provisioning. No NTP (so
         // NTP-gated runs stay gated — fine, you're here to set WiFi, not fire).
+        log::info!(target: "boot", "wifi: unconfigured — starting provisioning SoftAP");
         let ap_stack = platform::init_softap(&spawner, p).await;
         for id in 0..kiln_app::server::SECONDARY_WEB_WORKERS {
             spawner.spawn(kiln_app::server::web_task(id, ap_stack, app, web_cfg, port).unwrap());
@@ -441,8 +463,12 @@ async fn core0_main(
     // the web server or WiFi. The kiln-app `lcd_task` renders each status change
     // through the firmware `Display`. Works in either radio mode.
     if config.lcd_enabled {
-        if let Some(display) = platform::init_display(lcd, config) {
-            spawner.spawn(kiln_app::server::lcd_task(status, display).unwrap());
+        match platform::init_display(lcd, config) {
+            Some(display) => {
+                log::debug!(target: "boot", "lcd: initialised");
+                spawner.spawn(kiln_app::server::lcd_task(status, display).unwrap());
+            }
+            None => log::warn!(target: "boot", "lcd: enabled but no device ACK — running headless"),
         }
     }
     spawner.spawn(platform::reboot_task(reboot).unwrap());

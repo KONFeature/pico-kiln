@@ -220,11 +220,23 @@ pub fn build_kiln_io(
     // registers read 0, so the loop would see a constant 0 °C. Invalid config
     // values fall back to the kiln defaults (8 samples / 60 Hz), matching the
     // reference's `unwrap_or_default` behaviour.
-    let _ = sensor.init(cfg.thermocouple_type);
+    if sensor.init(cfg.thermocouple_type).is_err() {
+        log::warn!(target: "ctrl", "max31856: init (CR0/CR1) write failed — sensor may read faulted");
+    }
     let _ = sensor
         .set_averaging(Averaging::from_samples(cfg.thermocouple_averaging).unwrap_or_default());
     let _ = sensor.set_noise_filter(NoiseFilter::from_hz(cfg.mains_frequency).unwrap_or_default());
-    let _ = sensor.start_autoconverting();
+    if sensor.start_autoconverting().is_err() {
+        log::warn!(target: "ctrl", "max31856: start_autoconverting failed — temp may read 0 \u{b0}C");
+    } else {
+        log::debug!(
+            target: "ctrl",
+            "max31856: tc={:?} avg={} mains={}Hz, autoconvert on",
+            cfg.thermocouple_type,
+            cfg.thermocouple_averaging,
+            cfg.mains_frequency,
+        );
+    }
 
     // Select the configured SSR pins from the reserved pool, in config order.
     let mut pool: [Option<(u8, Output<'static>)>; MAX_SSR] = p.ssr_pool.map(Some);
@@ -251,6 +263,14 @@ pub fn build_kiln_io(
     // Publish the mask for the RAM-resident panic de-energise. (Unselected pool
     // `Output`s drop here, releasing their pins.)
     SSR_PIN_MASK.store(mask, core::sync::atomic::Ordering::Release);
+    log::debug!(
+        target: "ctrl",
+        "ssr: {} relay(s) wanted={:?} active gpio-mask={:#010x} stagger={}ms",
+        relays.len(),
+        cfg.ssr_pin.as_slice(),
+        mask,
+        cfg.ssr_stagger_delay_ms(),
+    );
     let ssr = ConfiguredSsr::new(relays, cfg.ssr_stagger_delay_ms());
 
     // Watchdog per ENABLE_WATCHDOG. When disabled, `p.watchdog` is simply dropped.
@@ -262,6 +282,11 @@ pub fn build_kiln_io(
     } else {
         MaybeWatchdog::Disabled
     };
+    if cfg.enable_watchdog {
+        log::debug!(target: "ctrl", "watchdog: enabled, {}ms timeout", cfg.watchdog_timeout);
+    } else {
+        log::warn!(target: "ctrl", "watchdog: DISABLED — a hung control core will not auto-reset");
+    }
 
     (sensor, ssr, watchdog)
 }
@@ -1453,15 +1478,22 @@ enum RecoveryOutcome {
 /// Core 0 and shipped to Core 1, like every other run.
 pub async fn attempt_recovery(state: &AppState) -> Option<kiln_app::server::RecoveryLog> {
     match recover_from_pointer(state).await {
-        RecoveryOutcome::Resume(log) => Some(log),
+        RecoveryOutcome::Resume(log) => {
+            log::info!(target: "boot", "recovery: resuming run \"{}\" (+{}s)", log.filename.as_str(), log.elapsed_seconds);
+            Some(log)
+        }
         RecoveryOutcome::Decline => {
             // Consume the pointer: a stale/interrupted run is considered once and
             // can never be auto-resumed on a future boot (the load may have been
             // swapped). This is the core safety rule the operator asked for.
+            log::info!(target: "boot", "recovery: active run found but declined (stale/cooled/missing) — pointer cleared");
             state.storage.clear_active_run();
             None
         }
-        RecoveryOutcome::Nothing => None,
+        RecoveryOutcome::Nothing => {
+            log::debug!(target: "boot", "recovery: no interrupted run");
+            None
+        }
     }
 }
 
@@ -1697,9 +1729,13 @@ pub async fn ntp_task(_clock: &'static NtpClock, stack: Stack<'static>) -> ! {
         let synced = match ntp_query(stack).await {
             Some(unix) => {
                 NtpClock::set_unix_ms(unix as i64 * 1000);
+                log::info!(target: "net", "ntp: synced, unix={}", unix);
                 true
             }
-            None => false,
+            None => {
+                log::debug!(target: "net", "ntp: query failed, retry in 60s");
+                false
+            }
         };
         let wait_s = if synced { 3600 } else { 60 };
         embassy_time::Timer::after(Duration::from_secs(wait_s)).await;

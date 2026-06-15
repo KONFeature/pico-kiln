@@ -38,6 +38,6 @@
   "MAX_RECOVERY_TEMP_DELTA": 30,
   "ENABLE_WATCHDOG": true,
   "WATCHDOG_TIMEOUT": 8000,
-  "LOG_LEVEL": "info",
+  "LOG_LEVEL": "debug",
   "LOG_TO_FLASH": true
 }
