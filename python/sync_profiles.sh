@@ -24,15 +24,18 @@ if ! command -v mpremote &> /dev/null; then
     exit 1
 fi
 
+# Profiles live at repo root (shared by both rust and python firmware)
+PROFILES_DIR="../profiles"
+
 # Check if profiles directory exists locally
-if [ ! -d "profiles" ]; then
-    echo -e "${RED}Error: profiles/ directory not found${NC}"
-    echo "Please create a profiles/ directory with .json profile files"
+if [ ! -d "$PROFILES_DIR" ]; then
+    echo -e "${RED}Error: $PROFILES_DIR/ directory not found${NC}"
+    echo "Please create a profiles/ directory at the repo root with .json profile files"
     exit 1
 fi
 
 # Check if there are any profile files
-if [ -z "$(ls -A profiles/*.json 2>/dev/null)" ]; then
+if [ -z "$(ls -A $PROFILES_DIR/*.json 2>/dev/null)" ]; then
     echo -e "${YELLOW}Warning: No .json files found in profiles/ directory${NC}"
     echo "Nothing to upload"
     exit 0
@@ -62,7 +65,7 @@ echo ""
 PROFILE_FILES=()
 count=0
 
-for file in profiles/*.json; do
+for file in $PROFILES_DIR/*.json; do
     if [ -f "$file" ]; then
         filename=$(basename "$file")
         echo "  → $filename"

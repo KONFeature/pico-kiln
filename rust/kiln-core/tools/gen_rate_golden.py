@@ -16,7 +16,7 @@ import os
 
 THIS = os.path.abspath(__file__)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(THIS))))
-SRC = os.path.join(REPO_ROOT, "kiln", "rate_monitor.py")
+SRC = os.path.join(REPO_ROOT, "python", "kiln", "rate_monitor.py")
 OUT = os.path.join(REPO_ROOT, "rust", "kiln-core", "tests", "fixtures", "rate_golden.csv")
 
 WINDOWS = [60.0, 120.0, 600.0]

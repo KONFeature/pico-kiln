@@ -110,7 +110,9 @@ else
     echo "  -> No lib folder found (this is OK if you don't have external libraries yet)"
 fi
 
-if [ -d "$DEPLOY_DIR/static" ] && [ "$(ls -A "$DEPLOY_DIR/static" 2>/dev/null)" ]; then
+# Static assets are shared and live at repo root; in source mode read from ../static
+if [ "$DEPLOY_DIR" = "." ]; then STATIC_SRC="../static"; else STATIC_SRC="$DEPLOY_DIR/static"; fi
+if [ -d "$STATIC_SRC" ] && [ "$(ls -A "$STATIC_SRC" 2>/dev/null)" ]; then
     echo "  -> static/ (recursive)"
     HAS_STATIC=true
 else
@@ -148,7 +150,7 @@ if [ "$HAS_LIB" = true ]; then
 fi
 
 if [ "$HAS_STATIC" = true ]; then
-    CMD="$CMD cp -r \"$DEPLOY_DIR/static/\"* :static/ +"
+    CMD="$CMD cp -r \"$STATIC_SRC/\"* :static/ +"
 fi
 
 # Always copy kiln and server

@@ -27,7 +27,7 @@ import sys
 
 THIS = os.path.abspath(__file__)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(THIS))))
-SRC = os.path.join(REPO_ROOT, "server", "recovery.py")
+SRC = os.path.join(REPO_ROOT, "python", "server", "recovery.py")
 OUT = os.path.join(REPO_ROOT, "rust", "kiln-core", "tests", "fixtures", "recovery_golden.csv")
 
 # A filename the in-body profile-name split accepts: rsplit('_', 2) -> 3 parts.

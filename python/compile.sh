@@ -103,7 +103,7 @@ compile_file() {
     if [ "$MINIFY" = true ]; then
         # Step 1: Remove print statements using AST
         local temp_no_prints="$TEMP_DIR/no_prints_${filename}"
-        python3 scripts/remove_prints.py "$src_file" "$temp_no_prints"
+        python3 remove_prints.py "$src_file" "$temp_no_prints"
 
         # Step 2: Minify the result
         local temp_minified="$TEMP_DIR/minified_${filename}"
@@ -186,10 +186,10 @@ for file in main.py boot.py config.py; do
     fi
 done
 
-# Copy static directory if it exists
-if [ -d "static" ]; then
+# Copy static directory if it exists (shared web assets live at repo root)
+if [ -d "../static" ]; then
     echo "  -> static/ (non-Python assets)"
-    cp -r static "$BUILD_DIR/"
+    cp -r ../static "$BUILD_DIR/"
 fi
 
 # Clean up temp directory if it exists

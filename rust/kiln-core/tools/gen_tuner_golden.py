@@ -23,7 +23,7 @@ import types
 
 THIS = os.path.abspath(__file__)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(THIS))))
-SRC = os.path.join(REPO_ROOT, "kiln", "tuner.py")
+SRC = os.path.join(REPO_ROOT, "python", "kiln", "tuner.py")
 FIX_DIR = os.path.join(REPO_ROOT, "rust", "kiln-core", "tests", "fixtures")
 
 STAGE = {"running": 0, "complete": 1, "error": 2}

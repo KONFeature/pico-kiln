@@ -16,7 +16,8 @@ if ! command -v mpremote &> /dev/null; then
 fi
 
 # Create local logs directory if it doesn't exist
-LOCAL_LOG_DIR="scripts/logs"
+# Logs land in the shared analysis dir at repo root (scripts/ stays at root)
+LOCAL_LOG_DIR="../scripts/logs"
 mkdir -p "$LOCAL_LOG_DIR"
 
 echo "Connecting to Pico..."

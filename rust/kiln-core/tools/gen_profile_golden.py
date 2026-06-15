@@ -23,7 +23,7 @@ import os
 
 THIS = os.path.abspath(__file__)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(THIS))))
-SRC = os.path.join(REPO_ROOT, "kiln", "profile.py")
+SRC = os.path.join(REPO_ROOT, "python", "kiln", "profile.py")
 OUT = os.path.join(REPO_ROOT, "rust", "kiln-core", "tests", "fixtures", "profile_golden.csv")
 
 KIND = {"ramp": "r", "hold": "h", "cooling": "c"}

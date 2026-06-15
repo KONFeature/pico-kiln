@@ -34,7 +34,7 @@ import types
 
 THIS = os.path.abspath(__file__)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(THIS))))
-SRC = os.path.join(REPO_ROOT, "kiln", "hardware.py")
+SRC = os.path.join(REPO_ROOT, "python", "kiln", "hardware.py")
 OUT = os.path.join(REPO_ROOT, "rust", "kiln-core", "tests", "fixtures", "ssr_schedule_golden.csv")
 
 CYCLE_TIME = 2.0  # seconds -> 2000 ms window

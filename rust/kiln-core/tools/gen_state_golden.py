@@ -32,7 +32,7 @@ import types
 
 THIS = os.path.abspath(__file__)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(THIS))))
-KILN_DIR = os.path.join(REPO_ROOT, "kiln")
+KILN_DIR = os.path.join(REPO_ROOT, "python", "kiln")
 FIX_DIR = os.path.join(REPO_ROOT, "rust", "kiln-core", "tests", "fixtures")
 KIND = {"ramp": "r", "hold": "h", "cooling": "c"}
 

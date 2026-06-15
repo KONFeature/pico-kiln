@@ -25,7 +25,7 @@ import types
 # --- Locate repo root relative to this file: rust/kiln-core/tools/<this> ---
 THIS = os.path.abspath(__file__)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(THIS))))
-PID_PATH = os.path.join(REPO_ROOT, "kiln", "pid.py")
+PID_PATH = os.path.join(REPO_ROOT, "python", "kiln", "pid.py")
 OUT_PATH = os.path.join(
     REPO_ROOT, "rust", "kiln-core", "tests", "fixtures", "pid_golden.csv"
 )

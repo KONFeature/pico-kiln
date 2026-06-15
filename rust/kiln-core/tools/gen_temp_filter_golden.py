@@ -29,7 +29,7 @@ import types
 
 THIS = os.path.abspath(__file__)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(THIS))))
-SRC = os.path.join(REPO_ROOT, "kiln", "hardware.py")
+SRC = os.path.join(REPO_ROOT, "python", "kiln", "hardware.py")
 OUT = os.path.join(REPO_ROOT, "rust", "kiln-core", "tests", "fixtures", "temp_filter_golden.csv")
 
 OFFSET = 0.0
