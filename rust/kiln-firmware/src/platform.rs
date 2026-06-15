@@ -1599,9 +1599,10 @@ async fn recover_from_pointer(state: &AppState) -> RecoveryOutcome {
     })
 }
 
-/// NTP epoch (1900-01-01) → Unix epoch (1970-01-01), in seconds. `sntpc` reports
-/// `NtpResult.seconds` in the NTP era, so subtract this to get Unix time.
-const NTP_UNIX_DELTA: u64 = 2_208_988_800;
+/// Smallest Unix time we accept as a real NTP sync (2023-11-14). A malformed or
+/// empty UDP response parses to a tiny `seconds`, and a 1970 wall clock must never
+/// be latched as "synced" (it would mark `clock_synced()` true with garbage time).
+const NTP_MIN_PLAUSIBLE: u64 = 1_700_000_000;
 /// Fixed local UDP port for the NTP client (smoltcp rejects binding port 0).
 const NTP_LOCAL_PORT: u16 = 50_123;
 
@@ -1700,7 +1701,13 @@ async fn ntp_query(stack: Stack<'static>) -> Option<u64> {
     .await
     .ok()?
     .ok()?;
-    Some((result.seconds as u64).saturating_sub(NTP_UNIX_DELTA))
+    // sntpc 0.10 already converts to the Unix epoch (`NtpTimestamp::from` subtracts
+    // the 1900→1970 delta internally), so `result.seconds` IS Unix time. The old
+    // code subtracted that delta a SECOND time, underflowing every real timestamp
+    // (~1.7e9) past zero → `saturating_sub` pinned it to 0 → a 1970 wall clock on
+    // every "successful" sync. Use it directly, and reject implausible values.
+    let unix = result.seconds as u64;
+    (unix >= NTP_MIN_PLAUSIBLE).then_some(unix)
 }
 
 /// NTP task: sync the wall clock via `sntpc`, then re-sync hourly (retrying

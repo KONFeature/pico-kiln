@@ -68,12 +68,10 @@ pub const WEB_TASK_POOL_SIZE: usize = api::MAX_CONCURRENT_CONNECTIONS;
 pub const SECONDARY_WEB_WORKERS: usize = 1;
 
 /// Total `web_task` instances that can be live at once = the macro `pool_size`.
-/// USB-NCM is currently disabled in the firmware (`USE_USB_NCM = false`), so the
-/// secondary workers no longer need their own pool slots: the worst case is now a
-/// configured STA boot using `WEB_TASK_POOL_SIZE` workers, and unconfigured/SoftAP
-/// uses `SECONDARY_WEB_WORKERS` (= 1) ≤ that. If USB-NCM is re-enabled, restore
-/// `WEB_TASK_POOL_SIZE + SECONDARY_WEB_WORKERS` so the simultaneous STA+USB pools fit.
-pub const WEB_TASK_POOL_TOTAL: usize = WEB_TASK_POOL_SIZE;
+/// USB-NCM is re-enabled as the out-of-band log/diagnostic channel, so a configured
+/// STA boot runs both pools simultaneously: `WEB_TASK_POOL_SIZE` on WiFi plus
+/// `SECONDARY_WEB_WORKERS` on USB. The pool must hold both at once.
+pub const WEB_TASK_POOL_TOTAL: usize = WEB_TASK_POOL_SIZE + SECONDARY_WEB_WORKERS;
 
 /// Core 0 → Core 1 command channel (typed [`Command`], no heap).
 pub type CommandChannel = Channel<CriticalSectionRawMutex, Command, COMMAND_DEPTH>;

@@ -378,13 +378,13 @@ async fn core0_main(
     let web_cfg = platform::web_config();
     let port = config.web_server_port;
 
-    // --- USB-NCM: the wired escape hatch — DISABLED for now -------------------
-    // Turned off to focus on the WiFi path (the main use case): it cuts executor
-    // contention so `net_task` drains the cyw43 RX queue faster (fewer "failed to
-    // push rxd packet" drops), and frees its ~84 KB worker slot for the 3rd WiFi
-    // worker (see WEB_TASK_POOL_TOTAL). Flip to `true` to restore the wired path —
-    // also restore WEB_TASK_POOL_TOTAL = WEB_TASK_POOL_SIZE + SECONDARY_WEB_WORKERS.
-    const USE_USB_NCM: bool = false;
+    // --- USB-NCM: the wired escape hatch — ON as the out-of-band log channel ---
+    // Re-enabled to debug the WiFi rxd-drop issue: WiFi is unreliable (inbound GET
+    // packets dropped by the 4-deep cyw43 RX channel), so `/api/logs` is unreachable
+    // over WiFi. USB-NCM (192.168.7.1) is radio-independent, giving a reliable path
+    // to read the worker's-eye view while WiFi fails. Pair with
+    // WEB_TASK_POOL_TOTAL = WEB_TASK_POOL_SIZE + SECONDARY_WEB_WORKERS (restored).
+    const USE_USB_NCM: bool = true;
     if USE_USB_NCM {
         // Comes up whenever the cable is enumerated, serving the same router as WiFi,
         // so config + files + logs are reachable over USB regardless of WiFi/Core 1.
