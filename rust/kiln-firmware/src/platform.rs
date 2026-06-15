@@ -1170,8 +1170,13 @@ async fn init_cyw43(
     spawner.spawn(cyw43_task(runner).unwrap());
 
     control.init(clm).await;
+    // No power management: the kiln is mains-powered, so radio sleep buys nothing,
+    // and PowerSave is what caused the bursty "failed to push rxd packet" RX-queue
+    // overflows — the AP buffers packets while the radio sleeps, then the whole
+    // burst lands at wake and overruns the cyw43→net channel. `None` keeps the
+    // radio awake so packets arrive steadily and the stack drains them in step.
     control
-        .set_power_management(PowerManagementMode::PowerSave)
+        .set_power_management(PowerManagementMode::None)
         .await;
 
     (net_device, control)

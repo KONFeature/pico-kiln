@@ -19,10 +19,12 @@ use kiln_core::tuner::TuningMode;
 /// concurrently); that floor is not reducible from handler code. The response
 /// layer keeps `ApiResponse` tiny (render inputs only, buffered once in `write_to`)
 /// — worth ~12 KB/worker and makes new routes cheap, but it does not move that
-/// floor. 2 is ample for a single-user LAN kiln UI (status polling + the occasional
-/// action); a 3rd concurrent connection queues in the TCP backlog until a worker
-/// frees. The reference used 3.
-pub const MAX_CONCURRENT_CONNECTIONS: usize = 2;
+/// floor. 3 matches the reference and gives a single-user LAN UI headroom for the
+/// browser's parallel connections (status poll + page assets) so a fresh request
+/// is not starved while another worker holds a keep-alive socket; a 4th would queue
+/// in the TCP backlog. The RAM for the 3rd worker is reclaimed by disabling USB-NCM
+/// (see `WEB_TASK_POOL_TOTAL`), so this stays RAM-neutral versus the 2-worker pool.
+pub const MAX_CONCURRENT_CONNECTIONS: usize = 3;
 /// Max upload size in bytes (`MAX_UPLOAD_SIZE`, 500 KB).
 pub const MAX_UPLOAD_SIZE: u32 = 512_000;
 /// Max buffered non-upload request body (`MAX_JSON_BODY`). Command/config JSON

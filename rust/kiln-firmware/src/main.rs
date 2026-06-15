@@ -378,17 +378,23 @@ async fn core0_main(
     let web_cfg = platform::web_config();
     let port = config.web_server_port;
 
-    // --- USB-NCM: always on (radio-independent), the wired escape hatch -------
-    // Comes up whenever the cable is enumerated, serving the same router as WiFi,
-    // so config + files + logs are reachable over USB regardless of WiFi or Core 1
-    // state. Workers spawn BEFORE the radio branch (and before the READY wait) so
-    // the wired UI is never starved by a slow/failed WiFi join or a dead Core 1.
-    let usb_stack = platform::init_usb_ncm(&spawner, usb);
-    for i in 0..kiln_app::server::SECONDARY_WEB_WORKERS {
-        let id = kiln_app::server::WEB_TASK_POOL_SIZE + i;
-        spawner.spawn(kiln_app::server::web_task(id, usb_stack, app, web_cfg, port).unwrap());
+    // --- USB-NCM: the wired escape hatch — DISABLED for now -------------------
+    // Turned off to focus on the WiFi path (the main use case): it cuts executor
+    // contention so `net_task` drains the cyw43 RX queue faster (fewer "failed to
+    // push rxd packet" drops), and frees its ~84 KB worker slot for the 3rd WiFi
+    // worker (see WEB_TASK_POOL_TOTAL). Flip to `true` to restore the wired path —
+    // also restore WEB_TASK_POOL_TOTAL = WEB_TASK_POOL_SIZE + SECONDARY_WEB_WORKERS.
+    const USE_USB_NCM: bool = false;
+    if USE_USB_NCM {
+        // Comes up whenever the cable is enumerated, serving the same router as WiFi,
+        // so config + files + logs are reachable over USB regardless of WiFi/Core 1.
+        let usb_stack = platform::init_usb_ncm(&spawner, usb);
+        for i in 0..kiln_app::server::SECONDARY_WEB_WORKERS {
+            let id = kiln_app::server::WEB_TASK_POOL_SIZE + i;
+            spawner.spawn(kiln_app::server::web_task(id, usb_stack, app, web_cfg, port).unwrap());
+        }
+        log::info!(target: "boot", "usb-ncm up at 192.168.7.1 ({} workers); web/logs reachable over USB", kiln_app::server::SECONDARY_WEB_WORKERS);
     }
-    log::info!(target: "boot", "usb-ncm up at 192.168.7.1 ({} workers); web/logs reachable over USB", kiln_app::server::SECONDARY_WEB_WORKERS);
 
     // Gate on Core 1 hardware-ready (`main.py:235-242`, ReadyFlag) — bounded and
     // NON-FATAL. A ready Core 1 unlocks firing; if it never signals, the board
