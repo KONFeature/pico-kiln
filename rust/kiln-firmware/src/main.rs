@@ -329,11 +329,11 @@ async fn core0_main(
     let spawner = unsafe { embassy_executor::Spawner::for_current_executor() }.await;
     let AuxPeriphs { lcd, usb } = aux;
 
-    // --- Network-independent bring-up first ---------------------------------
-    // Build the wall clock and shared AppState. None of this needs WiFi, so crash
-    // recovery + control + logging come up even if the AP is slow or absent (a
-    // power blip mid-firing must resume the firing regardless of connectivity;
-    // Core 1 already runs independently).
+    // --- Serve-the-logs-no-matter-what bring-up -----------------------------
+    // The boot order's overriding goal: the diagnosable surface (web + logs +
+    // files) must come up before ANYTHING that can block or depend on Core 1, so
+    // however boot goes wrong, the operator can still reach the logs. None of this
+    // needs WiFi or Core 1.
     let clock: &'static NtpClock = platform::init_clock();
     let state = AppState {
         commands,
@@ -344,65 +344,63 @@ async fn core0_main(
         config,
     };
 
-    // Gate on Core 1 hardware-ready (`main.py:235-242`, ReadyFlag). If Core 1
-    // never signals within 20 s the kiln is unsafe to operate — reset and retry.
-    // WiFi-independent, and kept ahead of the (potentially slow) network bring-up.
-    if with_timeout(Duration::from_secs(20), READY.wait())
-        .await
-        .is_err()
-    {
-        cortex_m::peripheral::SCB::sys_reset();
-    }
-
-    // Crash recovery — BEFORE the network. It needs only flash + Core 1's live
-    // temperature (published from the first tick now that QuietMode is gone), never
-    // the network: the run to resume is the `active_run` pointer and the decision
-    // is temp-delta gated (kiln_core::recovery), not time/NTP based. Returns the
-    // interrupted run's log file so the CSV logger continues it (append + RECOVERY
-    // row) rather than starting fresh.
-    let recovery = platform::attempt_recovery(&state).await;
-
-    // Start CSV logging now (flash only, no network) so a resumed firing — or one
-    // started the instant the web comes up — is logged from its first row.
-    spawner.spawn(
-        kiln_app::server::csv_logger_task(status, storage, clock, config, recovery).unwrap(),
-    );
-
-    // Logging tasks: bind the wall clock and start the Core 0 drain + unified flash
-    // flusher. The global logger was installed in `main` before the split, so any
-    // lines emitted during bring-up are already queued; the drain task fans them to
-    // the RAM ring (`/api/logs` snapshot) and — when LOG_TO_FLASH — the flash
-    // channel. `flash_flush_task` persists the diag log and the CSV rows coalesced
-    // into one flash-paused window, running a diag boot prune first.
+    // Logging first: bind the wall clock and start the Core 0 drain + unified flash
+    // flusher. The global logger was installed in `main` before the split, so lines
+    // emitted during bring-up are already queued; the drain fans them to the RAM
+    // ring (`/api/logs`) and — when LOG_TO_FLASH — the flash channel.
     kiln_app::logging::set_clock(clock);
     spawner.spawn(kiln_app::logging::log_drain_task().unwrap());
     spawner.spawn(kiln_app::logging::flash_flush_task(storage, clock).unwrap());
 
-    // --- USB-NCM: always on (radio-independent), the wired escape hatch -------
-    // Comes up whenever the cable is enumerated, serving the same router as WiFi,
-    // so config + files are reachable over USB regardless of WiFi state. This is
-    // what breaks the provisioning chicken-and-egg.
-    let usb_stack = platform::init_usb_ncm(&spawner, usb);
-
     // `make_app` bakes the shared `AppState` into the router; picoserve 0.18 then
     // serves the stateless `Router<P>` aliased as `AppRouter`, stored in a
-    // StaticCell so the `#[task]` web_task stays non-generic. (`AppState` is
-    // `Copy`, so recovery's borrow above leaves `state` usable here.) The one
-    // router is shared across every stack.
+    // StaticCell so the `#[task]` web_task stays non-generic. (`AppState` is `Copy`,
+    // so `state` stays usable for recovery below.) One router, shared across stacks.
     static APP: StaticCell<kiln_app::server::AppRouter> = StaticCell::new();
     let app: &'static _ = APP.init(kiln_app::server::make_app(state));
     let web_cfg = platform::web_config();
     let port = config.web_server_port;
 
-    // USB-NCM workers, always — spawned BEFORE the radio branch so the wired web
-    // UI is reachable even while STA bring-up is still in its (bounded) connect
-    // window, and can never be starved by a slow/failed WiFi join. IDs are offset
-    // past the primary pool so every live `web_task` has a distinct id (pool size
-    // = WEB_TASK_POOL_TOTAL).
+    // --- USB-NCM: always on (radio-independent), the wired escape hatch -------
+    // Comes up whenever the cable is enumerated, serving the same router as WiFi,
+    // so config + files + logs are reachable over USB regardless of WiFi or Core 1
+    // state. Workers spawn BEFORE the radio branch (and before the READY wait) so
+    // the wired UI is never starved by a slow/failed WiFi join or a dead Core 1.
+    let usb_stack = platform::init_usb_ncm(&spawner, usb);
     for i in 0..kiln_app::server::SECONDARY_WEB_WORKERS {
         let id = kiln_app::server::WEB_TASK_POOL_SIZE + i;
         spawner.spawn(kiln_app::server::web_task(id, usb_stack, app, web_cfg, port).unwrap());
     }
+
+    // Gate on Core 1 hardware-ready (`main.py:235-242`, ReadyFlag) — bounded and
+    // NON-FATAL. A ready Core 1 unlocks firing; if it never signals, the board
+    // stays in DEGRADED MODE (web/logs/files up, start-firing endpoints reject)
+    // instead of the old reset loop, which hid every Core-1 fault behind an
+    // undiagnosable reboot. Safe either way: the SSR is de-energised (relays init
+    // low and the control loop never ran), so nothing can be left energised.
+    let ready = with_timeout(Duration::from_secs(20), READY.wait())
+        .await
+        .is_ok();
+    if ready {
+        kiln_app::server::set_controller_ready();
+    } else {
+        log::warn!("Core 1 not ready after 20s — degraded mode: serving logs, firing disabled");
+    }
+
+    // Crash recovery + CSV logging — only with a live controller. Both need Core 1's
+    // temperature; running recovery against a dead controller's idle 0 °C would
+    // consume the active-run pointer and forfeit the resume. Skipping it in degraded
+    // mode lets a transient Core-1 hang + watchdog reset recover the run on the next
+    // healthy boot. Recovery returns the interrupted run's log file so the CSV logger
+    // continues it (append + RECOVERY row) rather than starting fresh.
+    let recovery = if ready {
+        platform::attempt_recovery(&state).await
+    } else {
+        None
+    };
+    spawner.spawn(
+        kiln_app::server::csv_logger_task(status, storage, clock, config, recovery).unwrap(),
+    );
 
     // --- Radio: STA when configured, else the provisioning SoftAP ------------
     // cyw43 cannot do STA and AP at once. A configured board makes a bounded STA

@@ -39,6 +39,24 @@ use crate::{config, csv, html, json, profile_json};
 pub const COMMAND_DEPTH: usize = 3;
 /// Latest-status broadcast consumers: web pollers + CSV logger + LCD + recovery.
 pub const STATUS_CONSUMERS: usize = 4;
+
+/// Set true once Core 1 has signalled its sensor/SSR/watchdog are built (the boot
+/// READY handshake). The firmware calls [`set_controller_ready`] when that fires.
+/// Until then the board runs in **degraded mode** — the web server, logs, and file
+/// access are up so the operator can diagnose, but the start-firing endpoints
+/// ([`run`]/[`schedule`]/[`tuning_start`]) reject so a firing is never launched
+/// against a controller that cannot read temperature or drive the SSR.
+static CONTROLLER_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Firmware hook: mark Core 1 ready (called once the READY handshake fires).
+pub fn set_controller_ready() {
+    CONTROLLER_READY.store(true, core::sync::atomic::Ordering::Release);
+}
+
+/// Whether Core 1 is up and able to control the kiln (gates the start endpoints).
+fn controller_ready() -> bool {
+    CONTROLLER_READY.load(core::sync::atomic::Ordering::Acquire)
+}
 /// picoserve worker pool size for the *primary* interface (WiFi STA) — the
 /// reference's `MAX_CONCURRENT_CONNECTIONS`.
 pub const WEB_TASK_POOL_SIZE: usize = api::MAX_CONCURRENT_CONNECTIONS;
@@ -622,6 +640,21 @@ mod web {
         }
     }
 
+    /// Degraded-mode gate: reject a start-firing request when Core 1 has not come
+    /// up (no sensor / SSR). `None` means the controller is ready. Keeps the board
+    /// reachable for diagnosis without ever launching a firing against a dead
+    /// controller (the SSR would stay off anyway, but fail loudly, not silently).
+    fn reject_if_controller_offline() -> Option<ApiResponse> {
+        if controller_ready() {
+            None
+        } else {
+            Some(ApiResponse::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Controller offline: Core 1 (sensor/SSR) not ready — cannot start a firing",
+            ))
+        }
+    }
+
     /// Pre-run flash headroom gate. Returns the rejection `ApiResponse` when free
     /// space is below [`api::MIN_FREE_BYTES_FOR_RUN`], or when the free-space query
     /// itself fails (fail closed). `None` means there is room to start a firing.
@@ -670,6 +703,9 @@ mod web {
     }
 
     async fn run(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
+        if let Some(reject) = reject_if_controller_offline() {
+            return reject;
+        }
         if !state.clock_synced() {
             return ApiResponse::error(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -694,6 +730,9 @@ mod web {
     }
 
     async fn schedule(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
+        if let Some(reject) = reject_if_controller_offline() {
+            return reject;
+        }
         if !state.clock_synced() {
             return ApiResponse::error(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -731,6 +770,9 @@ mod web {
     }
 
     async fn tuning_start(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
+        if let Some(reject) = reject_if_controller_offline() {
+            return reject;
+        }
         if !state.clock_synced() {
             return ApiResponse::error(
                 StatusCode::SERVICE_UNAVAILABLE,

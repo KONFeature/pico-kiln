@@ -285,7 +285,11 @@ impl Default for KilnConfig {
 
             logging_interval: 30,
             max_recovery_temp_delta: 30.0,
-            enable_watchdog: false,
+            // Default ON: the watchdog is the only backstop that resets the chip
+            // if Core 1 hangs/panics mid-firing (the control loop feeds it every
+            // ~temp_read_interval = 1 s, well inside the 8 s timeout). The
+            // reference shipped it off; we default it on for unattended firing.
+            enable_watchdog: true,
             watchdog_timeout: 8000,
             log_level: LogLevel::Info,
             log_to_flash: true,
@@ -879,8 +883,8 @@ mod tests {
         assert_eq!(c.ssr_cycle_time, 20.0);
         assert_eq!(c.ssr_stagger_delay, 0.01);
         assert_eq!(c.max_temp, 1300.0);
-        // Watchdog defaults OFF, like the reference.
-        assert!(!c.enable_watchdog);
+        // Watchdog defaults ON (unattended-firing backstop for a hung Core 1).
+        assert!(c.enable_watchdog);
         assert_eq!(c.watchdog_timeout, 8000);
         // Recovery + logging.
         assert_eq!(c.max_recovery_temp_delta, 30.0);

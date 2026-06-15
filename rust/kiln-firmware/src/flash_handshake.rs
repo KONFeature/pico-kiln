@@ -31,6 +31,16 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
+use embassy_time::{Duration, Instant};
+
+/// How long Core 0 will wait for Core 1 to park before giving up. A healthy Core 1
+/// parks within microseconds (it selects on [`PAUSE_WAKE`]), so this bound only
+/// trips when Core 1 is wedged or dead (e.g. panicked: its panic handler
+/// de-energises the SSR and halts, never parking). Without it, `request_pause`
+/// busy-spins forever and the whole Core 0 executor — web server included —
+/// freezes on the first flash write after a Core 1 fault. 500 ms is ~1000× the
+/// real park latency.
+const PARK_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// No flash operation in progress; Core 1 runs normally.
 pub const IDLE: u8 = 0;
@@ -55,12 +65,25 @@ pub static PAUSE_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Core 0: request a flash pause and block until Core 1 has parked (SSR off).
 /// Call immediately before a flash erase/program.
-pub fn request_pause() {
+///
+/// Returns `true` once Core 1 has parked — the caller MAY then program flash.
+/// Returns `false` if Core 1 never parked within [`PARK_TIMEOUT`] (it is wedged or
+/// dead): the caller MUST skip the flash write, because the SSR-off guarantee the
+/// handshake provides did not happen. The flag is reset to [`IDLE`] on timeout so a
+/// later, healthy write is not blocked by the stale REQUEST.
+#[must_use]
+pub fn request_pause() -> bool {
     FLASH_LOCK.store(REQUEST, Ordering::Release);
     PAUSE_WAKE.signal(()); // wake Core 1's sub-tick wait now, don't wait for its poll
+    let deadline = Instant::now() + PARK_TIMEOUT;
     while FLASH_LOCK.load(Ordering::Acquire) != PARKED {
+        if Instant::now() >= deadline {
+            FLASH_LOCK.store(IDLE, Ordering::Release); // unstick the stale request
+            return false;
+        }
         core::hint::spin_loop();
     }
+    true
 }
 
 /// Core 0: release Core 1 after the flash write completes.

@@ -16,6 +16,9 @@ kiln-core = { path = "../kiln-core" }
 kiln-hal = { path = "../kiln-hal" }
 kiln-control = { path = "../kiln-control" }
 kiln-app = { path = "../kiln-app", features = ["embassy"] }
+# `log` facade for the few boot-path diagnostics emitted here (routes to the
+# global logger kiln-app installs → /api/logs ring + flash).
+log = "0.4"
 
 # embassy-executor 0.10 renamed the arch selector from `arch-cortex-m` to
 # `platform-cortex-m`.

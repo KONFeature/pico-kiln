@@ -539,8 +539,20 @@ impl FlashStorage {
     /// Run `write` between [`flash_handshake::request_pause`] and
     /// [`flash_handshake::release`] — the safety-critical wrapper around any
     /// flash program/erase (Core 1 de-energises the SSR and parks in RAM).
-    fn with_flash_paused<R>(&self, write: impl FnOnce() -> R) -> R {
-        flash_handshake::request_pause();
+    ///
+    /// If Core 1 never parks (wedged/dead — see `request_pause`), the write is
+    /// SKIPPED and `Err(StorageError)` returned: programming flash without the
+    /// SSR-off guarantee is the exact fire hazard the handshake exists to prevent,
+    /// and busy-spinning would freeze Core 0's web server too. The lost write is a
+    /// CSV row / log line / config save; the (default-on) watchdog resets the chip
+    /// shortly after, since a wedged Core 1 has also stopped feeding it.
+    fn with_flash_paused<T>(
+        &self,
+        write: impl FnOnce() -> Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        if !flash_handshake::request_pause() {
+            return Err(StorageError);
+        }
         let r = write();
         flash_handshake::release();
         r

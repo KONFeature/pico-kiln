@@ -138,4 +138,7 @@ config.py
 # Debug tool backups
 .debug_backups/
 
+# Pico filesystem backups
+backup/
+
 .omo/
