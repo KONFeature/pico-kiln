@@ -132,6 +132,15 @@ pub trait Storage {
     fn for_each(&self, dir: Directory, f: &mut dyn FnMut(&str, u64, u64));
     /// Remove `dir/name`.
     fn remove(&self, dir: Directory, name: &str) -> Result<(), StorageError>;
+    /// Remove several files inside ONE flash-paused + ONE mount window, so a
+    /// retention prune of K oldest files costs a single SSR pause instead of K. The
+    /// default loops [`remove`] (K windows); the on-device `FlashStorage` overrides
+    /// it to batch. A failed removal is skipped, not fatal — prune is best effort.
+    fn remove_batch(&self, victims: &[(Directory, &str)]) {
+        for (dir, name) in victims {
+            let _ = self.remove(*dir, name);
+        }
+    }
     /// Append `bytes` to `dir/name`; when `create` is set, truncate first (a new
     /// run's header). Used by the CSV logger.
     fn append(

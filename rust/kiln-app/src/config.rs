@@ -291,10 +291,10 @@ impl Default for KilnConfig {
             // reference shipped it off; we default it on for unattended firing.
             enable_watchdog: true,
             watchdog_timeout: 8000,
-            // Default DEBUG: the device is hard to attach a debugger to, so the
-            // boot/init trail (sensor + SSR + watchdog + network bring-up) is the
-            // primary diagnostic. Turn down to "info" via LOG_LEVEL once stable.
-            log_level: LogLevel::Debug,
+            // Default INFO: keeps the boot/init trail and run events without the
+            // per-tick DEBUG chatter that churns the diag flash. Raise to "debug"
+            // via LOG_LEVEL when diagnosing a specific issue.
+            log_level: LogLevel::Info,
             log_to_flash: true,
 
             lcd_enabled: false,
@@ -1083,9 +1083,9 @@ mod tests {
     }
 
     #[test]
-    fn log_level_defaults_to_debug_and_flash_on() {
+    fn log_level_defaults_to_info_and_flash_on() {
         let c = KilnConfig::default();
-        assert_eq!(c.log_level, LogLevel::Debug);
+        assert_eq!(c.log_level, LogLevel::Info);
         assert!(c.log_to_flash);
     }
 

@@ -731,6 +731,25 @@ impl kiln_app::server::Storage for FlashStorage {
         self.with_flash_paused(|| self.with_fs(|fs| fs.remove(&path)))
     }
 
+    fn remove_batch(&self, victims: &[(Directory, &str)]) {
+        if victims.is_empty() {
+            return;
+        }
+        // ONE flash-paused window + ONE mount for the whole retention prune, so K
+        // deletes cost a single SSR pause (Core 1 de-energises once). Each remove is
+        // best-effort: a bad path / missing file / lfs error is skipped, not fatal.
+        let _ = self.with_flash_paused(|| {
+            self.with_fs(|fs| {
+                for (dir, name) in victims {
+                    if let Some(path) = fs_path(dir_prefix(*dir), name) {
+                        let _ = fs.remove(&path);
+                    }
+                }
+                Ok(())
+            })
+        });
+    }
+
     fn upload_begin(&self) -> Result<(), StorageError> {
         self.upload.borrow_mut().len = 0; // discard any stale partial upload
         self.with_flash_paused(|| {

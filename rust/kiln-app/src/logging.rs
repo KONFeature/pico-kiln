@@ -107,12 +107,27 @@ static FLUSH_DONE: Signal<ThreadModeRawMutex, ()> = Signal::new();
 /// row that genuinely will not fit (buffer pathologically full) is dropped rather
 /// than blocking the control-status task — but the high-water early flush makes
 /// that unreachable in practice (one row per status tick, flusher runs each tick).
+/// Latches once a CSV row has been dropped, so the warning fires once per
+/// low-space episode (re-armed by a successful flush in `csv_clear_pending`)
+/// instead of on every dropped row.
+static CSV_DROP_WARNED: AtomicBool = AtomicBool::new(false);
+
 pub(crate) fn csv_push_row(row: &str) -> bool {
-    CSV_PENDING.lock(|b| {
+    let (over, dropped) = CSV_PENDING.lock(|b| {
         let mut b = b.borrow_mut();
-        let _ = b.push_str(row);
-        b.len() >= CSV_HIGH_WATER
-    })
+        let dropped = b.push_str(row).is_err();
+        (b.len() >= CSV_HIGH_WATER, dropped)
+    });
+    // Surface a dropped firing-data row (buffer full ⇒ flushes aren't draining it,
+    // i.e. the filesystem is full or writes are failing). Retention should make this
+    // unreachable; if it fires, the run is losing data. Logged outside the lock.
+    if dropped && !CSV_DROP_WARNED.swap(true, Ordering::Relaxed) {
+        log::warn!(
+            target: "kiln_app::logging",
+            "CSV row DROPPED — pending buffer full (flash space / writes failing)"
+        );
+    }
+    over
 }
 
 /// Record the run-log filename the pending rows belong to (set on the run-start
@@ -173,6 +188,8 @@ fn csv_take_into(scratch: &mut heapless::String<CSV_BUF_CAP>, name: &mut heaples
 /// `.await` has run since [`csv_take_into`] (so no new rows have been pushed).
 fn csv_clear_pending() {
     CSV_PENDING.lock(|b| b.borrow_mut().clear());
+    // A successful drain re-arms the drop warning for any later low-space episode.
+    CSV_DROP_WARNED.store(false, Ordering::Relaxed);
 }
 
 /// The global logger (a unit struct; all state lives in the statics above).
@@ -298,10 +315,6 @@ const DIAG_HIGH_WATER: usize = DIAG_BUF_CAP * 3 / 4;
 /// the live view, so flash only needs to survive a reboot, exactly like CSV. Was
 /// 2 s for diag alone, which fired the SSR-pause/flash handshake 60× more than CSV.
 const FLUSH_INTERVAL_S: u64 = 120;
-/// Max diag files scanned at boot. Far above the retention budget's worst case
-/// (256 KiB / 64 KiB = 4 active files); extras can only accrue from many short
-/// boots between prunes. Files beyond this are ignored by the boot scan.
-const MAX_SCAN_FILES: usize = 64;
 
 /// Build the `diag-NNNNNN.log` name for a suffix.
 fn diag_name(suffix: u32) -> heapless::String<24> {
@@ -322,8 +335,8 @@ fn parse_suffix(name: &str) -> Option<u32> {
 /// single-mount window (the coalescing point). Diag size accounting advances only
 /// on a successful diag write. CSV rows are cleared only on a successful write (so
 /// a failed flush retries them — recovery depends on it); the diag buffer is always
-/// cleared (diagnostic data, droppable, and clearing prevents it wedging while the
-/// budget is `stopped`).
+/// cleared (diagnostic data, droppable, and clearing prevents it wedging on a
+/// failed write).
 ///
 /// All synchronous: no `.await` runs between [`csv_take_into`] and [`csv_clear_pending`],
 /// so the CSV task cannot push a row in between and lose it to the clear.
@@ -332,13 +345,11 @@ fn flush_all(
     suffix: u32,
     diag_buf: &mut heapless::String<DIAG_BUF_CAP>,
     active_size: &mut u32,
-    total: &mut u32,
-    stopped: bool,
     csv_scratch: &mut heapless::String<CSV_BUF_CAP>,
     csv_name: &mut heapless::String<CSV_NAME_CAP>,
 ) {
     let has_csv = csv_take_into(csv_scratch, csv_name);
-    let write_diag = !stopped && !diag_buf.is_empty();
+    let write_diag = !diag_buf.is_empty();
     let diag_len = diag_buf.len() as u32;
     let diag_name_s = diag_name(suffix);
 
@@ -371,11 +382,10 @@ fn flush_all(
         }
         if write_diag {
             *active_size += diag_len;
-            *total += diag_len;
         }
     }
-    // Diag lines are diagnostic/droppable: cleared even on a failed write (and when
-    // `stopped`) so the buffer can't wedge. CSV rows are kept on failure (above).
+    // Diag lines are diagnostic/droppable: cleared even on a failed write so the
+    // buffer can't wedge. CSV rows are kept on failure (above) — never dropped here.
     diag_buf.clear();
 }
 
@@ -387,16 +397,11 @@ fn open_new_diag_file(
     storage: &'static dyn Storage,
     clock: &'static dyn Clock,
     suffix: u32,
-    total: &mut u32,
     active_size: &mut u32,
-    stopped: bool,
 ) {
-    if stopped {
-        return;
-    }
     // Reset unconditionally: on a write failure the new file does not exist, so
     // its "active size" is 0 — never the prior file's size (which would re-trigger
-    // rotation immediately and spin `suffix` forward until the hard-stop).
+    // rotation immediately and spin `suffix` forward).
     *active_size = 0;
     let name = diag_name(suffix);
     let mut header = heapless::String::<64>::new();
@@ -418,65 +423,130 @@ fn open_new_diag_file(
         .is_ok()
     {
         *active_size = header.len() as u32;
-        *total += header.len() as u32;
     }
 }
 
+/// How many diag files to keep. The eviction order is diag-first, so beyond a size
+/// deficit we *also* force the diag count down to this — bounding the many-small-
+/// files pile-up that a size-only target can't reclaim (each boot opens one diag
+/// file; a crash/short-boot loop leaves dozens of sub-rotation files whose total
+/// size stays under the free target, so a pure size prune never fires). 8 files ≈
+/// up to 512 KiB of recent diag retained for post-mortem.
+const MAX_DIAG_FILES: usize = 8;
+
+/// Free space down to `target_free` bytes (caller passes the already-known `free`,
+/// so this does not re-query) by deleting the most sacrificial files first: all
+/// diag files (oldest→newest, **excluding** `active_suffix`'s live file), then the
+/// oldest CSV runs (**excluding** the active run — the recovery pointer's file,
+/// which the live firing and crash recovery depend on). Independently of the size
+/// deficit it also evicts oldest diag down to [`MAX_DIAG_FILES`] (see there). The
+/// deletes run as ONE batched, SSR-paused window ([`Storage::remove_batch`]). Best
+/// effort: if evicting everything prunable still falls short (e.g. a single huge
+/// active run), it frees what it can; the caller's write may then fail and a
+/// dropped CSV row is surfaced by [`csv_push_row`].
+fn prune_to_free(storage: &dyn Storage, free: u64, target_free: u64, active_suffix: Option<u32>) {
+    // 0 when there is headroom — the count cap below can still have work to do.
+    let deficit = target_free.saturating_sub(free).min(u32::MAX as u64) as u32;
+
+    // The active run is the protected file (recovery pointer = source of truth).
+    let mut abuf = [0u8; CSV_NAME_CAP];
+    let alen = storage.read_active_run(&mut abuf).unwrap_or(0);
+    let active = core::str::from_utf8(&abuf[..alen]).unwrap_or("").trim();
+
+    // Diag names are tiny (`diag-NNNNNN.log`, ≤14 B), so scan generously — 64 covers
+    // any realistic count; a pathological crash-boot pile beyond it is mopped up,
+    // with progress, on the next pass. Logs: one CSV per firing, so 32 is ample.
+    const MAX_DIAG_SCAN: usize = 64;
+    const MAX_LOG_SCAN: usize = 32;
+    const MAX_PRUNE_TOTAL: usize = MAX_DIAG_SCAN + MAX_LOG_SCAN;
+
+    let active_diag = active_suffix.map(diag_name);
+    let mut diag: heapless::Vec<(heapless::String<16>, u32), MAX_DIAG_SCAN> = heapless::Vec::new();
+    storage.for_each(Directory::Diag, &mut |name, size, _modified| {
+        if active_diag.as_deref() == Some(name) {
+            return; // never evict the file currently being appended
+        }
+        let mut n = heapless::String::new();
+        if n.push_str(name).is_ok() {
+            let _ = diag.push((n, size as u32));
+        }
+    });
+    diag.sort_unstable_by(|a, b| a.0.cmp(&b.0)); // zero-padded suffix ⇒ lexical = age
+
+    let mut logs: heapless::Vec<(heapless::String<CSV_NAME_CAP>, u32, u64), MAX_LOG_SCAN> =
+        heapless::Vec::new();
+    storage.for_each(Directory::Logs, &mut |name, size, modified| {
+        if name == active {
+            return; // never evict the live / recoverable run
+        }
+        let mut n = heapless::String::new();
+        if n.push_str(name).is_ok() {
+            let _ = logs.push((n, size as u32, modified));
+        }
+    });
+    logs.sort_unstable_by_key(|e| e.2); // ascending filename time-key = oldest first
+
+    // Eviction-ordered sizes (diag, then logs) → how many to drop for the deficit.
+    let mut sizes: heapless::Vec<u32, MAX_PRUNE_TOTAL> = heapless::Vec::new();
+    for (_, s) in diag.iter() {
+        let _ = sizes.push(*s);
+    }
+    for (_, s, _) in logs.iter() {
+        let _ = sizes.push(*s);
+    }
+    // Take the larger of: enough to cover the size deficit, and enough to bring the
+    // diag count to MAX_DIAG_FILES. Both count from the front (diag-first), so the
+    // count floor is always a valid prefix.
+    let size_k = kiln_log::evict_count(&sizes, deficit);
+    let count_k = diag.len().saturating_sub(MAX_DIAG_FILES);
+    let k = size_k.max(count_k);
+    if k == 0 {
+        return;
+    }
+
+    let mut batch: heapless::Vec<(Directory, &str), MAX_PRUNE_TOTAL> = heapless::Vec::new();
+    for (n, _) in diag.iter().take(k) {
+        let _ = batch.push((Directory::Diag, n.as_str()));
+    }
+    if k > diag.len() {
+        for (n, _, _) in logs.iter().take(k - diag.len()) {
+            let _ = batch.push((Directory::Logs, n.as_str()));
+        }
+    }
+    storage.remove_batch(&batch);
+}
+
 /// Core 0 task: the single owner of periodic flash writes. Persists diag lines to
-/// `diag/diag-NNNNNN.log` (rotating by size, hard-stopping at the total cap, boot
-/// prune first) AND the CSV logger's steady-state rows, coalesced into one
-/// flash-paused window per flush. Wakes on a diag line, a CSV [`request_flush`]
-/// nudge, or the [`FLUSH_INTERVAL_S`] timer. Writes no diag while `LOG_TO_FLASH` is
-/// false (the drain never forwards then) but still flushes CSV.
+/// `diag/diag-NNNNNN.log` (rotating by size) AND the CSV logger's steady-state
+/// rows, coalesced into one flash-paused window per flush. Keeps the filesystem
+/// above [`kiln_log::RUN_FREE_TARGET`] free by pruning oldest diag then oldest
+/// non-active runs ([`prune_to_free`]) so a write never hits a full disk mid-run;
+/// boot reclaims to [`kiln_log::BOOT_FREE_TARGET`]. Wakes on a diag line, a CSV
+/// [`request_flush`] nudge, or the [`FLUSH_INTERVAL_S`] timer. Writes no diag while
+/// `LOG_TO_FLASH` is false (the drain never forwards then) but still flushes CSV.
 #[embassy_executor::task]
 pub async fn flash_flush_task(storage: &'static dyn Storage, clock: &'static dyn Clock) -> ! {
     use embassy_time::{with_timeout, Duration, Instant};
 
     // --- Boot prune + active-file selection ---------------------------------
-    let mut entries: heapless::Vec<(u32, kiln_log::DiagEntry), MAX_SCAN_FILES> =
-        heapless::Vec::new();
-    // Highest suffix seen across ALL diag files, tracked independently of the
-    // `MAX_SCAN_FILES` cap on `entries`. The active file is opened at `max+1`, so
-    // it can never collide with — and `create:true`-truncate — an existing file,
-    // even if more than `MAX_SCAN_FILES` diag files coexist (the capped prune is
-    // best-effort, but the suffix must never alias).
+    // Highest diag suffix on disk: the active file opens at `max+1`, which is fresh
+    // and collision-free because prune only ever removes oldest (lower) suffixes.
     let mut max_seen: Option<u32> = None;
-    storage.for_each(Directory::Diag, &mut |name, size, _modified| {
+    storage.for_each(Directory::Diag, &mut |name, _size, _modified| {
         if let Some(suf) = parse_suffix(name) {
             max_seen = Some(max_seen.map_or(suf, |m| m.max(suf)));
-            let _ = entries.push((suf, kiln_log::DiagEntry { size: size as u32 }));
         }
     });
-    // Oldest-first (ascending suffix) for the prune policy.
-    entries.sort_unstable_by_key(|(suf, _)| *suf);
-    let mut sorted: heapless::Vec<kiln_log::DiagEntry, MAX_SCAN_FILES> = heapless::Vec::new();
-    for (_, e) in entries.iter() {
-        let _ = sorted.push(*e);
-    }
-    let drop_k = kiln_log::boot_prune_count(&sorted);
-    for (suf, _) in entries.iter().take(drop_k) {
-        let _ = storage.remove(Directory::Diag, &diag_name(*suf));
-    }
+    // Reclaim generously at boot (idle — SSR off, so no flash-handshake cost): drop
+    // oldest diag first, then oldest non-active runs, until BOOT_FREE_TARGET is free.
+    // No active diag yet (opened below), so nothing is suffix-protected; this is also
+    // where the cross-boot diag count cap (MAX_DIAG_FILES) gets applied.
+    let free = storage.available_bytes().unwrap_or(u64::MAX);
+    prune_to_free(storage, free, kiln_log::BOOT_FREE_TARGET as u64, None);
 
-    // Active suffix = one past the highest suffix seen on disk. Prune only ever
-    // removes oldest (lowest) suffixes, so `max_seen` always names a surviving
-    // file; `max_seen + 1` is therefore both fresh and collision-free.
     let mut suffix = max_seen.map(|m| m + 1).unwrap_or(0);
-    // Surviving total for the running hard-stop accounting.
-    let mut total: u32 = entries.iter().skip(drop_k).map(|(_, e)| e.size).sum();
-
     let mut active_size: u32 = 0;
-    let mut stopped = false;
-    let mut warned = false;
-
-    open_new_diag_file(
-        storage,
-        clock,
-        suffix,
-        &mut total,
-        &mut active_size,
-        stopped,
-    );
+    open_new_diag_file(storage, clock, suffix, &mut active_size);
 
     // --- Flush loop ----------------------------------------------------------
     let mut diag_buf = heapless::String::<DIAG_BUF_CAP>::new();
@@ -521,13 +591,26 @@ pub async fn flash_flush_task(storage: &'static dyn Storage, clock: &'static dyn
         }
 
         if flush {
+            // Keep the run target free before writing so an append never hits a full
+            // filesystem mid-run. `available_bytes` is a littlefs `lfs_fs_size` full
+            // block traverse, not O(1) — but it is read-only (XIP-safe, no SSR pause)
+            // and runs at most once per flush (≥120 s apart on Core 0), so the cost is
+            // negligible. Hysteresis: prune only once free drops below the low-water
+            // TRIGGER, but reclaim all the way to the higher TARGET — so a prune buys a
+            // big margin (~14 flushes) instead of firing nearly every flush (which a
+            // trigger == target would). The prune (diag-first, then oldest non-active
+            // runs) is batched into one SSR-paused window and handed the `free` we just
+            // read so it does not re-query. On a query error, u64::MAX ⇒ no prune (fail
+            // safe — never delete on uncertainty).
+            let free = storage.available_bytes().unwrap_or(u64::MAX);
+            if free < kiln_log::RUN_PRUNE_TRIGGER as u64 {
+                prune_to_free(storage, free, kiln_log::RUN_FREE_TARGET as u64, Some(suffix));
+            }
             flush_all(
                 storage,
                 suffix,
                 &mut diag_buf,
                 &mut active_size,
-                &mut total,
-                stopped,
                 &mut csv_scratch,
                 &mut csv_name,
             );
@@ -536,26 +619,10 @@ pub async fn flash_flush_task(storage: &'static dyn Storage, clock: &'static dyn
             FLUSH_DONE.signal(());
         }
 
-        // Hard-stop at the total cap (no mid-run deletion; reclaimed on reboot).
-        if !stopped && !kiln_log::can_append(total) {
-            stopped = true;
-            if !warned {
-                warned = true;
-                log::warn!(target: "kiln_app::logging", "diag flash budget full, pausing flash logging until reboot");
-            }
-        }
-
         // Rotate to a fresh file once the active one is large enough.
-        if !stopped && kiln_log::should_rotate(active_size) {
+        if kiln_log::should_rotate(active_size) {
             suffix += 1;
-            open_new_diag_file(
-                storage,
-                clock,
-                suffix,
-                &mut total,
-                &mut active_size,
-                stopped,
-            );
+            open_new_diag_file(storage, clock, suffix, &mut active_size);
         }
     }
 }
