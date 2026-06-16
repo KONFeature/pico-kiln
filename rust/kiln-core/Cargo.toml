@@ -1,0 +1,12 @@
+[package]
+name = "kiln-core"
+version = "0.1.0"
+edition = "2021"
+description = "Hardware-free kiln control logic (PID first) — no_std, host-testable, zero dependencies."
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+[dependencies]
+# Intentionally EMPTY. kiln-core is pure control logic: it must compile for the
+# RP2350 (no_std, no alloc) AND run under `cargo test` on the host unchanged.
+# Any hardware/allocation concern belongs in a higher layer (kiln-hal/firmware).

@@ -1,0 +1,35 @@
+# Firmware build config. Applies only when cargo is invoked from inside
+# `kiln-firmware/` (config is discovered from the working directory, not the
+# manifest path), so it never leaks into the host workspace build run from
+# `rust/`. Build the flashable image with:
+#
+#     cd kiln-firmware && cargo build --release
+#
+# C TOOLCHAIN: `littlefs2-sys` compiles the bundled C `littlefs`, which needs an
+# `arm-none-eabi` GCC WITH a C library (newlib `stdint.h`/`string.h`). The
+# Homebrew `arm-none-eabi-gcc` formula ships NO libc, so use the ARM toolchain
+# instead (`brew install --cask gcc-arm-embedded`, or unpack its pkg) and point
+# cc-rs at it if it is not first on PATH:
+#
+#     CC_thumbv8m_main_none_eabihf=/path/to/arm-none-eabi-gcc cargo build
+#
+# (or uncomment the [env] block below with an absolute path to that compiler).
+#
+# Flashing/running needs an external tool (probe-rs or picotool); wire a
+# `runner` here once one is available, e.g.:
+#     runner = "probe-rs run --chip RP235x"
+#
+# [env]
+# CC_thumbv8m_main_none_eabihf = "/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/bin/arm-none-eabi-gcc"
+
+[build]
+target = "thumbv8m.main-none-eabihf"
+
+[target.thumbv8m.main-none-eabihf]
+rustflags = [
+    # cortex-m-rt's linker script (pulls in memory.x, provided by build.rs).
+    "-C", "link-arg=-Tlink.x",
+    # Keep sections page-aligned without rounding region sizes up to a power of
+    # two — required for the RP2350 flash layout.
+    "-C", "link-arg=--nmagic",
+]

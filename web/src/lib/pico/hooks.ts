@@ -6,17 +6,18 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import { PicoAPIError } from "./client";
+import { readFileAsText } from "../utils";
+import { type PicoAPIClient, PicoAPIError } from "./client";
 import { usePico } from "./context";
-import { isLogicalFailure } from "./errors";
 import type {
 	CancelScheduledResponse,
-	DeleteAllFilesResponse,
 	DeleteFileResponse,
 	FileDirectory,
+	KilnConfig,
 	KilnStatus,
 	ListFilesResponse,
 	RunProfileResponse,
+	SaveConfigResponse,
 	ScheduledStatusResponse,
 	ScheduleProfileResponse,
 	ShutdownResponse,
@@ -24,35 +25,30 @@ import type {
 	StopResponse,
 	StopTuningResponse,
 	TuningMode,
-	UploadFileResponse,
 } from "./types";
 
 // Query keys for TanStack Query
 export const picoKeys = {
 	status: ["pico", "status"] as const,
+	logs: ["pico", "logs"] as const,
 	scheduledStatus: ["pico", "scheduled-status"] as const,
 	files: (directory: string) => ["files", directory] as const,
 	fileContent: (directory: string, filename: string) =>
 		["file-content", directory, filename] as const,
+	config: ["pico", "config"] as const,
 };
 
 /**
- * Rethrow logical failures (`{ success: false }` returned with HTTP 200) as a
- * PicoAPIError so mutations surface them through `isError` instead of resolving
- * silently. The original response is attached so `getFriendlyError` can detect
- * the device-provided reason and trust it.
+ * Narrow the optional Pico client to a guaranteed instance, throwing a uniform
+ * PicoAPIError when no client is configured yet. Lets every hook drop its own
+ * `if (!client)` guard.
  */
-function unwrap<
-	T extends { success: boolean; error?: string; message?: string },
->(res: T, fallback: string): T {
-	if (!res.success) {
-		throw new PicoAPIError(
-			res.error ?? res.message ?? fallback,
-			undefined,
-			res,
-		);
+function assertClient(
+	client: PicoAPIClient | null | undefined,
+): asserts client is PicoAPIClient {
+	if (!client) {
+		throw new PicoAPIError("Pico client not initialized");
 	}
-	return res;
 }
 
 // === Status Hooks ===
@@ -68,9 +64,7 @@ export function useKilnStatus(
 	return useQuery<KilnStatus, PicoAPIError>({
 		queryKey: picoKeys.status,
 		queryFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return await client.getStatus();
 		},
 		enabled: isConfigured && Boolean(client),
@@ -115,13 +109,8 @@ export function useRunProfile() {
 
 	return useMutation<RunProfileResponse, PicoAPIError, string>({
 		mutationFn: async (profileName: string) => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
-			return unwrap(
-				await client.runProfile(profileName),
-				"Failed to start profile",
-			);
+			assertClient(client);
+			return await client.runProfile(profileName);
 		},
 		onSuccess: () => {
 			// Immediately refetch status after starting a profile
@@ -139,10 +128,8 @@ export function useStopProfile() {
 
 	return useMutation<StopResponse, PicoAPIError, void>({
 		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
-			return unwrap(await client.stopProfile(), "Failed to stop profile");
+			assertClient(client);
+			return await client.stopProfile();
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -159,10 +146,8 @@ export function useShutdown() {
 
 	return useMutation<ShutdownResponse, PicoAPIError, void>({
 		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
-			return unwrap(await client.shutdown(), "Failed to shut down kiln");
+			assertClient(client);
+			return await client.shutdown();
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -179,10 +164,8 @@ export function useClearError() {
 
 	return useMutation({
 		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
-			return unwrap(await client.clearError(), "Failed to clear error");
+			assertClient(client);
+			return await client.clearError();
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -198,35 +181,26 @@ export function useReboot() {
 	const { client } = usePico();
 	const queryClient = useQueryClient();
 
-	return useMutation<{ success: boolean; message: string }, PicoAPIError, void>(
-		{
-			mutationFn: async () => {
-				if (!client) {
-					throw new PicoAPIError("Pico client not initialized");
+	return useMutation<{ message?: string }, PicoAPIError, void>({
+		mutationFn: async () => {
+			assertClient(client);
+			try {
+				return await client.reboot();
+			} catch (error) {
+				// Reboot drops the connection before responding, so a timeout or
+				// network failure (no HTTP status) means the command landed. A real
+				// HTTP error means it did NOT.
+				if (error instanceof PicoAPIError && error.statusCode === undefined) {
+					return { message: "Reboot initiated" };
 				}
-				try {
-					return unwrap(await client.reboot(), "Failed to reboot");
-				} catch (error) {
-					// Reboot drops the connection before responding, so a timeout or
-					// network failure (no HTTP status, and not an explicit
-					// `{ success: false }`) means the command landed. A real HTTP error
-					// or a logical rejection means it did NOT.
-					if (
-						error instanceof PicoAPIError &&
-						error.statusCode === undefined &&
-						!isLogicalFailure(error)
-					) {
-						return { success: true, message: "Reboot initiated" };
-					}
-					throw error;
-				}
-			},
-			onSuccess: () => {
-				// Invalidate all queries since the Pico is rebooting
-				queryClient.invalidateQueries({ queryKey: picoKeys.status });
-			},
+				throw error;
+			}
 		},
-	);
+		onSuccess: () => {
+			// Invalidate all queries since the Pico is rebooting
+			queryClient.invalidateQueries({ queryKey: picoKeys.status });
+		},
+	});
 }
 
 // === Tuning Mutations ===
@@ -245,13 +219,8 @@ export function useStartTuning() {
 
 	return useMutation<StartTuningResponse, PicoAPIError, StartTuningParams>({
 		mutationFn: async ({ mode, maxTemp }) => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
-			return unwrap(
-				await client.startTuning(mode, maxTemp),
-				"Failed to start tuning",
-			);
+			assertClient(client);
+			return await client.startTuning(mode, maxTemp);
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -268,10 +237,8 @@ export function useStopTuning() {
 
 	return useMutation<StopTuningResponse, PicoAPIError, void>({
 		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
-			return unwrap(await client.stopTuning(), "Failed to stop tuning");
+			assertClient(client);
+			return await client.stopTuning();
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -299,13 +266,8 @@ export function useScheduleProfile() {
 		ScheduleProfileParams
 	>({
 		mutationFn: async ({ profileName, startTime }) => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
-			return unwrap(
-				await client.scheduleProfile(profileName, startTime),
-				"Failed to schedule profile",
-			);
+			assertClient(client);
+			return await client.scheduleProfile(profileName, startTime);
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -325,9 +287,7 @@ export function useScheduledStatus(
 	return useQuery<ScheduledStatusResponse, PicoAPIError>({
 		queryKey: picoKeys.scheduledStatus,
 		queryFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return await client.getScheduledStatus();
 		},
 		enabled: isConfigured && Boolean(client),
@@ -347,13 +307,8 @@ export function useCancelScheduled() {
 
 	return useMutation<CancelScheduledResponse, PicoAPIError, void>({
 		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
-			return unwrap(
-				await client.cancelScheduled(),
-				"Failed to cancel scheduled profile",
-			);
+			assertClient(client);
+			return await client.cancelScheduled();
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -373,9 +328,7 @@ export function useTestConnection() {
 
 	return useMutation<boolean, PicoAPIError, void>({
 		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return await client.testConnection();
 		},
 		onSuccess: (isConnected) => {
@@ -404,9 +357,7 @@ export function useListFiles(
 	return useQuery<ListFilesResponse, PicoAPIError>({
 		queryKey: picoKeys.files(directory),
 		queryFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
+			assertClient(client);
 			return await client.listFiles(directory);
 		},
 		enabled: isConfigured && Boolean(client),
@@ -442,13 +393,8 @@ export function useDeleteFile() {
 		{ directory: FileDirectory; filename: string }
 	>({
 		mutationFn: async ({ directory, filename }) => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
-			}
-			return unwrap(
-				await client.deleteFile(directory, filename),
-				"Failed to delete file",
-			);
+			assertClient(client);
+			return await client.deleteFile(directory, filename);
 		},
 		onSuccess: (_data, variables) => {
 			queryClient.invalidateQueries({
@@ -462,56 +408,174 @@ export function useDeleteFile() {
 }
 
 /**
- * Mutation to delete all log files
- * Only works when kiln is IDLE
+ * Mutation to delete every file in a directory. The Pico has no bulk-delete
+ * endpoint: we issue one DELETE per file, sequentially (it serves one request at
+ * a time over WiFi, so a parallel burst just thrashes it). Only works when IDLE.
  */
-export function useDeleteAllLogs() {
+export function useDeleteAllFiles() {
 	const { client } = usePico();
 	const queryClient = useQueryClient();
 
-	return useMutation<DeleteAllFilesResponse, PicoAPIError, void>({
-		mutationFn: async () => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
+	return useMutation<
+		{ deletedCount: number },
+		Error,
+		{ directory: FileDirectory; filenames: string[] }
+	>({
+		mutationFn: async ({ directory, filenames }) => {
+			assertClient(client);
+			const errors: string[] = [];
+			let deletedCount = 0;
+			for (const filename of filenames) {
+				try {
+					await client.deleteFile(directory, filename);
+					deletedCount++;
+				} catch (e) {
+					errors.push(
+						e instanceof Error ? `${filename}: ${e.message}` : filename,
+					);
+				}
 			}
-			return unwrap(await client.deleteAllLogs(), "Failed to delete logs");
+			if (errors.length > 0) {
+				throw new Error(
+					`Failed to delete ${errors.length} file(s): ${errors.join("; ")}`,
+				);
+			}
+			return { deletedCount };
 		},
-		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: picoKeys.files("logs") });
-			queryClient.removeQueries({ queryKey: ["file-content", "logs"] });
+		onSettled: (_data, _error, variables) => {
+			queryClient.invalidateQueries({
+				queryKey: picoKeys.files(variables.directory),
+			});
+			queryClient.removeQueries({
+				queryKey: ["file-content", variables.directory],
+			});
 		},
 	});
 }
 
 /**
- * Mutation to upload a file
- * Only works when kiln is IDLE
+ * Mutation to upload one or more files. The frontend batches a multi-file
+ * selection into sequential single-file PUTs (the Pico streams one upload at a
+ * time). JSON is minified client-side to save flash. Only works when IDLE.
  */
-export function useUploadFile() {
+export function useUploadFiles() {
 	const { client } = usePico();
 	const queryClient = useQueryClient();
 
 	return useMutation<
-		UploadFileResponse,
-		PicoAPIError,
-		{ directory: FileDirectory; filename: string; content: string }
+		{ uploadedCount: number },
+		Error,
+		{ directory: FileDirectory; files: File[] }
 	>({
-		mutationFn: async ({ directory, filename, content }) => {
-			if (!client) {
-				throw new PicoAPIError("Pico client not initialized");
+		mutationFn: async ({ directory, files }) => {
+			assertClient(client);
+			const errors: string[] = [];
+			let uploadedCount = 0;
+			for (const file of files) {
+				try {
+					let content = await readFileAsText(file);
+					// Minify JSON to save space on the Pico; upload as-is if it doesn't parse.
+					if (file.name.endsWith(".json")) {
+						try {
+							content = JSON.stringify(JSON.parse(content));
+						} catch {
+							// not valid JSON — leave content untouched
+						}
+					}
+					await client.uploadFile(directory, file.name, content);
+					uploadedCount++;
+				} catch (e) {
+					errors.push(
+						e instanceof Error ? `${file.name}: ${e.message}` : file.name,
+					);
+				}
 			}
-			return unwrap(
-				await client.uploadFile(directory, filename, content),
-				"Failed to upload file",
-			);
+			if (errors.length > 0) {
+				throw new Error(
+					`Failed to upload ${errors.length} file(s): ${errors.join("; ")}`,
+				);
+			}
+			return { uploadedCount };
 		},
-		onSuccess: (_data, variables) => {
+		onSettled: (_data, _error, variables) => {
 			queryClient.invalidateQueries({
 				queryKey: picoKeys.files(variables.directory),
 			});
-			queryClient.invalidateQueries({
-				queryKey: picoKeys.fileContent(variables.directory, variables.filename),
-			});
 		},
 	});
+}
+
+// === Logs Hooks ===
+
+/**
+ * Hook to poll the live log tail (GET /api/logs RAM-ring snapshot). Unlike the
+ * diag flash files, this works in ANY kiln state (it reads RAM, no IDLE gate),
+ * so it can monitor a firing in progress. Pass `paused` to stop polling and
+ * `intervalMs` to set the cadence (default 3000ms).
+ */
+export function useLiveLogs(params?: {
+	paused?: boolean;
+	intervalMs?: number;
+}) {
+	const { paused = false, intervalMs = 3000 } = params ?? {};
+	const { client, isConfigured } = usePico();
+
+	return useQuery<string, PicoAPIError>({
+		queryKey: picoKeys.logs,
+		queryFn: async () => {
+			assertClient(client);
+			return await client.getLogs();
+		},
+		enabled: isConfigured && Boolean(client),
+		refetchInterval: paused ? false : intervalMs,
+		staleTime: 0,
+		refetchOnWindowFocus: false,
+		retry: 2,
+	});
+}
+
+// === Config Hooks ===
+
+/**
+ * Fetch the kiln configuration. Changes rarely, so it is cached for a while and
+ * only refetched on demand / after a save invalidation.
+ */
+export function useKilnConfig(
+	options?: Partial<UseQueryOptions<KilnConfig, PicoAPIError>>,
+) {
+	const { client, isConfigured } = usePico();
+
+	return useQuery<KilnConfig, PicoAPIError>({
+		queryKey: picoKeys.config,
+		queryFn: async () => {
+			assertClient(client);
+			return await client.getConfig();
+		},
+		enabled: isConfigured && Boolean(client),
+		staleTime: 1000 * 60 * 5,
+		refetchOnWindowFocus: false,
+		retry: 2,
+		...options,
+	});
+}
+
+/**
+ * Save a sparse config PATCH. On success the config query is invalidated so the
+ * page re-seeds from the persisted values.
+ */
+export function useSaveConfig() {
+	const { client } = usePico();
+	const queryClient = useQueryClient();
+
+	return useMutation<SaveConfigResponse, PicoAPIError, Record<string, unknown>>(
+		{
+			mutationFn: async (patch) => {
+				assertClient(client);
+				return await client.saveConfig(patch);
+			},
+			onSuccess: () => {
+				queryClient.invalidateQueries({ queryKey: picoKeys.config });
+			},
+		},
+	);
 }

@@ -17,22 +17,6 @@ export interface FriendlyError {
 	detail?: string;
 }
 
-/**
- * A logical failure is an HTTP 200 response whose body is `{ success: false }`.
- * `unwrap()` (in hooks.ts) rethrows these as PicoAPIError with the original
- * response attached as `originalError`, so the device-provided message is
- * already human-readable and we can trust it.
- */
-export function isLogicalFailure(err: PicoAPIError): boolean {
-	const orig = err.originalError;
-	return (
-		typeof orig === "object" &&
-		orig !== null &&
-		"success" in orig &&
-		(orig as { success?: unknown }).success === false
-	);
-}
-
 /** Strip the "HTTP <code>: " prefix the client adds, returning the body text. */
 function httpBodyText(raw: string): string | undefined {
 	const match = raw.match(/^HTTP \d+:\s*([\s\S]*)$/);
@@ -50,14 +34,6 @@ export function getFriendlyError(err: unknown): FriendlyError {
 				: "Unknown error";
 
 	if (err instanceof PicoAPIError) {
-		// Device said "no" with a reason — trust its message.
-		if (isLogicalFailure(err)) {
-			return {
-				title: "The kiln declined that",
-				message: raw || "The kiln couldn't complete that request.",
-			};
-		}
-
 		const { statusCode } = err;
 
 		// No status code => never reached the device (timeout / network / unconfigured).

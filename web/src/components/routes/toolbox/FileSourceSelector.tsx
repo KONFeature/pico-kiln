@@ -186,12 +186,12 @@ export function FileSourceSelector({
 							Loading files from Pico...
 						</div>
 					)}
-					{filesData?.success && filesData.files.length === 0 && (
+					{filesData && filesData.files.length === 0 && (
 						<div className="text-sm text-muted-foreground">
 							No files found in {directory} directory.
 						</div>
 					)}
-					{filesData?.success && filesData.files.length > 0 && (
+					{filesData && filesData.files.length > 0 && (
 						<div className="space-y-2">
 							<Label>Select File</Label>
 							<Select value={selectedFile} onValueChange={handlePicoFileSelect}>

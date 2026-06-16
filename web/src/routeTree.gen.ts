@@ -10,13 +10,21 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as VisualizerRouteImport } from './routes/visualizer'
+import { Route as LogsRouteImport } from './routes/logs'
 import { Route as FilesRouteImport } from './routes/files'
 import { Route as EditorRouteImport } from './routes/editor'
+import { Route as ConfigRouteImport } from './routes/config'
+import { Route as AnalyzeRouteImport } from './routes/analyze'
 import { Route as IndexRouteImport } from './routes/index'
 
 const VisualizerRoute = VisualizerRouteImport.update({
   id: '/visualizer',
   path: '/visualizer',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LogsRoute = LogsRouteImport.update({
+  id: '/logs',
+  path: '/logs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FilesRoute = FilesRouteImport.update({
@@ -29,6 +37,16 @@ const EditorRoute = EditorRouteImport.update({
   path: '/editor',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ConfigRoute = ConfigRouteImport.update({
+  id: '/config',
+  path: '/config',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AnalyzeRoute = AnalyzeRouteImport.update({
+  id: '/analyze',
+  path: '/analyze',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -37,35 +55,69 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/analyze': typeof AnalyzeRoute
+  '/config': typeof ConfigRoute
   '/editor': typeof EditorRoute
   '/files': typeof FilesRoute
+  '/logs': typeof LogsRoute
   '/visualizer': typeof VisualizerRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/analyze': typeof AnalyzeRoute
+  '/config': typeof ConfigRoute
   '/editor': typeof EditorRoute
   '/files': typeof FilesRoute
+  '/logs': typeof LogsRoute
   '/visualizer': typeof VisualizerRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/analyze': typeof AnalyzeRoute
+  '/config': typeof ConfigRoute
   '/editor': typeof EditorRoute
   '/files': typeof FilesRoute
+  '/logs': typeof LogsRoute
   '/visualizer': typeof VisualizerRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/editor' | '/files' | '/visualizer'
+  fullPaths:
+    | '/'
+    | '/analyze'
+    | '/config'
+    | '/editor'
+    | '/files'
+    | '/logs'
+    | '/visualizer'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/editor' | '/files' | '/visualizer'
-  id: '__root__' | '/' | '/editor' | '/files' | '/visualizer'
+  to:
+    | '/'
+    | '/analyze'
+    | '/config'
+    | '/editor'
+    | '/files'
+    | '/logs'
+    | '/visualizer'
+  id:
+    | '__root__'
+    | '/'
+    | '/analyze'
+    | '/config'
+    | '/editor'
+    | '/files'
+    | '/logs'
+    | '/visualizer'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AnalyzeRoute: typeof AnalyzeRoute
+  ConfigRoute: typeof ConfigRoute
   EditorRoute: typeof EditorRoute
   FilesRoute: typeof FilesRoute
+  LogsRoute: typeof LogsRoute
   VisualizerRoute: typeof VisualizerRoute
 }
 
@@ -76,6 +128,13 @@ declare module '@tanstack/react-router' {
       path: '/visualizer'
       fullPath: '/visualizer'
       preLoaderRoute: typeof VisualizerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/logs': {
+      id: '/logs'
+      path: '/logs'
+      fullPath: '/logs'
+      preLoaderRoute: typeof LogsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/files': {
@@ -92,6 +151,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EditorRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/config': {
+      id: '/config'
+      path: '/config'
+      fullPath: '/config'
+      preLoaderRoute: typeof ConfigRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/analyze': {
+      id: '/analyze'
+      path: '/analyze'
+      fullPath: '/analyze'
+      preLoaderRoute: typeof AnalyzeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -104,8 +177,11 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AnalyzeRoute: AnalyzeRoute,
+  ConfigRoute: ConfigRoute,
   EditorRoute: EditorRoute,
   FilesRoute: FilesRoute,
+  LogsRoute: LogsRoute,
   VisualizerRoute: VisualizerRoute,
 }
 export const routeTree = rootRouteImport

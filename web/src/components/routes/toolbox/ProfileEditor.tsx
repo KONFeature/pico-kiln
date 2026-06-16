@@ -96,6 +96,21 @@ function defaultFilename(profile: Profile): string {
 	return `${profile.name.replace(/\s+/g, "_").toLowerCase()}.json`;
 }
 
+// Mirror the firmware's `safe_filename` allowlist (kiln-app/src/api.rs): only
+// ASCII letters/digits/dot/dash/underscore, non-empty, no leading dot, no "..".
+// Validating client-side gives immediate feedback before the upload PUT (the
+// device rejects the same names with a 400).
+const SAFE_FILENAME_RE = /^[A-Za-z0-9._-]+$/;
+function filenameValidationError(name: string): string | null {
+	if (!name) return "Filename is required";
+	if (name.startsWith(".")) return "Filename can't start with a dot";
+	if (name.includes("..")) return "Filename can't contain '..'";
+	if (!SAFE_FILENAME_RE.test(name)) {
+		return "Use only letters, numbers, dot, dash, underscore";
+	}
+	return null;
+}
+
 export function ProfileEditor() {
 	const { profile, setProfile, clearDraft } = useProfileDraft(DEFAULT_PROFILE);
 	const [savedSnapshot, setSavedSnapshot] = useState<string>(() =>
@@ -132,10 +147,7 @@ export function ProfileEditor() {
 		retry: 1,
 	});
 	const existingNames = useMemo(
-		() =>
-			new Set(
-				profilesData?.success ? profilesData.files.map((f) => f.name) : [],
-			),
+		() => new Set(profilesData ? profilesData.files.map((f) => f.name) : []),
 		[profilesData],
 	);
 
@@ -150,11 +162,9 @@ export function ProfileEditor() {
 			if (!client) throw new Error("Pico client not configured");
 			return client.uploadFile("profiles", filename, content);
 		},
-		onSuccess: (data) => {
-			if (data.success) {
-				setSavedSnapshot(JSON.stringify(profile));
-				queryClient.invalidateQueries({ queryKey: ["files", "profiles"] });
-			}
+		onSuccess: () => {
+			setSavedSnapshot(JSON.stringify(profile));
+			queryClient.invalidateQueries({ queryKey: ["files", "profiles"] });
 		},
 	});
 
@@ -297,9 +307,12 @@ export function ProfileEditor() {
 		uploadMutation.mutate({ filename, content: json });
 	};
 
+	const effectiveFilename = uploadFilename || defaultFilename(profile);
+	const filenameError = filenameValidationError(effectiveFilename);
+
 	const uploadToPico = () => {
-		if (hasValidationErrors) return;
-		const filename = uploadFilename || defaultFilename(profile);
+		if (hasValidationErrors || filenameError) return;
+		const filename = effectiveFilename;
 		if (existingNames.has(filename)) {
 			setPendingUpload(filename);
 		} else {
@@ -766,14 +779,25 @@ export function ProfileEditor() {
 										onChange={(e) => setUploadFilename(e.target.value)}
 										placeholder={defaultFilename(profile)}
 										className="mt-1"
+										aria-invalid={filenameError ? true : undefined}
 									/>
-									<p className="text-xs text-muted-foreground mt-1">
-										Leave empty to use profile name
-									</p>
+									{filenameError ? (
+										<p className="text-xs text-destructive mt-1">
+											{filenameError}
+										</p>
+									) : (
+										<p className="text-xs text-muted-foreground mt-1">
+											Leave empty to use profile name
+										</p>
+									)}
 								</div>
 								<Button
 									onClick={uploadToPico}
-									disabled={uploadMutation.isPending || hasValidationErrors}
+									disabled={
+										uploadMutation.isPending ||
+										hasValidationErrors ||
+										!!filenameError
+									}
 									size="sm"
 									className="w-full"
 								>
@@ -786,7 +810,7 @@ export function ProfileEditor() {
 										</>
 									)}
 								</Button>
-								{uploadMutation.isSuccess && uploadMutation.data?.success && (
+								{uploadMutation.isSuccess && (
 									<Alert>
 										<CheckCircle className="h-4 w-4" />
 										<AlertDescription>

@@ -51,15 +51,6 @@ describe("getFriendlyError", () => {
 		expect(result.message).toBe("kiln is busy");
 	});
 
-	it("trusts the device message for logical (success:false) failures", () => {
-		const response = { success: false, error: "Cannot start while tuning" };
-		const result = getFriendlyError(
-			new PicoAPIError("Cannot start while tuning", undefined, response),
-		);
-		expect(result.message).toBe("Cannot start while tuning");
-		expect(result.detail).toBeUndefined();
-	});
-
 	it("falls back gracefully for unknown error shapes", () => {
 		expect(getFriendlyError("boom").message).toBe("boom");
 		expect(getFriendlyError(new Error("oops")).title).toBe(

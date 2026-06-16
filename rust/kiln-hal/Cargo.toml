@@ -1,0 +1,16 @@
+[package]
+name = "kiln-hal"
+version = "0.1.0"
+edition = "2021"
+description = "embedded-hal device drivers for the pico-kiln controller (MAX31856 thermocouple, SSR) — no_std, host-testable over mock buses."
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+[dependencies]
+# Only the embedded-hal trait crate: drivers are generic over SpiDevice/OutputPin
+# so the exact same code runs on the RP2350 and against mock buses on the host.
+# All control/decision logic stays in kiln-core; this layer is pure I/O.
+embedded-hal = "1.0"
+
+[dev-dependencies]
+embedded-hal-mock = { version = "0.11", default-features = false, features = ["eh1"] }

@@ -1,0 +1,111 @@
+[package]
+name = "kiln-firmware"
+version = "0.1.0"
+edition = "2021"
+description = "RP2350 (Pico 2 W) binary shim for the pico-kiln controller: embassy_rp init, the Core 1 / Core 0 split, the cross-core flash-write handshake, and the concrete drivers (MAX31856 SPI, SSR GPIO, cyw43 WiFi, littlefs flash, LCD, sntpc clock) wired to kiln-control + kiln-app."
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+# BUILD NOTE. This crate targets thumbv8m.main-none-eabihf only and needs a
+# memory.x linker script + a probe-rs/elf2uf2 runner + the cyw43 firmware blobs.
+# It is excluded from the host workspace (see ../Cargo.toml) because embassy-rp
+# cannot build for the host. It is the one crate that names embassy-rp/cyw43.
+
+[dependencies]
+kiln-core = { path = "../kiln-core" }
+kiln-hal = { path = "../kiln-hal" }
+kiln-control = { path = "../kiln-control" }
+kiln-app = { path = "../kiln-app", features = ["embassy"] }
+# `log` facade for the few boot-path diagnostics emitted here (routes to the
+# global logger kiln-app installs → /api/logs ring + flash).
+log = "0.4"
+
+# embassy-executor 0.10 renamed the arch selector from `arch-cortex-m` to
+# `platform-cortex-m`.
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "executor-interrupt"] }
+# embassy-rp 0.10 is the release that pins embassy-executor 0.10 / embassy-sync
+# 0.8 / embassy-time 0.5; cyw43 0.7 + cyw43-pio 0.10 are from the same set.
+embassy-rp = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl", "log"] }
+embassy-time = "0.5"
+embassy-sync = "0.8"
+embassy-net = { version = "0.9", features = ["tcp", "udp", "dns", "dhcpv4", "medium-ethernet", "proto-ipv4", "log"] }
+embassy-futures = "0.1"
+
+cyw43 = { version = "0.7", features = ["firmware-logs", "log"] }
+cyw43-pio = "0.10"
+
+picoserve = { version = "0.18", features = ["embassy", "log"] }
+
+embedded-hal = "1.0"
+embedded-hal-bus = "0.3"
+# Direct register access for the two RAM-resident safety pokes (raw_ssr_off /
+# raw_watchdog_feed): embassy-rp's `pac` re-export is pub(crate), so depend on
+# rp-pac directly. Pinned to the same 7.x + `rp235x` feature embassy-rp uses, so
+# cargo unifies it to a single pac instance (no second copy).
+rp-pac = { version = "7", features = ["rp235x"] }
+static_cell = "2"
+heapless = "0.8"
+# embassy-net / cyw43 0.7 use heapless 0.9 internally; this alias lets us build
+# the `StaticConfigV4.dns_servers` Vec in their version. The rest of the crate
+# (and the kiln-app/-core boundary) stays on 0.8.
+heapless_v09 = { package = "heapless", version = "0.9" }
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+
+# NTP wall clock (Oracle Q4) and the flash filesystem (Oracle Q2). The exact
+# crate APIs are device-verified; pinned here as the intended dependencies.
+sntpc = { version = "0.10", default-features = false }
+# littlefs2 is the flash filesystem for config + profiles + logs (one mount over
+# the reserved top partition, see platform.rs). littlefs2-sys compiles the
+# bundled C `littlefs`, so the build needs `arm-none-eabi-gcc` on PATH (cc-rs
+# selects it for the thumbv8m target). `c-stubs` provides the `strcpy` that
+# `lfs.c` references at link time, since this bare-metal image links no libc.
+littlefs2 = { version = "0.7", features = ["c-stubs"] }
+
+# USB device stack for CDC-NCM (USB ethernet) — the always-on wired provisioning
+# + file-access interface. 0.5.x is the release that uses `embassy-usb-driver`
+# **0.2.2** (the exact version embassy-rp 0.10 implements, so they unify) and
+# `embassy-net` 0.9.1 (ours). Do NOT bump to 0.6 without re-checking the driver
+# version — a mismatch makes `embassy_rp::usb::Driver` unusable with the Builder.
+# `embassy-net-driver-channel` is NOT a direct dep — it is re-exported via
+# `embassy_usb::class::cdc_ncm::embassy_net`. (cargo-verified 2026-06-05.)
+embassy-usb = "0.5"
+# Instance-based DHCP server (one `DhcpServer` value per stack) so the fallback
+# SoftAP and the USB-NCM stack can each lease addresses at the same time. 0.5.x
+# resolves against embassy-net 0.9.1 + smoltcp 0.13.1 (ours) — a single net
+# stack, no duplicate. (0.2.x pulled embassy-net 0.7; cargo-verified 2026-06-05.)
+leasehund = "0.5"
+
+# NOTE: no `panic-halt` — `main.rs` defines its own `#[panic_handler]` that
+# de-energises the SSR before halting (two handlers would collide).
+
+[features]
+default = []
+
+# Stack diagnostics for the DEBUG image (./scripts/deploy.sh --debug). Adds boot
+# stack painting + a periodic high-water log task (stack.rs). Rides on the release
+# profile so the measured peak reflects the shipped opt-level=2 build; the ship
+# build omits it. The MSPLIM overflow guard is NOT behind this — it is always on.
+stack-debug = []
+
+# Release profile for the SHIPPED image. kiln-firmware is `exclude`d from the
+# host workspace (../Cargo.toml), so the workspace's size-optimised profile does
+# NOT apply here — without this block `cargo build --release` would fall back to
+# cargo defaults (opt-level=3, lto=false, codegen-units=16).
+#
+# opt-level = 2 (NOT "z"). The flash region is 2560 KiB (memory.x) but the image
+# only uses ~580 KiB, so flash is NOT the binding constraint — RAM/STACK is. At
+# "z", LLVM minimises code size at the cost of stack-slot reuse, and picoserve's
+# monolithic `serve_and_shutdown` future (one enormous nested-Router type) then
+# compiles to a poll with a giant stack frame. A single request poll measured
+# >161 KiB of stack and OVERFLOWED the Core 0 stack into .bss — a hardfault
+# (branch-to-null from a smashed return address) reproducible whenever LAN traffic
+# kept requests flowing (device-verified via the fault-capture handlers in main.rs:
+# sp=0x20056468, below _stack_end=0x20057B98). `-O2` restores stack-slot colouring
+# + inlining that collapses picoserve's nesting, cutting the poll's stack far below
+# the limit. Flash cost (~+150 KiB) is irrelevant against the 2560 KiB region.
+# Re-measure stack headroom if the route table or picoserve version changes.
+[profile.release]
+opt-level = 2
+lto = "fat"
+codegen-units = 1

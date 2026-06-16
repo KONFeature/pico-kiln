@@ -1,5 +1,6 @@
 import { createRouter } from "@tanstack/react-router";
 import * as TanstackQuery from "./integrations/tanstack-query/root-provider";
+import { ConfigDraftProvider } from "./lib/config/draft-context";
 import { PicoProvider } from "./lib/pico/context";
 import { ProfileCacheProvider } from "./lib/pico/profile-cache";
 import { ThemeProvider } from "./lib/theme/theme-provider";
@@ -20,7 +21,9 @@ export const getRouter = () => {
 				<ThemeProvider>
 					<TanstackQuery.Provider {...rqContext}>
 						<PicoProvider>
-							<ProfileCacheProvider>{props.children}</ProfileCacheProvider>
+							<ConfigDraftProvider>
+								<ProfileCacheProvider>{props.children}</ProfileCacheProvider>
+							</ConfigDraftProvider>
 						</PicoProvider>
 					</TanstackQuery.Provider>
 				</ThemeProvider>

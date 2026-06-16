@@ -1,0 +1,43 @@
+{
+  "_comment": "Runtime config for the Rust firmware — the config.json replacement for the MicroPython config.py. Copy to config.json (gitignored), fill in WiFi + your device overrides, and flash it to the device's littlefs root. Only the keys you set override KilnConfig::default() (a sparse PATCH merge); absent keys keep their defaults. Keys mirror config.example.py UPPER_SNAKE names.",
+
+  "WIFI_SSID": "your_wifi_ssid",
+  "WIFI_PASSWORD": "your_wifi_password",
+
+  "MAX31856_SPI_ID": 0,
+  "MAX31856_SCK_PIN": 18,
+  "MAX31856_MOSI_PIN": 19,
+  "MAX31856_MISO_PIN": 16,
+  "MAX31856_CS_PIN": 28,
+  "SSR_PIN": 15,
+
+  "THERMOCOUPLE_TYPE": "K",
+  "TEMP_UNITS": "c",
+  "THERMOCOUPLE_OFFSET": 0.0,
+  "MAINS_FREQUENCY": 60,
+  "THERMOCOUPLE_AVERAGING": 8,
+  "TEMP_MEDIAN_WINDOW": 3,
+
+  "PID_KP_BASE": 25.0,
+  "PID_KI_BASE": 0.14,
+  "PID_KD_BASE": 160.0,
+  "THERMAL_H": 0.0,
+  "THERMAL_T_AMBIENT": 25.0,
+
+  "SSR_CYCLE_TIME": 20.0,
+  "SSR_STAGGER_DELAY": 0.01,
+
+  "MAX_TEMP": 1300,
+  "STALL_CHECK_INTERVAL": 60,
+  "STALL_CONSECUTIVE_FAILS": 3,
+  "STALL_MIN_STEP_TIME": 600,
+  "RATE_MEASUREMENT_WINDOW": 600,
+  "RATE_RECORDING_INTERVAL": 10,
+
+  "LOGGING_INTERVAL": 30,
+  "MAX_RECOVERY_TEMP_DELTA": 30,
+  "ENABLE_WATCHDOG": true,
+  "WATCHDOG_TIMEOUT": 8000,
+  "LOG_LEVEL": "info",
+  "LOG_TO_FLASH": true
+}

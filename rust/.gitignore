@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Device runtime config — holds WiFi credentials (like config.py). Keep
+# config.example.json in the repo; generate config.json locally for deploy.
+config.json

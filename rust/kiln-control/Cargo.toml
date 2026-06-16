@@ -1,0 +1,16 @@
+[package]
+name = "kiln-control"
+version = "0.1.0"
+edition = "2021"
+description = "Core 1 real-time safety loop for the pico-kiln controller — platform-generic, no embassy-rp. The synchronous Controller is host-testable; kiln-firmware supplies the async task that drives it."
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+[dependencies]
+kiln-core = { path = "../kiln-core" }
+kiln-hal = { path = "../kiln-hal" }
+
+[features]
+default = []
+# Expose the host mock sensor/SSR/watchdog (used by kiln-sim).
+mock = []

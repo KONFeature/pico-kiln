@@ -3,12 +3,15 @@ import {
 	Edit,
 	Flame,
 	FolderOpen,
+	Gauge,
 	LineChart,
 	Menu,
+	ScrollText,
 	Settings,
 	X,
 } from "lucide-react";
 import { useState } from "react";
+import { useConfigDraft } from "@/lib/config/draft-context";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { PicoConnectionDialog } from "./PicoConnectionDialog";
 import { ThemeToggle } from "./ThemeToggle";
@@ -22,6 +25,7 @@ export default function Header() {
 	const [isOpen, setIsOpen] = useState(false);
 	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 	const closeMenu = () => setIsOpen(false);
+	const { isDirty } = useConfigDraft();
 
 	return (
 		<>
@@ -32,7 +36,12 @@ export default function Header() {
 						className="touch-target p-2 hover:bg-accent hover:text-accent-foreground rounded-lg transition-colors"
 						aria-label="Open menu"
 					>
-						<Menu size={24} />
+						<span className="relative">
+							<Menu size={24} />
+							{isDirty && (
+								<span className="absolute -right-1 -top-1 size-2.5 rounded-full bg-primary ring-2 ring-card" />
+							)}
+						</span>
 					</button>
 					<h1 className="ml-4 text-xl font-semibold">
 						<Link to="/" className="flex items-center gap-2">
@@ -97,6 +106,16 @@ export default function Header() {
 					</Link>
 
 					<Link
+						to="/analyze"
+						onClick={closeMenu}
+						className={navLinkClass}
+						activeProps={{ className: navLinkActiveClass }}
+					>
+						<Gauge size={20} />
+						<span className="font-medium">Analyze Tuning</span>
+					</Link>
+
+					<Link
 						to="/editor"
 						onClick={closeMenu}
 						className={navLinkClass}
@@ -114,6 +133,29 @@ export default function Header() {
 					>
 						<FolderOpen size={20} />
 						<span className="font-medium">Files</span>
+					</Link>
+
+					<Link
+						to="/logs"
+						onClick={closeMenu}
+						className={navLinkClass}
+						activeProps={{ className: navLinkActiveClass }}
+					>
+						<ScrollText size={20} />
+						<span className="font-medium">Logs</span>
+					</Link>
+
+					<Link
+						to="/config"
+						onClick={closeMenu}
+						className={navLinkClass}
+						activeProps={{ className: navLinkActiveClass }}
+					>
+						<Settings size={20} />
+						<span className="font-medium">Configuration</span>
+						{isDirty && (
+							<span className="ml-auto size-2.5 rounded-full bg-primary" />
+						)}
 					</Link>
 				</nav>
 			</aside>

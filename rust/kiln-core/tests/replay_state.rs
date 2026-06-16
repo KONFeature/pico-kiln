@@ -1,0 +1,254 @@
+//! Equivalence test: replay state-machine scenarios captured from the REAL
+//! `kiln/state.py` (`KilnController`) and assert the Rust port produces the same
+//! per-update outputs — state, target temperature, step index, recovery flag,
+//! and measured rate.
+//!
+//! Each fixture is self-describing (config + profile + op header), so one parser
+//! drives all three scenarios. Fixtures from `tools/gen_state_golden.py`:
+//!   * state_run_golden.csv      — ramp/hold/cooling -> COMPLETE, with NTP jumps
+//!   * state_stall_golden.csv    — stall detection -> ERROR
+//!   * state_recovery_golden.csv — resume_profile + recovery hold
+
+use kiln_core::profile::{Profile, Step, StepKind};
+use kiln_core::state::{ControllerConfig, KilnController, KilnState};
+use std::path::PathBuf;
+
+// Relaxed from 1e-6: the state machine now computes temps and elapsed-relative
+// time in f32 (config/KilnError stay f64). Targets and rates carry f32
+// representation error plus a little elapsed-accumulation drift (≲ 0.1 over a
+// long run); the discrete outputs (state, step index, recovery) stay exact.
+const TOL: f64 = 1e-1;
+
+/// Local re-encoding of the former `KilnState::as_u8` — kept only as golden
+/// comparison scaffolding; production code never encoded the state to a byte.
+fn state_u8(s: KilnState) -> u8 {
+    match s {
+        KilnState::Idle => 0,
+        KilnState::Running => 1,
+        KilnState::Tuning => 2,
+        KilnState::Complete => 3,
+        KilnState::Error => 4,
+    }
+}
+
+/// The port takes monotonic milliseconds (i64); the golden time column is f64
+/// seconds (integer-valued, incl. the deliberate backward NTP jump), so scaling
+/// to ms is exact and the signed delta clamps the same way the f64 reference did.
+fn to_ms(seconds: f64) -> i64 {
+    (seconds * 1000.0).round() as i64
+}
+
+fn fixture(name: &str) -> PathBuf {
+    [env!("CARGO_MANIFEST_DIR"), "tests", "fixtures", name]
+        .iter()
+        .collect()
+}
+
+fn opt(s: &str) -> Option<f32> {
+    let s = s.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.parse().unwrap_or_else(|e| panic!("bad float {s:?}: {e}")))
+    }
+}
+
+fn parse_step(enc: &str) -> Step {
+    let p: Vec<&str> = enc.split(',').collect();
+    assert_eq!(p.len(), 5, "bad step encoding {enc:?}");
+    let kind = match p[0].trim() {
+        "r" => StepKind::Ramp,
+        "h" => StepKind::Hold,
+        "c" => StepKind::Cooling,
+        other => panic!("unknown step kind {other:?}"),
+    };
+    Step {
+        kind,
+        target_temp: opt(p[1]),
+        desired_rate: opt(p[2]),
+        min_rate: opt(p[3]),
+        duration: opt(p[4]),
+    }
+}
+
+fn parse_steps(enc: &str) -> Vec<Step> {
+    enc.split(';').map(parse_step).collect()
+}
+
+fn parse_config(rest: &str) -> ControllerConfig {
+    let c: Vec<&str> = rest.split(',').collect();
+    assert_eq!(c.len(), 6, "bad config {rest:?}");
+    ControllerConfig {
+        max_temp: c[0].trim().parse().unwrap(),
+        rate_measurement_window: c[1].trim().parse().unwrap(),
+        rate_recording_interval: c[2].trim().parse().unwrap(),
+        stall_check_interval: c[3].trim().parse().unwrap(),
+        stall_consecutive_fails: c[4].trim().parse().unwrap(),
+        stall_min_step_time: c[5].trim().parse().unwrap(),
+    }
+}
+
+/// `run|pre_run_temp|run_now` or
+/// `resume|elapsed|last_logged|current|step_index|now`.
+enum Op {
+    Run {
+        pre_run_temp: f64,
+        run_now: f64,
+    },
+    Resume {
+        elapsed: f64,
+        last_logged: Option<f32>,
+        current: Option<f32>,
+        step_index: Option<usize>,
+        now: f64,
+    },
+}
+
+fn parse_op(rest: &str) -> Op {
+    let p: Vec<&str> = rest.split('|').collect();
+    match p[0].trim() {
+        "run" => Op::Run {
+            pre_run_temp: p[1].trim().parse().unwrap(),
+            run_now: p[2].trim().parse().unwrap(),
+        },
+        "resume" => Op::Resume {
+            elapsed: p[1].trim().parse().unwrap(),
+            last_logged: opt(p[2]),
+            current: opt(p[3]),
+            step_index: {
+                let s = p[4].trim();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.parse().unwrap())
+                }
+            },
+            now: p[5].trim().parse().unwrap(),
+        },
+        other => panic!("unknown op {other:?}"),
+    }
+}
+
+fn close(a: f64, b: f64, idx: usize, field: &str, name: &str) {
+    let d = (a - b).abs();
+    assert!(
+        d <= TOL,
+        "{name} row {idx} {field}: rust={a} ref={b} (|Δ|={d:e})"
+    );
+}
+
+fn run_fixture(name: &str) -> usize {
+    let path = fixture(name);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!("cannot read {path:?}: {e}\nrun: python3 rust/kiln-core/tools/gen_state_golden.py")
+    });
+
+    let mut cfg = None;
+    let mut steps = None;
+    let mut op = None;
+    let mut data = Vec::new();
+    let mut in_data = false;
+
+    for line in text.lines() {
+        if let Some(r) = line.strip_prefix("# config|") {
+            cfg = Some(parse_config(r));
+        } else if let Some(r) = line.strip_prefix("# profile|") {
+            steps = Some(parse_steps(r));
+        } else if let Some(r) = line.strip_prefix("# op|") {
+            op = Some(parse_op(r));
+        } else if line.starts_with("idx,") {
+            in_data = true;
+        } else if in_data && !line.trim().is_empty() {
+            data.push(line);
+        }
+    }
+
+    let cfg = cfg.expect("missing config");
+    let steps = steps.expect("missing profile");
+    let op = op.expect("missing op");
+    let profile = Profile::new(&steps).expect("profile build");
+
+    let mut c = KilnController::new(cfg);
+    match op {
+        Op::Run {
+            pre_run_temp,
+            run_now,
+        } => {
+            c.current_temp = pre_run_temp as f32;
+            assert!(c.run_profile(profile, to_ms(run_now)), "run_profile");
+        }
+        Op::Resume {
+            elapsed,
+            last_logged,
+            current,
+            step_index,
+            now,
+        } => {
+            assert!(
+                c.resume_profile(
+                    profile,
+                    elapsed as f32,
+                    last_logged,
+                    current,
+                    step_index,
+                    to_ms(now)
+                ),
+                "resume_profile"
+            );
+        }
+    }
+
+    for line in &data {
+        let f: Vec<&str> = line.split(',').collect();
+        assert_eq!(f.len(), 8, "{name}: bad row {line:?}");
+        let idx: usize = f[0].trim().parse().unwrap();
+        let now: f64 = f[1].trim().parse().unwrap();
+        let temp: f64 = f[2].trim().parse().unwrap();
+        let exp_state: u8 = f[3].trim().parse().unwrap();
+        let exp_target: f64 = f[4].trim().parse().unwrap();
+        let exp_step: usize = f[5].trim().parse().unwrap();
+        let exp_recovering = f[6].trim() == "1";
+        let exp_rate: f64 = f[7].trim().parse().unwrap();
+
+        let out = c.update(temp as f32, to_ms(now));
+
+        assert_eq!(
+            state_u8(c.state),
+            exp_state,
+            "{name} row {idx} state: rust={} ref={exp_state}",
+            state_u8(c.state)
+        );
+        close(out as f64, exp_target, idx, "target", name);
+        assert_eq!(
+            c.current_step_index(),
+            exp_step,
+            "{name} row {idx} step_index"
+        );
+        assert_eq!(
+            c.is_recovering(),
+            exp_recovering,
+            "{name} row {idx} recovering"
+        );
+        close(c.measured_rate() as f64, exp_rate, idx, "rate", name);
+    }
+
+    data.len()
+}
+
+#[test]
+fn replay_run_progression_with_ntp_jumps() {
+    let n = run_fixture("state_run_golden.csv");
+    assert!(n >= 150, "run fixture too small ({n})");
+}
+
+#[test]
+fn replay_stall_detection() {
+    let n = run_fixture("state_stall_golden.csv");
+    assert!(n >= 10, "stall fixture too small ({n})");
+}
+
+#[test]
+fn replay_crash_recovery() {
+    let n = run_fixture("state_recovery_golden.csv");
+    assert!(n >= 15, "recovery fixture too small ({n})");
+}

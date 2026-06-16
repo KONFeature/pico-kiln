@@ -4,7 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a kiln controller designed to run on MicroPython (Raspberry Pi Pico 2 W). The project is inspired by [jbruce12000/kiln-controller](https://github.com/jbruce12000/kiln-controller) but reimplemented for MicroPython to simplify integration with the MAX31856 thermocouple board.
+A kiln controller for the Raspberry Pi Pico 2 (RP2350), inspired by [jbruce12000/kiln-controller](https://github.com/jbruce12000/kiln-controller).
+
+The firmware exists in two implementations:
+- **`rust/`** — current/primary firmware (Rust + Embassy). See `rust/ARCHITECTURE.md`.
+- **`python/`** — original MicroPython implementation (this was the whole project before the Rust port). See `python/README.md`.
+
+`web/` is the React/Tauri app; `scripts/`, `profiles/`, and `static/` are shared by both firmwares (analysis tools, firing profiles, embedded web assets).
 
 ## Hardware Target
 
@@ -34,42 +40,29 @@ The system uses both cores of the Pico 2:
 
 ```
 pico-kiln/
-├── main.py              # Entry point
-├── boot.py              # MicroPython boot configuration
-├── config.example.py    # Configuration template (copy to config.py)
-├── kiln/                # Core kiln control modules (MicroPython)
-│   ├── control_thread.py  # Main control loop
-│   ├── pid.py            # PID controller
-│   ├── tuner.py          # PID auto-tuning
-│   ├── hardware.py       # Hardware abstraction (thermocouple, SSR)
-│   ├── profile.py        # Firing profile management
-│   ├── scheduler.py      # Profile scheduling
-│   ├── state.py          # Shared state management
-│   └── comms.py          # Inter-core communication
-├── server/              # Web server modules (MicroPython)
-│   ├── web_server.py     # HTTP server
-│   ├── wifi_manager.py   # WiFi connection management
-│   ├── data_logger.py    # Temperature/event logging
-│   └── recovery.py       # Crash recovery
-├── lib/                 # MicroPython libraries
-│   ├── adafruit_max31856.py  # Thermocouple driver
-│   └── lcd1602_i2c.py        # LCD display driver
-├── web/                 # React web application (desktop/mobile)
-│   ├── src/             # React + TypeScript source
-│   └── src-tauri/       # Tauri desktop/mobile app config
-├── scripts/             # Python 3 analysis & utility scripts
-│   ├── plot_run.py      # Plot firing run data
-│   ├── analyze_pid_performance.py  # PID tuning analysis
-│   ├── analyze_heat_loss.py        # Thermal analysis
-│   └── analyzer/        # Shared analysis modules
-├── profiles/            # Firing profile definitions (JSON)
-├── debug/               # Debug and test scripts
-└── static/              # Static web assets for embedded server
+├── rust/                # Current firmware — Rust + Embassy (RP2350). See rust/ARCHITECTURE.md
+├── python/              # Original firmware — MicroPython
+│   ├── main.py / boot.py / config.example.py
+│   ├── kiln/            # Core 1: control (control_thread, pid, tuner, scheduler,
+│   │                    #         rate_monitor, profile, hardware, state, comms)
+│   ├── server/          # Core 2: web_server, wifi_manager, data_logger, recovery, ...
+│   ├── lib/             # MicroPython libraries (adafruit_max31856, lcd1602_i2c, ...)
+│   ├── debug/           # Hardware/boot debug scripts
+│   ├── docs/            # Firmware docs (tuning, thermal model, rate control, ...)
+│   └── *.sh             # compile / deploy / debug / dump_logs / clean_logs / sync_profiles
+├── web/                 # React web app (desktop/mobile) — src/ + src-tauri/
+├── scripts/             # Python 3 analysis tools (SHARED) — plot_run, analyze_*, analyzer/
+├── profiles/            # Firing profiles, JSON (SHARED by both firmwares)
+└── static/              # Embedded web assets (SHARED — baked by rust, served by python)
 ```
 
 ## Build & Deploy Commands
 
-### Pico 2 Deployment
+### Rust firmware (in `rust/`)
+Current firmware. Build/flash/test instructions: `rust/ARCHITECTURE.md`, `rust/TESTING.md`. Run cargo from `rust/`.
+
+### MicroPython firmware (in `python/`)
+Run these from the `python/` directory:
 ```bash
 # Compile Python to .mpy bytecode (faster execution)
 ./compile.sh                    # Development build
@@ -81,10 +74,10 @@ pico-kiln/
 
 # Debug and logging
 ./debug.sh                      # Interactive debugging session
-./dump_logs.sh                  # Download logs from Pico
+./dump_logs.sh                  # Download logs from Pico (into ../scripts/logs/)
 ./clean_logs.sh                 # Clear logs on Pico
 
-# Profile management
+# Profile management (uploads from the shared ../profiles dir)
 ./sync_profiles.sh              # Sync profiles to Pico
 ```
 
@@ -122,13 +115,12 @@ python scripts/analyze_heat_loss.py logs/run_*.csv
 
 ## Configuration
 
-1. Copy `config.example.py` to `config.py`
-2. Configure WiFi credentials, PID parameters, and hardware pins
-3. Deploy to Pico 2
+- **MicroPython firmware**: copy `python/config.example.py` to `python/config.py`, set WiFi credentials, PID parameters, and hardware pins, then deploy.
+- **Rust firmware**: `rust/config.json` (`KilnConfig`), with the same UPPER_SNAKE keys as `config.py`. See `AGENTS.md` → "Rust workspace".
 
 ## Development Guidelines
 
-### MicroPython Code (kiln/, server/, lib/)
+### MicroPython Code (python/kiln/, python/server/, python/lib/)
 - Must be MicroPython-compatible (no standard library features unavailable in MicroPython)
 - Keep memory usage minimal (Pico has limited RAM)
 - Use `const()` for constant values
@@ -147,8 +139,10 @@ python scripts/analyze_heat_loss.py logs/run_*.csv
 
 ## Key Documentation
 
-- `ARCHITECTURE.md` - Detailed system architecture
-- `TUNING.md` - PID tuning guide
-- `RATE_CONTROL.md` - Rolling rate control and stall detection documentation
-- `THERMAL_MODEL.md` - Thermal model documentation
+- `rust/ARCHITECTURE.md` - Rust firmware design + Rust↔Python mapping
+- `python/README.md` - MicroPython firmware setup/deploy guide
+- `python/docs/ARCHITECTURE.md` - MicroPython system architecture
+- `python/docs/TUNING.md` - PID tuning guide
+- `python/docs/RATE_CONTROL.md` - Rolling rate control and stall detection
+- `python/docs/THERMAL_MODEL.md` - Thermal model documentation
 - `web/README.md` - Web application details

@@ -1,0 +1,14 @@
+[package]
+name = "kiln-sim"
+version = "0.1.0"
+edition = "2021"
+description = "Host simulator: drives the REAL kiln-control Controller against a software thermal model. No hardware, no embassy — proves the shipping control loop end-to-end on a laptop."
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+[dependencies]
+kiln-core = { path = "../kiln-core" }
+kiln-hal = { path = "../kiln-hal" }
+# The mock feature gives us the host sensor/SSR/watchdog; NO embassy feature, so
+# the sim drives the synchronous Controller directly with a simulated clock.
+kiln-control = { path = "../kiln-control", features = ["mock"] }

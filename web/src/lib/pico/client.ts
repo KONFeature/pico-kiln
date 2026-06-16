@@ -2,13 +2,14 @@
 
 import type {
 	CancelScheduledResponse,
-	DeleteAllFilesResponse,
 	DeleteFileResponse,
 	FileDirectory,
+	KilnConfig,
 	KilnStatus,
 	ListFilesResponse,
 	RunProfileRequest,
 	RunProfileResponse,
+	SaveConfigResponse,
 	ScheduledStatusResponse,
 	ScheduleProfileRequest,
 	ScheduleProfileResponse,
@@ -125,9 +126,24 @@ export class PicoAPIClient {
 		return this.request<KilnStatus>("/api/status");
 	}
 
-	async getTuningStatus(): Promise<KilnStatus> {
-		// Same as getStatus - the tuning info is included in the status response
-		return this.request<KilnStatus>("/api/tuning/status");
+	// === Logs Endpoints ===
+
+	/**
+	 * Fetch the live log tail: a plain-text snapshot of the firmware RAM ring
+	 * (GET /api/logs). Polled by the client to tail logs. Returns the raw text
+	 * body (not JSON), so it bypasses the JSON `request` helper.
+	 */
+	async getLogs(): Promise<string> {
+		const url = `${this.baseURL}/api/logs`;
+		const response = await this.fetchWithTimeout(url);
+		if (!response.ok) {
+			const errorText = await response.text().catch(() => "Unknown error");
+			throw new PicoAPIError(
+				`HTTP ${response.status}: ${errorText}`,
+				response.status,
+			);
+		}
+		return await response.text();
 	}
 
 	// === Control Endpoints ===
@@ -142,26 +158,51 @@ export class PicoAPIClient {
 	}
 
 	async stopProfile(): Promise<StopResponse> {
-		return this.request<StopResponse>("/api/stop", {
+		return this.request<StopResponse>("/api/cmd/stop", {
 			method: "POST",
 		});
 	}
 
 	async shutdown(): Promise<ShutdownResponse> {
-		return this.request<ShutdownResponse>("/api/shutdown", {
+		return this.request<ShutdownResponse>("/api/cmd/shutdown", {
 			method: "POST",
 		});
 	}
 
-	async clearError(): Promise<{ success: boolean; message: string }> {
-		return this.request("/api/clear-error", {
+	async clearError(): Promise<{ message?: string }> {
+		return this.request("/api/cmd/clear-error", {
 			method: "POST",
 		});
 	}
 
-	async reboot(): Promise<{ success: boolean; message: string }> {
+	async reboot(): Promise<{ message?: string }> {
 		return this.request("/api/reboot", {
 			method: "POST",
+		});
+	}
+
+	// === Config Endpoints ===
+
+	/**
+	 * Fetch the full kiln configuration. LCD_* keys may be omitted by the
+	 * firmware when the LCD is disabled; callers fill defaults for editing.
+	 */
+	async getConfig(): Promise<KilnConfig> {
+		return this.request<KilnConfig>("/api/config");
+	}
+
+	/**
+	 * Persist a sparse config PATCH (only the changed keys). The firmware merges
+	 * it over the running config and applies it on the next reboot. The body must
+	 * stay under the firmware's 2 KiB limit — a diff always does.
+	 */
+	async saveConfig(
+		patch: Record<string, unknown>,
+	): Promise<SaveConfigResponse> {
+		return this.request<SaveConfigResponse>("/api/config", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(patch),
 		});
 	}
 
@@ -180,7 +221,7 @@ export class PicoAPIClient {
 	}
 
 	async stopTuning(): Promise<StopTuningResponse> {
-		return this.request<StopTuningResponse>("/api/tuning/stop", {
+		return this.request<StopTuningResponse>("/api/cmd/tuning-stop", {
 			method: "POST",
 		});
 	}
@@ -207,7 +248,7 @@ export class PicoAPIClient {
 	}
 
 	async cancelScheduled(): Promise<CancelScheduledResponse> {
-		return this.request<CancelScheduledResponse>("/api/scheduled/cancel", {
+		return this.request<CancelScheduledResponse>("/api/cmd/scheduled-cancel", {
 			method: "POST",
 		});
 	}
@@ -291,16 +332,6 @@ export class PicoAPIClient {
 				method: "DELETE",
 			},
 		);
-	}
-
-	/**
-	 * Delete all files in logs directory
-	 * Only allowed for logs directory, only works when kiln is IDLE
-	 */
-	async deleteAllLogs(): Promise<DeleteAllFilesResponse> {
-		return this.request<DeleteAllFilesResponse>("/api/files/logs/all", {
-			method: "DELETE",
-		});
 	}
 
 	/**

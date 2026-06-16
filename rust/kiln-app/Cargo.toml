@@ -1,0 +1,38 @@
+[package]
+name = "kiln-app"
+version = "0.1.0"
+edition = "2021"
+description = "Core 0 application layer for the pico-kiln controller: REST API, CSV logging, crash recovery, WiFi/NTP/LCD. The exactness-critical pure logic (JSON/CSV/recovery/time) is host-tested; the embassy/picoserve/littlefs task set is behind the `embassy` feature."
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+[dependencies]
+kiln-core = { path = "../kiln-core" }
+kiln-hal = { path = "../kiln-hal" }
+# The embassy / web / storage stack is OPTIONAL and only feeds the `embassy` glue
+# (the Core 0 task set). The pure JSON/CSV/recovery/time modules below depend on
+# nothing but `core` + kiln-core, so they build and test on stable without a host
+# linker for build scripts (this sandbox has none — see ../TESTING.md).
+embassy-executor = { version = "0.10", optional = true }
+embassy-time = { version = "0.5", optional = true }
+embassy-sync = { version = "0.8", optional = true }
+embassy-futures = { version = "0.1", optional = true }
+embassy-net = { version = "0.9", optional = true, features = ["tcp", "udp", "dhcpv4", "medium-ethernet", "proto-ipv4"] }
+picoserve = { version = "0.18", optional = true, features = ["embassy"] }
+heapless = { version = "0.8", optional = true }
+kiln-log = { path = "../kiln-log", optional = true }
+log = { version = "0.4", optional = true }
+
+[features]
+default = []
+embassy = [
+    "dep:embassy-executor",
+    "dep:embassy-time",
+    "dep:embassy-sync",
+    "dep:embassy-futures",
+    "dep:embassy-net",
+    "dep:picoserve",
+    "dep:heapless",
+    "dep:kiln-log",
+    "dep:log",
+]
