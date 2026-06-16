@@ -158,19 +158,19 @@ export class PicoAPIClient {
 	}
 
 	async stopProfile(): Promise<StopResponse> {
-		return this.request<StopResponse>("/api/stop", {
+		return this.request<StopResponse>("/api/cmd/stop", {
 			method: "POST",
 		});
 	}
 
 	async shutdown(): Promise<ShutdownResponse> {
-		return this.request<ShutdownResponse>("/api/shutdown", {
+		return this.request<ShutdownResponse>("/api/cmd/shutdown", {
 			method: "POST",
 		});
 	}
 
 	async clearError(): Promise<{ success: boolean; message: string }> {
-		return this.request("/api/clear-error", {
+		return this.request("/api/cmd/clear-error", {
 			method: "POST",
 		});
 	}
@@ -221,7 +221,7 @@ export class PicoAPIClient {
 	}
 
 	async stopTuning(): Promise<StopTuningResponse> {
-		return this.request<StopTuningResponse>("/api/tuning/stop", {
+		return this.request<StopTuningResponse>("/api/cmd/tuning-stop", {
 			method: "POST",
 		});
 	}
@@ -248,7 +248,7 @@ export class PicoAPIClient {
 	}
 
 	async cancelScheduled(): Promise<CancelScheduledResponse> {
-		return this.request<CancelScheduledResponse>("/api/scheduled/cancel", {
+		return this.request<CancelScheduledResponse>("/api/cmd/scheduled-cancel", {
 			method: "POST",
 		});
 	}

@@ -10,6 +10,7 @@
 //! key followed by `:` and reads the immediate string/number value, returning
 //! `None` on anything unexpected so malformed input fails validation cleanly.
 
+use kiln_core::protocol::Command;
 use kiln_core::tuner::TuningMode;
 
 /// Max simultaneous TCP connections (`MAX_CONCURRENT_CONNECTIONS`), and thus the
@@ -19,12 +20,16 @@ use kiln_core::tuner::TuningMode;
 /// concurrently); that floor is not reducible from handler code. The response
 /// layer keeps `ApiResponse` tiny (render inputs only, buffered once in `write_to`)
 /// — worth ~12 KB/worker and makes new routes cheap, but it does not move that
-/// floor. 2 WiFi workers handle a single-user LAN UI (status poll + a page asset in
-/// flight) while leaving RAM for the simultaneous USB-NCM worker (the out-of-band
-/// log channel, see `WEB_TASK_POOL_TOTAL`). Bumping to 3 alongside USB risks the
-/// 512 KB SRAM budget at ~84 KB/worker — revisit once the rxd-drop root cause is
-/// fixed and USB can be turned back off.
-pub const MAX_CONCURRENT_CONNECTIONS: usize = 2;
+/// floor. ONE worker, deliberately: picoserve's combined-router serve future polls
+/// with a very deep stack frame (the whole nested-`Router` type), measured at
+/// ~249 KB on the response-render path — MORE than the Core 0 stack at 2-3 workers.
+/// Each worker's ~84 KB pool slot is `.bss` stolen straight from that stack, so
+/// every extra worker makes the overflow worse, not the concurrency better. At 1
+/// worker the pool drops to ~84 KB and the stack grows past 300 KB, clearing the
+/// peak. The cost is serialised connections (a browser's parallel requests queue in
+/// the TCP backlog) — fine for a single-user kiln UI. Raising this REQUIRES first
+/// shrinking picoserve's per-poll stack (fewer routes / a smaller router).
+pub const MAX_CONCURRENT_CONNECTIONS: usize = 1;
 /// Max upload size in bytes (`MAX_UPLOAD_SIZE`, 500 KB).
 pub const MAX_UPLOAD_SIZE: u32 = 512_000;
 /// Max buffered non-upload request body (`MAX_JSON_BODY`). Command/config JSON
@@ -109,6 +114,24 @@ pub fn parse_tuning_mode(s: &str) -> Option<TuningMode> {
         "HIGH_TEMP" => Some(TuningMode::HighTemp),
         _ => None,
     }
+}
+
+/// Map a `POST /api/cmd/{action}` path segment to its [`Command`] and the success
+/// message the web app shows. `None` for an unknown action (the handler turns that
+/// into a 404). These are the five fire-and-forget commands that used to be served
+/// as individual `/api/*` routes; collapsing them onto one path removes ~9
+/// monomorphised handler futures from picoserve's per-worker serve future. The
+/// messages are verbatim from the old per-route handlers so the toast text is
+/// unchanged.
+pub fn parse_command_action(action: &str) -> Option<(Command, &'static str)> {
+    Some(match action {
+        "stop" => (Command::Stop, "Profile stopped"),
+        "clear-error" => (Command::ClearError, "Error cleared, returned to idle"),
+        "shutdown" => (Command::Shutdown, "System shutdown: SSR off, program stopped"),
+        "scheduled-cancel" => (Command::CancelScheduled, "Cancelled scheduled profile"),
+        "tuning-stop" => (Command::StopTuning, "Tuning stopped"),
+        _ => return None,
+    })
 }
 
 /// Validate an optional max-temp: `None` keeps the mode default; otherwise it
@@ -303,6 +326,23 @@ mod tests {
         assert_eq!(parse_tuning_mode("HIGH_TEMP"), Some(TuningMode::HighTemp));
         assert_eq!(parse_tuning_mode("safe"), None);
         assert_eq!(parse_tuning_mode("BOGUS"), None);
+    }
+
+    #[test]
+    fn command_action_mapping() {
+        assert_eq!(
+            parse_command_action("stop"),
+            Some((Command::Stop, "Profile stopped"))
+        );
+        assert_eq!(
+            parse_command_action("scheduled-cancel").map(|(c, _)| c),
+            Some(Command::CancelScheduled)
+        );
+        // "scheduled-cancel" is the longest action (16 chars) — must fit the
+        // server's `String<16>` path-param type.
+        assert_eq!("scheduled-cancel".len(), 16);
+        assert!(parse_command_action("bogus").is_none());
+        assert!(parse_command_action("STOP").is_none()); // case-sensitive
     }
 
     #[test]

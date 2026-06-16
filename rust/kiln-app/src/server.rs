@@ -68,10 +68,13 @@ pub const WEB_TASK_POOL_SIZE: usize = api::MAX_CONCURRENT_CONNECTIONS;
 pub const SECONDARY_WEB_WORKERS: usize = 1;
 
 /// Total `web_task` instances that can be live at once = the macro `pool_size`.
-/// USB-NCM is re-enabled as the out-of-band log/diagnostic channel, so a configured
-/// STA boot runs both pools simultaneously: `WEB_TASK_POOL_SIZE` on WiFi plus
-/// `SECONDARY_WEB_WORKERS` on USB. The pool must hold both at once.
-pub const WEB_TASK_POOL_TOTAL: usize = WEB_TASK_POOL_SIZE + SECONDARY_WEB_WORKERS;
+/// USB-NCM is disabled (`USE_USB_NCM = false`) to maximise the Core 0 stack: every
+/// pool slot is ~84 KB of `.bss` taken from the stack picoserve's deep serve poll
+/// needs (see `MAX_CONCURRENT_CONNECTIONS`). So the pool is just the single STA
+/// worker. If USB-NCM is re-enabled, restore `+ SECONDARY_WEB_WORKERS` — but only
+/// after confirming the larger `.bss` still leaves stack headroom over the ~249 KB
+/// serve-poll peak.
+pub const WEB_TASK_POOL_TOTAL: usize = WEB_TASK_POOL_SIZE;
 
 /// Core 0 → Core 1 command channel (typed [`Command`], no heap).
 pub type CommandChannel = Channel<CriticalSectionRawMutex, Command, COMMAND_DEPTH>;
@@ -505,48 +508,14 @@ mod web {
                     "/api/scheduled",
                     get(scheduled_json).options(cors_preflight),
                 )
+                // The five fire-and-forget commands (stop / clear-error / shutdown
+                // / scheduled-cancel / tuning-stop) share one route; the `{action}`
+                // segment maps to a `Command` in `api::parse_command_action`. One
+                // route + one OPTIONS twin instead of five of each — ~9 fewer
+                // handler futures in picoserve's per-worker serve future.
                 .route(
-                    "/api/stop",
-                    post(|s: State<AppState>| async move {
-                        enqueue(&s.0, Command::Stop, "Profile stopped")
-                    })
-                    .options(cors_preflight),
-                )
-                .route(
-                    "/api/clear-error",
-                    post(|s: State<AppState>| async move {
-                        enqueue(&s.0, Command::ClearError, "Error cleared, returned to idle")
-                    })
-                    .options(cors_preflight),
-                )
-                .route(
-                    "/api/shutdown",
-                    post(|s: State<AppState>| async move {
-                        enqueue(
-                            &s.0,
-                            Command::Shutdown,
-                            "System shutdown: SSR off, program stopped",
-                        )
-                    })
-                    .options(cors_preflight),
-                )
-                .route(
-                    "/api/scheduled/cancel",
-                    post(|s: State<AppState>| async move {
-                        enqueue(
-                            &s.0,
-                            Command::CancelScheduled,
-                            "Cancelled scheduled profile",
-                        )
-                    })
-                    .options(cors_preflight),
-                )
-                .route(
-                    "/api/tuning/stop",
-                    post(|s: State<AppState>| async move {
-                        enqueue(&s.0, Command::StopTuning, "Tuning stopped")
-                    })
-                    .options(cors_preflight),
+                    ("/api/cmd", parse_path_segment()),
+                    post(command).options(cors_preflight_dir),
                 )
                 .route("/api/reboot", post(reboot).options(cors_preflight))
                 .route(
@@ -664,6 +633,20 @@ mod web {
                 StatusCode::new(507), // Insufficient Storage
                 "Not enough flash free to start a run (need 200 KB free); delete old logs.",
             )),
+        }
+    }
+
+    /// `POST /api/cmd/{action}` — the unified fire-and-forget command endpoint.
+    /// The `{action}` segment is mapped to a `Command` + success toast by
+    /// [`api::parse_command_action`]; an unknown action is a 404. Replaces the five
+    /// former one-off command routes (and their OPTIONS twins).
+    async fn command(
+        action: heapless::String<16>,
+        State(state): State<AppState>,
+    ) -> impl IntoResponse {
+        match api::parse_command_action(&action) {
+            Some((cmd, msg)) => enqueue(&state, cmd, msg),
+            None => ApiResponse::error(StatusCode::NOT_FOUND, "Unknown command"),
         }
     }
 
