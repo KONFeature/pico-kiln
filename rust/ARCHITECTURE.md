@@ -370,19 +370,19 @@ platform-generic, `kiln-sim` can run **the real loop** on the host (via
 
 ## 9. Status & roadmap
 
+The full port has landed and is merged — every crate in §1 ships.
+
 - ✅ `kiln-core`: **all 11 decision modules ported**, 60 unit + 12 replay tests green.
-- ✅ `kiln-hal`: `max31856` + `ssr` drivers over `embedded-hal`, 12 tests green.
-- ⏭ `kiln-hal`: add the `Platform` abstraction traits (`Watchdog`, the per-half
-  driver bounds) the halves will be generic over.
-- ⏭ `kiln-control` + `kiln-app`: platform-generic embassy tasks; `kiln-firmware`
-  shim builds + injects the concrete RP2350 types.
-- ⏭ `kiln-sim`: optional host harness — drive the real `kiln-control` loop via
+- ✅ `kiln-hal`: `max31856` + `ssr` drivers over `embedded-hal` + the `Platform`
+  abstraction traits (`Watchdog`, per-half driver bounds), 12 tests green.
+- ✅ `kiln-control` + `kiln-app`: platform-generic embassy tasks; `kiln-firmware`
+  builds + injects the concrete RP2350 types and dispatches the two cores.
+- ✅ `kiln-firmware`: boots on the RP2350 — config from littlefs, WiFi/USB-NCM/
+  SoftAP provisioning (§6), web API, CSV logging.
+- ✅ `kiln-sim`: host harness driving the real `kiln-control` loop via
   `embassy-time`'s `std` driver.
 
-> **Design note (this revision):** the halves were re-scoped from
-> "RP2350-specific" to "platform-generic"; only `kiln-firmware` names
-> `embassy-rp` / `cyw43`. Decided before the outer crates were written, so there
-> is no retrofit cost. See §6.2 and §6.4.
-
-> Workspace `members` in `rust/Cargo.toml` lists `kiln-core` + `kiln-hal`; add
-> each remaining crate as it lands.
+> **Design note:** the halves were re-scoped from "RP2350-specific" to
+> "platform-generic"; only `kiln-firmware` names `embassy-rp` / `cyw43`. Decided
+> before the outer crates were written, so there was no retrofit cost. See §6.2
+> and §6.4.

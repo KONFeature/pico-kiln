@@ -10,11 +10,11 @@ exclude = ["kiln-firmware"]
 #
 # Crate plan (see ARCHITECTURE.md for the full design + Python mapping):
 #   kiln-core     — hardware-free control logic + protocol types (host-testable)  ✅
-#   kiln-hal      — embedded-hal device drivers (MAX31856, SSR, LCD)              [next]
-#   kiln-control  — Core 1 real-time safety loop (embassy task)                   [later]
-#   kiln-app      — Core 2 networking / web / logging / LCD (embassy tasks)       [later]
-#   kiln-firmware — binary shim: init, split peripherals, dispatch the two cores  [later]
-#   kiln-sim      — optional std host harness: core logic vs a thermal model      [optional]
+#   kiln-hal      — embedded-hal device drivers (MAX31856, SSR, LCD)              ✅
+#   kiln-control  — Core 1 real-time safety loop (embassy task)                   ✅
+#   kiln-app      — Core 2 networking / web / logging / LCD (embassy tasks)       ✅
+#   kiln-firmware — binary shim: init, split peripherals, dispatch the two cores  ✅
+#   kiln-sim      — optional std host harness: core logic vs a thermal model      ✅
 
 [profile.release]
 opt-level = "z"     # optimise for size first (flash-constrained target)
