@@ -1,0 +1,150 @@
+name: 'firmware'
+
+on:
+  push:
+    tags:
+      - 'firmware-*'
+  workflow_dispatch:
+
+# Serialize releases on the same ref; don't cancel an in-flight release build.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# Build jobs only produce workflow artifacts -> read is enough.
+# The final `release` job elevates to `contents: write` to publish the release.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # RP2350 (Pico 2 W) firmware -> UF2, two variants:
+  #   release  -> the shipped image (cargo build --release)
+  #   diag     -> release + the `stack-debug` feature (boot stack painting +
+  #               periodic high-water log) — what `deploy.sh --debug` ships.
+  # Both variants emit the same target path, so one matrix job per variant.
+  # ELF -> UF2 is done with picotool (elf2uf2-rs has a known RP2350 load bug).
+  # ---------------------------------------------------------------------------
+  build-firmware:
+    name: 'Firmware (${{ matrix.variant }})'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: release
+            features: ''
+            suffix: ''
+          - variant: debug
+            features: 'stack-debug'
+            suffix: '-debug'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # nightly: kiln-app needs impl_trait_in_assoc_type (TAIT). Floating nightly
+      # matches the local `cargo +nightly` flow; pin nightly-YYYY-MM-DD here if it
+      # ever breaks a release.
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: thumbv8m.main-none-eabihf
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './rust/kiln-firmware -> target'
+          key: ${{ matrix.variant }}
+
+      # arm-none-eabi-gcc WITH newlib: littlefs2-sys compiles the bundled C
+      # littlefs and needs newlib headers (stdint.h/string.h). libusb is a runtime
+      # dep of the prebuilt picotool.
+      - name: Install ARM GCC (newlib) + libusb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi libusb-1.0-0
+
+      - name: Install picotool
+        # ponytail: prebuilt binary from raspberrypi/pico-sdk-tools; if the
+        # glibc/libusb link ever breaks, build from source (pico-sdk + cmake).
+        run: |
+          url="https://github.com/raspberrypi/pico-sdk-tools/releases/download/v2.2.0-3/picotool-2.2.0-a4-x86_64-lin.tar.gz"
+          curl -fsSL "$url" -o picotool.tgz
+          mkdir picotool-dist
+          tar xzf picotool.tgz -C picotool-dist
+          bin="$(find picotool-dist -type f -name picotool | head -1)"
+          [ -n "$bin" ] || { echo "picotool binary not found in archive"; exit 1; }
+          sudo install -m 0755 "$bin" /usr/local/bin/picotool
+          picotool version
+
+      - name: Build firmware
+        working-directory: ./rust/kiln-firmware
+        env:
+          CC_thumbv8m_main_none_eabihf: arm-none-eabi-gcc
+        run: |
+          cargo build --release ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
+
+      - name: Pack UF2
+        run: |
+          mkdir -p dist-firmware
+          elf="rust/kiln-firmware/target/thumbv8m.main-none-eabihf/release/kiln-firmware"
+          out="dist-firmware/kiln-firmware${{ matrix.suffix }}.uf2"
+          # Family is auto-read from the embassy-rp IMAGE_DEF; pin it explicitly
+          # so a missing block can't silently produce an RP2040 UF2.
+          picotool uf2 convert -t elf "$elf" "$out" --family rp2350-arm-s
+          picotool info "$out"
+          ls -la dist-firmware
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: firmware-${{ matrix.variant }}
+          path: dist-firmware/*.uf2
+          if-no-files-found: error
+          retention-days: 7
+
+  # always() + empty-guard => a draft release is cut from whatever UF2 artifacts
+  # exist; with fail-fast off, one variant failing doesn't drop the other.
+  release:
+    name: 'GitHub Release'
+    needs: [build-firmware]
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/firmware-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          path: release-assets
+
+      - name: Collect release files
+        id: collect
+        run: |
+          mkdir -p release-files
+          find release-assets -type f -name '*.uf2' -exec cp {} release-files/ \; 2>/dev/null || true
+          count=$(find release-files -type f | wc -l | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Collected $count release asset(s):"
+          ls -la release-files || true
+
+      - name: Create / update GitHub release
+        if: steps.collect.outputs.count != '0'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'Kiln Firmware ${{ github.ref_name }}'
+          body: 'RP2350 (Pico 2 W) firmware. Flash the .uf2 via BOOTSEL or picotool. The `-debug` build adds on-device diagnostics (stack high-water logging + fault capture).'
+          draft: true
+          prerelease: false
+          generate_release_notes: true
+          files: release-files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

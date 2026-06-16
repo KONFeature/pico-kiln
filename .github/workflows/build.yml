@@ -1,9 +1,9 @@
-name: 'publish'
+name: 'app'
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'app-*'
   workflow_dispatch:
 
 # Serialize releases on the same ref; don't cancel an in-flight release build.
@@ -56,9 +56,10 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Sync app version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/app-')
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${GITHUB_REF_NAME#app-}"
+          VERSION="${VERSION#v}"
           tmp="$(mktemp)"
           jq --arg v "$VERSION" '.version = $v' web/src-tauri/tauri.conf.json > "$tmp"
           mv "$tmp" web/src-tauri/tauri.conf.json
@@ -126,9 +127,10 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Sync app version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/app-')
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${GITHUB_REF_NAME#app-}"
+          VERSION="${VERSION#v}"
           tmp="$(mktemp)"
           jq --arg v "$VERSION" '.version = $v' web/src-tauri/tauri.conf.json > "$tmp"
           mv "$tmp" web/src-tauri/tauri.conf.json
@@ -236,9 +238,10 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Sync app version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/app-')
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${GITHUB_REF_NAME#app-}"
+          VERSION="${VERSION#v}"
           tmp="$(mktemp)"
           jq --arg v "$VERSION" '.version = $v' web/src-tauri/tauri.conf.json > "$tmp"
           mv "$tmp" web/src-tauri/tauri.conf.json
@@ -302,7 +305,7 @@ jobs:
   release:
     name: 'GitHub Release'
     needs: [build-desktop, build-android]
-    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/app-') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -330,7 +333,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
-          name: 'Kiln ${{ github.ref_name }}'
+          name: 'Kiln App ${{ github.ref_name }}'
           body: 'See the assets to download this version and install.'
           draft: true
           prerelease: false

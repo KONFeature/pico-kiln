@@ -36,16 +36,54 @@ pico-kiln/
   tuning/thermal-model docs (`python/docs/`). See `python/README.md` for setup,
   deploy, and the full feature guide.
 
-## Web app
+## Flash the firmware
 
-React + TanStack + Tailwind, packaged for desktop/Android with Tauri. Talks to
-whichever firmware is running over its HTTP API. See `web/README.md`.
+**Quick (recommended).** Download `kiln-firmware.uf2` from the
+[latest release](../../releases/latest), then:
+
+1. Hold the **BOOTSEL** button while plugging the Pico 2 W into USB.
+2. It appears as an `RPI-RP2` drive — drag the `.uf2` onto it.
+3. It reboots running the firmware.
+
+Each release ships two images: `kiln-firmware.uf2` (normal) and
+`kiln-firmware-debug.uf2` (same image + on-device diagnostics — stack high-water
+logging and fault capture; flash this when reporting a bug). They're
+interchangeable; flash either the same way.
+
+**From source.** Needs the Rust + Arm toolchain (see
+[`rust/README.md`](rust/README.md#prerequisites)):
+
+```bash
+cd rust
+./scripts/deploy.sh          # build + flash a Pico in BOOTSEL mode
+```
+
+Reflashing **preserves** your config, profiles, and run logs (separate flash
+partition). On first boot there are no WiFi credentials yet — reach the UI over
+USB (`http://192.168.7.1`) or join the open `pico-kiln-setup` Wi-Fi
+(`http://192.168.4.1`), set your network, and reboot. Details:
+[ARCHITECTURE.md §6](rust/ARCHITECTURE.md#6-provisioning-usb-ncm--fallback-softap).
+
+## Install the app
+
+The app monitors and controls the kiln (live temperature/SSR/progress, firing
+profiles, PID auto-tune analysis) over the firmware's HTTP API.
+
+- **Desktop / Android:** download the build for your platform from the
+  [latest release](../../releases/latest) and point it at your kiln's IP address.
+- **Browser:** the firmware also serves a built-in UI directly at the device IP —
+  no install needed.
+
+Run from source instead:
 
 ```bash
 cd web
 bun install
 bun run dev          # http://localhost:3000
 ```
+
+React + TanStack + Tailwind, packaged for desktop/Android with Tauri. See
+`web/README.md`.
 
 ## Offline analysis (shared)
 
