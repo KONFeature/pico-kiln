@@ -7,17 +7,24 @@
 # ./deploy.sh (picotool) or by copying the .uf2 onto the BOOTSEL drive.
 #
 # Usage:
-#   scripts/compile.sh            # release build (optimised; default)
-#   scripts/compile.sh --debug    # debug build (faster compile, bigger image)
+#   scripts/compile.sh            # release build (optimised; the shipped image)
+#   scripts/compile.sh --debug    # SAME release profile + the `stack-debug`
+#                                  # feature: boot stack painting + a periodic
+#                                  # high-water log. NOT the cargo dev profile —
+#                                  # opt-level=0 changes the stack frame, so its
+#                                  # high-water number would not reflect the
+#                                  # shipped build (see PICOSERVE_RAM.md).
 
 set -e  # Exit on error
 
+# Always the release profile; --debug only adds the stack-debug feature on top.
 PROFILE="release"
+FEATURES=""
 for arg in "$@"; do
     case "$arg" in
-        --release) PROFILE="release" ;;
-        --debug)   PROFILE="debug" ;;
-        -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+        --release) FEATURES="" ;;
+        --debug)   FEATURES="stack-debug" ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
         *)
             echo "Unknown option: $arg"
             echo "Usage: ./compile.sh [--debug]"
@@ -35,7 +42,7 @@ UF2="$FW_DIR/target/$TARGET/$PROFILE/kiln-firmware.uf2"
 echo "======================================"
 echo "Pico Kiln (Rust) Firmware Compiler"
 echo "======================================"
-echo "Profile: $PROFILE"
+echo "Profile: $PROFILE${FEATURES:+ (+features: $FEATURES)}"
 
 # --- prerequisites --------------------------------------------------------
 command -v cargo    >/dev/null 2>&1 || { echo "Error: cargo not found";    exit 1; }
@@ -55,12 +62,8 @@ export CC_thumbv8m_main_none_eabihf="$ARM_GCC"
 
 # --- build (nightly: kiln-app needs impl-trait-in-assoc-type / TAIT) -------
 echo ""
-echo "Building firmware ($PROFILE)..."
-if [ "$PROFILE" = "release" ]; then
-    ( cd "$FW_DIR" && cargo +nightly build --release )
-else
-    ( cd "$FW_DIR" && cargo +nightly build )
-fi
+echo "Building firmware ($PROFILE${FEATURES:+ +$FEATURES})..."
+( cd "$FW_DIR" && cargo +nightly build --release ${FEATURES:+--features "$FEATURES"} )
 [ -f "$ELF" ] || { echo "Error: ELF not found at $ELF"; exit 1; }
 
 # --- pack UF2 -------------------------------------------------------------

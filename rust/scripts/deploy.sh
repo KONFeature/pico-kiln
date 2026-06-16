@@ -13,7 +13,8 @@
 # Usage:
 #   scripts/deploy.sh             # build + flash + run
 #   scripts/deploy.sh --no-build  # flash the already-built UF2
-#   scripts/deploy.sh --debug     # build/flash the debug profile
+#   scripts/deploy.sh --debug     # release image + stack-debug instrumentation
+#                                 # (boot stack painting + high-water log)
 
 set -e  # Exit on error
 
@@ -23,9 +24,11 @@ COMPILE_ARGS=()
 for arg in "$@"; do
     case "$arg" in
         --no-build) BUILD=false ;;
-        --debug)    PROFILE="debug"; COMPILE_ARGS+=(--debug) ;;
+        # --debug is the release profile + the stack-debug feature (painting +
+        # high-water log), so the artifact still lands in target/.../release/.
+        --debug)    PROFILE="release"; COMPILE_ARGS+=(--debug) ;;
         --release)  PROFILE="release" ;;
-        -h|--help)  sed -n '2,17p' "$0"; exit 0 ;;
+        -h|--help)  sed -n '2,18p' "$0"; exit 0 ;;
         *) echo "Unknown option: $arg"; echo "Usage: ./deploy.sh [--no-build] [--debug]"; exit 1 ;;
     esac
 done

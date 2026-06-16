@@ -82,22 +82,30 @@ leasehund = "0.5"
 [features]
 default = []
 
+# Stack diagnostics for the DEBUG image (./scripts/deploy.sh --debug). Adds boot
+# stack painting + a periodic high-water log task (stack.rs). Rides on the release
+# profile so the measured peak reflects the shipped opt-level=2 build; the ship
+# build omits it. The MSPLIM overflow guard is NOT behind this — it is always on.
+stack-debug = []
+
 # Release profile for the SHIPPED image. kiln-firmware is `exclude`d from the
 # host workspace (../Cargo.toml), so the workspace's size-optimised profile does
 # NOT apply here — without this block `cargo build --release` would fall back to
-# cargo defaults (opt-level=3, lto=false, codegen-units=16), bloating the flash
-# image (embassy + cyw43 + picoserve + littlefs C + the baked HTML assets) on a
-# target whose linker region is capped at 2560 KiB (memory.x). `panic=abort` is
-# already forced by the `-none-` target spec, so it is not repeated here.
+# cargo defaults (opt-level=3, lto=false, codegen-units=16).
 #
-# Measured on this image (arm-none-eabi-size, text+data):
-#   cargo defaults (opt=3, lto=off, cgu=16) ... 729 KiB
-#   opt="s" + lto=fat + cgu=1 ................. 549 KiB
-#   opt="z" + lto=fat + cgu=1 ................. 505 KiB  <- chosen
-# Flash is the binding constraint (linker region capped at 2560 KiB, memory.x)
-# and the M33 is near-idle (1 Hz control), so "z" is the right trade: smallest
-# image, and its minor speed cost is irrelevant here. Re-measure if that changes.
+# opt-level = 2 (NOT "z"). The flash region is 2560 KiB (memory.x) but the image
+# only uses ~580 KiB, so flash is NOT the binding constraint — RAM/STACK is. At
+# "z", LLVM minimises code size at the cost of stack-slot reuse, and picoserve's
+# monolithic `serve_and_shutdown` future (one enormous nested-Router type) then
+# compiles to a poll with a giant stack frame. A single request poll measured
+# >161 KiB of stack and OVERFLOWED the Core 0 stack into .bss — a hardfault
+# (branch-to-null from a smashed return address) reproducible whenever LAN traffic
+# kept requests flowing (device-verified via the fault-capture handlers in main.rs:
+# sp=0x20056468, below _stack_end=0x20057B98). `-O2` restores stack-slot colouring
+# + inlining that collapses picoserve's nesting, cutting the poll's stack far below
+# the limit. Flash cost (~+150 KiB) is irrelevant against the 2560 KiB region.
+# Re-measure stack headroom if the route table or picoserve version changes.
 [profile.release]
-opt-level = "z"
+opt-level = 2
 lto = "fat"
 codegen-units = 1

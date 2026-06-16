@@ -40,6 +40,7 @@ mod dhcp;
 mod flash_handshake;
 mod lcd;
 mod platform;
+mod stack;
 
 use platform::{FlashStorage, NtpClock};
 
@@ -55,12 +56,25 @@ static REBOOT: StaticCell<RebootSignal> = StaticCell::new();
 static READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Core 1's dedicated stack and executor (kept off Core 0's executor entirely).
-static CORE1_STACK: StaticCell<Stack<8192>> = StaticCell::new();
+/// 16 KiB: measured high-water hit 7188 B on the old 8 KiB stack (~492 B from the
+/// MSPLIM guard trip) and jumped +3 KiB mid-run — too thin for the safety-critical
+/// control core. Cost: +8 KiB `.bss`, taken from Core 0's ~60 KiB stack headroom.
+/// See PICOSERVE_RAM.md ("MEASURED — real high-water").
+const CORE1_STACK_BYTES: u32 = 16384;
+static CORE1_STACK: StaticCell<Stack<{ CORE1_STACK_BYTES as usize }>> = StaticCell::new();
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 static EXECUTOR0: StaticCell<Executor> = StaticCell::new();
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
+    // Arm the Core 0 stack-limit guard FIRST, before any deep frame: a stack
+    // overflow now traps as a HardFault at the boundary instead of smashing .bss
+    // (see stack.rs). Debug builds additionally paint the free stack so the
+    // high-water task can report how deep each route really goes.
+    stack::arm_guard();
+    #[cfg(feature = "stack-debug")]
+    stack::paint_current();
+
     let p = embassy_rp::init(Default::default());
 
     let commands = COMMANDS.init(CommandChannel::new());
@@ -81,6 +95,8 @@ fn main() -> ! {
     // First lines on the wire: what config actually took effect. These queue in the
     // log channel until Core 0 starts the drain task, then surface in /api/logs.
     log::info!(target: "boot", "pico-kiln starting");
+    // Surface any panic/hardfault captured by the previous boot (see FaultRecord).
+    report_prior_fault();
     log::debug!(
         target: "boot",
         "config: log={} wifi_cfg={} watchdog={} ssr_pins={:?} tc_type={:?} lcd={}",
@@ -119,7 +135,15 @@ fn main() -> ! {
     let cmd_rx = commands.receiver();
     let status_tx = status.sender();
     let stack = CORE1_STACK.init(Stack::new());
+    // Core 1's stack is this static, not the `_stack_end` region — guard + paint
+    // it by its own base. Paint the full span now, while it is still entirely free
+    // (Core 1 has not started). `spawn_core1` moves `stack`, so grab its base first.
+    let core1_bottom = stack as *const _ as u32;
+    #[cfg(feature = "stack-debug")]
+    stack::paint_range(core1_bottom, core1_bottom + CORE1_STACK_BYTES);
     spawn_core1(p.CORE1, stack, move || {
+        // MSPLIM is banked per-core: arm Core 1's guard on Core 1.
+        stack::arm_guard_at(core1_bottom);
         let executor1 = EXECUTOR1.init(Executor::new());
         executor1.run(|spawner| {
             // embassy-executor 0.10: a `#[task]` fn returns `Result<SpawnToken, _>`
@@ -172,8 +196,22 @@ fn main() -> ! {
                 reboot,
             )
             .unwrap(),
-        )
+        );
+        #[cfg(feature = "stack-debug")]
+        spawner.spawn(stack_highwater_task(core1_bottom).unwrap());
     });
+}
+
+/// Debug-only (`stack-debug`): periodically log both cores' stack high-water so a
+/// LAN-traffic session ranks the real per-route peak. Lands in /api/logs + diag
+/// flash. Compiled out of the shipped image.
+#[cfg(feature = "stack-debug")]
+#[embassy_executor::task]
+async fn stack_highwater_task(core1_bottom: u32) -> ! {
+    loop {
+        Timer::after(Duration::from_secs(30)).await;
+        stack::report_highwater(core1_bottom, CORE1_STACK_BYTES);
+    }
 }
 
 /// Peripherals handed to Core 1 (the kiln I/O only). embassy-rp 0.10 hands out
@@ -378,13 +416,13 @@ async fn core0_main(
     let web_cfg = platform::web_config();
     let port = config.web_server_port;
 
-    // --- USB-NCM: the wired escape hatch — ON as the out-of-band log channel ---
-    // Re-enabled to debug the WiFi rxd-drop issue: WiFi is unreliable (inbound GET
-    // packets dropped by the 4-deep cyw43 RX channel), so `/api/logs` is unreachable
-    // over WiFi. USB-NCM (192.168.7.1) is radio-independent, giving a reliable path
-    // to read the worker's-eye view while WiFi fails. Pair with
-    // WEB_TASK_POOL_TOTAL = WEB_TASK_POOL_SIZE + SECONDARY_WEB_WORKERS (restored).
-    const USE_USB_NCM: bool = true;
+    // --- USB-NCM: the wired escape hatch — OFF to maximise the Core 0 stack ------
+    // The USB-NCM worker + its net stack are ~84 KB+ of `.bss`, stolen from the
+    // stack picoserve's deep serve poll needs (~249 KB peak). With WiFi now stable,
+    // turn USB off so all reclaimed RAM goes to the stack. Flip back to `true` only
+    // after confirming the larger `.bss` still clears the serve-poll peak (and
+    // restore WEB_TASK_POOL_TOTAL = WEB_TASK_POOL_SIZE + SECONDARY_WEB_WORKERS).
+    const USE_USB_NCM: bool = false;
     if USE_USB_NCM {
         // Comes up whenever the cable is enumerated, serving the same router as WiFi,
         // so config + files + logs are reachable over USB regardless of WiFi/Core 1.
@@ -444,15 +482,29 @@ async fn core0_main(
         // WiFi reconnect monitor (`wifi_manager.monitor`) + NTP — STA only: there
         // is no upstream network in AP mode. The `Control` handle is moved into
         // the monitor (nothing else uses it after this).
-        spawner.spawn(
-            platform::wifi_monitor_task(
-                control,
-                sta_stack,
-                config.wifi_ssid.as_str(),
-                config.wifi_password.as_str(),
-            )
-            .unwrap(),
-        );
+        //
+        // DIAGNOSTIC: the monitor is the ONLY thing issuing cyw43 control ioctls
+        // after boot. cyw43 0.7's runner `panic!`s on any non-zero ioctl status
+        // (runner.rs:714), which halts Core 0 (USB + WiFi both die). On a WPA3-SAE
+        // link a rekey/flap makes the monitor's re-`join()` ioctl error → panic.
+        // Flipped off to confirm: if STA stops dying, that path is the culprit and
+        // the durable fix is patching cyw43 to not panic on an ioctl error.
+        const ENABLE_WIFI_MONITOR: bool = false;
+        if ENABLE_WIFI_MONITOR {
+            spawner.spawn(
+                platform::wifi_monitor_task(
+                    control,
+                    sta_stack,
+                    config.wifi_ssid.as_str(),
+                    config.wifi_password.as_str(),
+                )
+                .unwrap(),
+            );
+        } else {
+            // Drop the handle so nothing issues control ioctls post-boot; cyw43's
+            // own firmware auto-reconnects a dropped link without driver ioctls.
+            core::mem::drop(control);
+        }
         spawner.spawn(platform::ntp_task(clock, sta_stack).unwrap());
     } else {
         // Unconfigured: open SoftAP for first-time provisioning. No NTP (so
@@ -480,13 +532,173 @@ async fn core0_main(
     spawner.spawn(platform::reboot_task(reboot).unwrap());
 }
 
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    // A panic on either core must de-energise the kiln. Force the SSR off via the
-    // raw GPIO register (RAM-safe, driver-independent) then halt; the watchdog,
-    // no longer fed, resets the chip into a clean state.
-    platform::raw_ssr_off();
-    loop {
-        cortex_m::asm::wfe();
+// === Fault capture (diagnostic) ============================================
+// A silent panic/hardfault on Core 0 halts the executor — USB *and* WiFi die with
+// no log, because the buffered diag never flushes. Worse, halting does NOT reset:
+// a live Core 1 keeps feeding the watchdog, so the chip just hangs. To find the
+// culprit we stash the fault site in a `.uninit` RAM cell (untouched by the boot
+// `.bss` zeroing, so it survives a warm reset), force an immediate reset, and
+// surface it on the next boot via `report_prior_fault` → /api/logs. For a
+// hardfault, `arm-none-eabi-addr2line -e <elf> <pc>` maps the PC to the code.
+const FAULT_MAGIC: u32 = 0xF00D_BEEF;
+
+/// Stack-scan backtrace depth (code-range return addresses captured at fault).
+const BT_DEPTH: usize = 8;
+
+#[repr(C)]
+struct FaultRecord {
+    magic: u32,
+    kind: u32, // 1 = panic, 2 = hardfault
+    line: u32,
+    pc: u32,       // hardfault: faulting instruction (0 = branch-to-null)
+    lr: u32,       // hardfault: link register (call site — often 0 here)
+    cfsr: u32,     // hardfault: SCB.CFSR fault-status bits
+    cpuid: u32,    // which core faulted (0 = Core 0 / net+web, 1 = Core 1 / control)
+    sp: u32,       // hardfault: stack pointer at fault (near .bss top ⇒ stack overflow)
+    file_ptr: u32, // panic: &str into flash (.rodata) — stable across a warm reset
+    file_len: u32,
+    bt: [u32; BT_DEPTH], // hardfault: code-range words scanned off the faulting stack
+}
+
+#[link_section = ".uninit.FAULT"]
+static mut FAULT_MARKER: core::mem::MaybeUninit<FaultRecord> = core::mem::MaybeUninit::uninit();
+
+#[allow(clippy::too_many_arguments)]
+fn record_fault(
+    kind: u32,
+    file_ptr: u32,
+    file_len: u32,
+    line: u32,
+    pc: u32,
+    lr: u32,
+    cfsr: u32,
+    cpuid: u32,
+    sp: u32,
+    bt: [u32; BT_DEPTH],
+) {
+    // Raw pointer (not `&mut FAULT_MARKER`) to stay clear of the static_mut_refs lint.
+    let p = core::ptr::addr_of_mut!(FAULT_MARKER) as *mut FaultRecord;
+    unsafe {
+        p.write(FaultRecord {
+            magic: FAULT_MAGIC,
+            kind,
+            line,
+            pc,
+            lr,
+            cfsr,
+            cpuid,
+            sp,
+            file_ptr,
+            file_len,
+            bt,
+        });
     }
+}
+
+/// Log + clear any fault stashed by the previous boot. Call once in `main`, right
+/// after the logger is installed, so it lands in the `/api/logs` ring.
+fn report_prior_fault() {
+    let p = core::ptr::addr_of_mut!(FAULT_MARKER) as *mut FaultRecord;
+    unsafe {
+        if core::ptr::addr_of!((*p).magic).read() != FAULT_MAGIC {
+            return;
+        }
+        let kind = core::ptr::addr_of!((*p).kind).read();
+        let line = core::ptr::addr_of!((*p).line).read();
+        let pc = core::ptr::addr_of!((*p).pc).read();
+        let lr = core::ptr::addr_of!((*p).lr).read();
+        let cfsr = core::ptr::addr_of!((*p).cfsr).read();
+        let cpuid = core::ptr::addr_of!((*p).cpuid).read();
+        let sp = core::ptr::addr_of!((*p).sp).read();
+        let file_ptr = core::ptr::addr_of!((*p).file_ptr).read();
+        let file_len = core::ptr::addr_of!((*p).file_len).read();
+        let mut bt = [0u32; BT_DEPTH];
+        for (i, slot) in bt.iter_mut().enumerate() {
+            *slot = core::ptr::addr_of!((*p).bt[i]).read();
+        }
+        core::ptr::addr_of_mut!((*p).magic).write(0); // clear so a clean boot won't re-report
+        let file = if file_ptr != 0 && file_len > 0 && file_len < 256 {
+            core::str::from_utf8(core::slice::from_raw_parts(file_ptr as *const u8, file_len as usize))
+                .unwrap_or("?")
+        } else {
+            "?"
+        };
+        match kind {
+            1 => log::error!(target: "fault", "RECOVERED FROM PANIC at {}:{}", file, line),
+            2 => {
+                // CFSR bit 20 (UFSR.STKOF) = the MSPLIM stack-limit guard tripped:
+                // a stack overflow, escalated to HardFault (see stack.rs).
+                let cause = if cfsr & 0x0010_0000 != 0 { " [STACK OVERFLOW]" } else { "" };
+                log::error!(
+                    target: "fault",
+                    "RECOVERED FROM HARDFAULT{} core={} pc=0x{:08x} lr=0x{:08x} cfsr=0x{:08x} sp=0x{:08x}",
+                    cause, cpuid, pc, lr, cfsr, sp
+                );
+                // Second line: the stack-scan backtrace (addr2line each). Split out
+                // because the combined line would exceed the 128-byte log line cap.
+                log::error!(
+                    target: "fault",
+                    "fault bt: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                    bt[0], bt[1], bt[2], bt[3], bt[4], bt[5], bt[6], bt[7]
+                );
+            }
+            other => log::error!(target: "fault", "RECOVERED FROM fault kind={} pc=0x{:08x} lr=0x{:08x}", other, pc, lr),
+        }
+    }
+}
+
+/// SCB Configurable Fault Status Register — the fault-cause bits.
+const SCB_CFSR: *const u32 = 0xE000_ED28 as *const u32;
+/// RP2350 SIO CPUID register — reads 0 on Core 0, 1 on Core 1.
+const SIO_CPUID: *const u32 = 0xD000_0000 as *const u32;
+
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    // Free the handler from the MSPLIM guard before it touches the stack (see
+    // stack::disarm_guard): a panic raised near the limit must not re-trip it.
+    stack::disarm_guard();
+    // De-energise the kiln (RAM-safe raw GPIO write), stash the panic site, then
+    // reset immediately — do NOT rely on the watchdog, which a live Core 1 keeps
+    // feeding (the chip would otherwise hang here forever). The SSR pins reinit to
+    // Level::Low on the reboot, so the relay stays off across the reset.
+    platform::raw_ssr_off();
+    let (fp, fl, line) = match info.location() {
+        Some(loc) => (loc.file().as_ptr() as u32, loc.file().len() as u32, loc.line()),
+        None => (0, 0, 0),
+    };
+    let cpuid = unsafe { core::ptr::read_volatile(SIO_CPUID) };
+    record_fault(1, fp, fl, line, 0, 0, 0, cpuid, 0, [0; BT_DEPTH]);
+    cortex_m::peripheral::SCB::sys_reset()
+}
+
+/// Top of SRAM (RP2350: 512 KiB at 0x20000000) — the upper bound for the stack scan.
+const RAM_TOP: usize = 0x2008_0000;
+
+#[cortex_m_rt::exception]
+unsafe fn HardFault(ef: &cortex_m_rt::ExceptionFrame) -> ! {
+    // Disarm MSPLIM first: an overflow fault enters here with SP near the limit, so
+    // the handler's own frame (stack scan + record) must be free to use the reserve
+    // below it without re-tripping the guard into a nested fault → lockup.
+    stack::disarm_guard();
+    platform::raw_ssr_off();
+    let cfsr = core::ptr::read_volatile(SCB_CFSR);
+    let cpuid = core::ptr::read_volatile(SIO_CPUID);
+    // pc/lr are null here (branch-to-null zeroes them), so walk the faulting stack
+    // upward from the exception frame and collect words that look like code return
+    // addresses (flash XIP range, Thumb bit set). addr2line these to find who called
+    // through the null pointer.
+    let mut bt = [0u32; BT_DEPTH];
+    let sp = ef as *const cortex_m_rt::ExceptionFrame as usize;
+    let mut addr = sp;
+    let mut n = 0;
+    while addr < RAM_TOP && n < BT_DEPTH {
+        let v = core::ptr::read_volatile(addr as *const u32);
+        if (0x1000_0000..0x1028_0000).contains(&v) && (v & 1) == 1 {
+            bt[n] = v;
+            n += 1;
+        }
+        addr += 4;
+    }
+    record_fault(2, 0, 0, 0, ef.pc() as u32, ef.lr() as u32, cfsr, cpuid, sp as u32, bt);
+    cortex_m::peripheral::SCB::sys_reset()
 }

@@ -11,6 +11,7 @@
 //! `tests/replay_pid.rs`.
 #![cfg_attr(not(test), no_std)]
 
+pub mod diag;
 pub mod gain_schedule;
 pub mod pid;
 pub mod profile;

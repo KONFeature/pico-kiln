@@ -16,5 +16,6 @@ pub use rotation::{boot_prune_count, can_append, should_rotate, DiagEntry};
 pub const MAX_FILE_BYTES: u32 = 64 * 1024;
 /// Absolute cap across all diag files; runtime appends hard-stop here.
 pub const MAX_TOTAL_BYTES: u32 = 256 * 1024;
-/// Boot prune deletes oldest-first until total drops below this (¾ of the cap).
-pub const PRUNE_TARGET_BYTES: u32 = 192 * 1024;
+/// Boot prune deletes oldest-first until total drops below this (½ of the cap) —
+/// more reclaimed headroom per boot, so a fresh run has longer before the cap.
+pub const PRUNE_TARGET_BYTES: u32 = 128 * 1024;

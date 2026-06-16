@@ -62,16 +62,16 @@ mod tests {
 
     #[test]
     fn no_prune_when_under_target() {
-        let files = [e(50 * 1024), e(50 * 1024)]; // 100 KiB < 192 KiB
+        let files = [e(50 * 1024), e(50 * 1024)]; // 100 KiB < 128 KiB
         assert_eq!(boot_prune_count(&files), 0);
     }
 
     #[test]
     fn size_prune_drops_oldest_until_under_target() {
-        // 4 x 64 KiB = 256 KiB >= 192 KiB target. Drop oldest until < 192 KiB:
-        // 256 -> 192 (drop 1, still == target, keep going) -> 128 (drop 2). k=2.
+        // 4 x 64 KiB = 256 KiB >= 128 KiB target. Drop oldest until < 128 KiB:
+        // 256 -> 192 (drop 1) -> 128 (drop 2, still == target) -> 64 (drop 3). k=3.
         let files = [e(64 * 1024), e(64 * 1024), e(64 * 1024), e(64 * 1024)];
-        assert_eq!(boot_prune_count(&files), 2);
+        assert_eq!(boot_prune_count(&files), 3);
     }
 
     #[test]
