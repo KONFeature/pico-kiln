@@ -169,13 +169,13 @@ export class PicoAPIClient {
 		});
 	}
 
-	async clearError(): Promise<{ success: boolean; message: string }> {
+	async clearError(): Promise<{ message?: string }> {
 		return this.request("/api/cmd/clear-error", {
 			method: "POST",
 		});
 	}
 
-	async reboot(): Promise<{ success: boolean; message: string }> {
+	async reboot(): Promise<{ message?: string }> {
 		return this.request("/api/reboot", {
 			method: "POST",
 		});

@@ -553,11 +553,29 @@ fn filename_time_key(name: &str) -> u64 {
     }
 }
 
+/// Upload accumulator size. Every flush is one `mount_and_then` (a full littlefs
+/// mount-scan) + append + sync, so writing each ~1 KiB network chunk straight to
+/// flash means ~120 mounts for a 120 KiB upload — slow enough to blow picoserve's
+/// `read_request` timeout mid-stream (the original upload 500). Batching into 8 KiB
+/// cuts that ~8× (15 mounts for 120 KiB) while staying small in `.bss`.
+const UPLOAD_FLUSH: usize = 8 * 1024;
+
+/// In-RAM staging for a streamed upload: filled by [`upload_write`], drained to
+/// `upload.tmp` whenever it fills and at commit. One per device (a single upload
+/// runs at a time — file ops are idle-only and there is one web worker).
+struct UploadBuf {
+    data: [u8; UPLOAD_FLUSH],
+    len: usize,
+}
+
 /// The single littlefs mount, behind a `RefCell` because `mount_and_then` needs
 /// `&mut` storage. Core 0 is single-threaded and these methods run to completion
 /// without awaiting, so the borrow never overlaps.
 pub struct FlashStorage {
     dev: RefCell<LfsFlash>,
+    /// Upload staging buffer (see [`UploadBuf`]). Separate `RefCell` from `dev`:
+    /// the borrows never overlap (accumulate, then flush).
+    upload: RefCell<UploadBuf>,
 }
 
 impl FlashStorage {
@@ -592,6 +610,28 @@ impl FlashStorage {
     ) -> Result<R, StorageError> {
         let mut dev = self.dev.borrow_mut();
         Filesystem::mount_and_then(&mut *dev, f).map_err(|_| StorageError)
+    }
+
+    /// Append the staged `bytes` to `upload.tmp` in one flash window. Empty flush
+    /// is a no-op (no pause, no mount). Called per [`UPLOAD_FLUSH`] block and at
+    /// commit — NOT per network chunk.
+    fn flush_upload(&self, bytes: &[u8]) -> Result<(), StorageError> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        self.with_flash_paused(|| {
+            self.with_fs(|fs| {
+                fs.open_file_with_options_and_then(
+                    |o| o.write(true).create(true).append(true),
+                    path!("upload.tmp"),
+                    |file| {
+                        file.write(bytes)?;
+                        file.sync()
+                    },
+                )
+                .map(|_| ())
+            })
+        })
     }
 }
 
@@ -692,6 +732,7 @@ impl kiln_app::server::Storage for FlashStorage {
     }
 
     fn upload_begin(&self) -> Result<(), StorageError> {
+        self.upload.borrow_mut().len = 0; // discard any stale partial upload
         self.with_flash_paused(|| {
             self.with_fs(|fs| {
                 fs.open_file_with_options_and_then(
@@ -704,27 +745,35 @@ impl kiln_app::server::Storage for FlashStorage {
     }
 
     fn upload_write(&self, bytes: &[u8]) -> Result<(), StorageError> {
-        self.with_flash_paused(|| {
-            self.with_fs(|fs| {
-                fs.open_file_with_options_and_then(
-                    |o| o.write(true).append(true),
-                    path!("upload.tmp"),
-                    |file| {
-                        file.write(bytes)?;
-                        file.sync()
-                    },
-                )?;
-                Ok(())
-            })
-        })
+        // Accumulate in RAM; only touch flash once a full UPLOAD_FLUSH block is
+        // staged. `bytes` is one network chunk (<= api::FILE_CHUNK_SIZE = 1 KiB),
+        // always smaller than the 8 KiB buffer, so one flush-when-full makes room.
+        let mut acc = self.upload.borrow_mut();
+        if acc.len + bytes.len() > UPLOAD_FLUSH {
+            let len = acc.len;
+            self.flush_upload(&acc.data[..len])?;
+            acc.len = 0;
+        }
+        let len = acc.len;
+        acc.data[len..len + bytes.len()].copy_from_slice(bytes);
+        acc.len += bytes.len();
+        Ok(())
     }
 
     fn upload_commit(&self, dir: Directory, name: &str) -> Result<(), StorageError> {
         let dest = fs_path(dir_prefix(dir), name).ok_or(StorageError)?;
+        // Flush whatever is still staged, then atomically publish the temp file.
+        {
+            let mut acc = self.upload.borrow_mut();
+            let len = acc.len;
+            self.flush_upload(&acc.data[..len])?;
+            acc.len = 0;
+        }
         self.with_flash_paused(|| self.with_fs(|fs| fs.rename(path!("upload.tmp"), &dest)))
     }
 
     fn upload_abort(&self) {
+        self.upload.borrow_mut().len = 0;
         let _ = self.with_flash_paused(|| self.with_fs(|fs| fs.remove(path!("upload.tmp"))));
     }
 
@@ -973,7 +1022,11 @@ pub fn web_config() -> &'static picoserve::Config {
         picoserve::Config::new(picoserve::Timeouts {
             start_read_request: Duration::from_secs(5),
             persistent_start_read_request: Duration::from_secs(1),
-            read_request: Duration::from_secs(1),
+            // Governs each body read during a streamed upload too. Buffered uploads
+            // only stall on the per-8 KiB flash flush (~tens of ms), but give slow
+            // clients + the occasional slower mount headroom. LAN-only single worker,
+            // so the longer worker-hold on a hung connection is acceptable.
+            read_request: Duration::from_secs(5),
             write: Duration::from_secs(1),
         })
         .keep_connection_alive(),
@@ -1401,6 +1454,10 @@ pub fn init_storage(flash: Peri<'static, FLASH>) -> &'static FlashStorage {
     });
     STORAGE.init(FlashStorage {
         dev: RefCell::new(dev),
+        upload: RefCell::new(UploadBuf {
+            data: [0; UPLOAD_FLUSH],
+            len: 0,
+        }),
     })
 }
 

@@ -468,7 +468,7 @@ mod web {
     /// Upper bound on one rendered `{"name":..,"size":..,"modified":..}` object:
     /// a `NAME_CAP` (64) name + two 20-digit `u64`s + ~32 bytes of framing.
     const FILE_ENTRY_CAP: usize = 160;
-    /// Cap on a dynamic success-toast message (`{"success":true,"message":"…"}`).
+    /// Cap on a dynamic success-toast message (`{"message":"…"}`).
     /// Owned inside the tiny `ApiResponse::Message`; the longest is
     /// `"Started profile: <name>"`. Held per route slot, so kept small.
     const MSG_CAP: usize = 96;
@@ -591,7 +591,7 @@ mod web {
     }
 
     /// Enqueue a typed command, returning the reference's
-    /// `{"success":true,"message":"…"}` envelope (200), or the static
+    /// `{"message":"…"}` (200), or the static
     /// queue-full 500 — `_send_command`. The per-command `ok_message` matches
     /// the reference's `_send_command(... ok_message ...)` text so the web app's
     /// success toast reads identically.
@@ -601,9 +601,9 @@ mod web {
             let _ = msg.push_str(ok_message); // owns the (possibly dynamic) toast text
             ApiResponse::Message(msg)
         } else {
-            ApiResponse::static_json(
+            ApiResponse::error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "{\"success\":false,\"error\":\"Command queue full, please retry\"}",
+                "Command queue full, please retry",
             )
         }
     }
@@ -654,7 +654,7 @@ mod web {
         state.reboot.signal(());
         ApiResponse::static_json(
             StatusCode::OK,
-            "{\"success\":true,\"message\":\"Rebooting Pico...\"}",
+            "{\"message\":\"Rebooting Pico...\"}",
         )
     }
 
@@ -677,7 +677,7 @@ mod web {
         if state.storage.write_config(canonical.as_bytes()).is_ok() {
             ApiResponse::static_json(
                 StatusCode::OK,
-                "{\"success\":true,\"message\":\"Config saved. Reboot to apply.\"}",
+                "{\"message\":\"Config saved. Reboot to apply.\"}",
             )
         } else {
             ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to save config")
@@ -893,7 +893,7 @@ mod web {
         match upload.outcome {
             UploadOutcome::Ok(written) => {
                 if state.storage.upload_commit(directory, &file).is_ok() {
-                    // `{success, message, filename, size}` — the reference's upload
+                    // `{message, filename, size}` — the upload
                     // envelope (the web app's ProfileEditor reads `filename`/`size`).
                     // Rendered in `write_to`; we carry only the name + byte count.
                     ApiResponse::Uploaded {
@@ -901,7 +901,10 @@ mod web {
                         written,
                     }
                 } else {
-                    ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to write file")
+                    ApiResponse::error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to save uploaded file to flash",
+                    )
                 }
             }
             UploadOutcome::Missing => {
@@ -910,8 +913,12 @@ mod web {
             UploadOutcome::TooLarge => {
                 ApiResponse::error(StatusCode::PAYLOAD_TOO_LARGE, "File too large")
             }
-            UploadOutcome::Failed => {
-                ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to write file")
+            UploadOutcome::ReadFailed => ApiResponse::error(
+                StatusCode::REQUEST_TIMEOUT,
+                "Upload interrupted — read timed out or connection dropped",
+            ),
+            UploadOutcome::WriteFailed => {
+                ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to write file to flash")
             }
             UploadOutcome::NotIdle => ApiResponse::error(
                 StatusCode::FORBIDDEN,
@@ -931,7 +938,7 @@ mod web {
             Err(resp) => return resp,
         };
         if state.storage.remove(directory, &file).is_ok() {
-            ApiResponse::static_json(StatusCode::OK, "{\"success\":true}")
+            ApiResponse::static_json(StatusCode::OK, "{}")
         } else {
             ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete file")
         }
@@ -997,17 +1004,12 @@ mod web {
         Index(AppState),
         /// `GET /api/files/{dir}` — directory scanned + streamed in `write_to`.
         FileList(AppState, Directory),
-        /// `{"success":true,"message":"<msg>"}` with an owned (dynamic) message.
+        /// `{"message":"<msg>"}` with an owned (dynamic) message.
         Message(heapless::String<MSG_CAP>),
-        /// The upload-success envelope `{success,message,filename,size}`.
+        /// The upload-success body `{message,filename,size}`.
         Uploaded {
             name: heapless::String<64>,
             written: usize,
-        },
-        /// `{"success":false,"error":"<message>"}` envelope (the message is static).
-        Fail {
-            status: StatusCode,
-            message: &'static str,
         },
         /// A pre-formed JSON literal, sent verbatim as `application/json`.
         Json {
@@ -1037,9 +1039,11 @@ mod web {
         fn error_text(status: StatusCode, body: &'static str) -> Self {
             ApiResponse::Text { status, body }
         }
-        /// A `{"success":false,"error":"..."}` envelope (rendered in `write_to`).
+        /// A plain-text error body — the status code conveys failure, so no
+        /// `{"success":false,...}` envelope. Identical to [`error_text`]; kept as a
+        /// distinct name for the many error call sites.
         fn error(status: StatusCode, message: &'static str) -> Self {
-            ApiResponse::Fail { status, message }
+            ApiResponse::Text { status, body: message }
         }
     }
 
@@ -1168,7 +1172,7 @@ mod web {
                 }
                 ApiResponse::Message(msg) => {
                     let mut b = heapless::String::<RENDER_CAP>::new();
-                    let _ = write!(b, "{{\"success\":true,\"message\":\"{}\"}}", msg);
+                    let _ = write!(b, "{{\"message\":\"{}\"}}", msg);
                     respond(
                         StatusCode::OK,
                         "application/json",
@@ -1182,7 +1186,7 @@ mod web {
                     let mut b = heapless::String::<RENDER_CAP>::new();
                     let _ = write!(
                         b,
-                        "{{\"success\":true,\"message\":\"Uploaded {}\",\"filename\":\"{}\",\"size\":{}}}",
+                        "{{\"message\":\"Uploaded {}\",\"filename\":\"{}\",\"size\":{}}}",
                         name, name, written
                     );
                     respond(
@@ -1193,11 +1197,6 @@ mod web {
                         response_writer,
                     )
                     .await
-                }
-                ApiResponse::Fail { status, message } => {
-                    let mut b = heapless::String::<RENDER_CAP>::new();
-                    let _ = write!(b, "{{\"success\":false,\"error\":\"{}\"}}", message);
-                    respond(status, "application/json", b, connection, response_writer).await
                 }
                 // --- verbatim bodies ---
                 ApiResponse::Json { status, body } => {
@@ -1335,7 +1334,7 @@ mod web {
             let mut prefix = heapless::String::<96>::new();
             let _ = write!(
                 prefix,
-                "{{\"success\":true,\"directory\":\"{}\",\"files\":[",
+                "{{\"directory\":\"{}\",\"files\":[",
                 self.directory.as_str()
             );
             chunk_writer.write_chunk(prefix.as_bytes()).await?;
@@ -1498,7 +1497,11 @@ mod web {
         Ok(usize),
         Missing,
         TooLarge,
-        Failed,
+        /// Reading the request body failed — client dropped or too slow (the
+        /// picoserve `read_request` timeout). Surfaced as 408, not 500.
+        ReadFailed,
+        /// Writing the staged bytes to flash failed.
+        WriteFailed,
         /// Rejected before streaming: file ops are idle-only.
         NotIdle,
     }
@@ -1547,7 +1550,7 @@ mod web {
     ) -> UploadOutcome {
         use picoserve::io::Read as _;
         if state.storage.upload_begin().is_err() {
-            return UploadOutcome::Failed;
+            return UploadOutcome::WriteFailed;
         }
         let mut reader = request_body.reader();
         let mut buf = [0u8; api::FILE_CHUNK_SIZE];
@@ -1558,13 +1561,14 @@ mod web {
                 Ok(n) => {
                     if state.storage.upload_write(&buf[..n]).is_err() {
                         state.storage.upload_abort();
-                        return UploadOutcome::Failed;
+                        return UploadOutcome::WriteFailed;
                     }
                     written += n;
                 }
                 Err(_) => {
+                    // Body read timed out or the connection dropped mid-stream.
                     state.storage.upload_abort();
-                    return UploadOutcome::Failed;
+                    return UploadOutcome::ReadFailed;
                 }
             }
         }

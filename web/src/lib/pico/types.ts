@@ -96,21 +96,15 @@ export interface RunProfileRequest {
 }
 
 export interface RunProfileResponse {
-	success: boolean;
 	message?: string;
-	error?: string;
 }
 
 export interface StopResponse {
-	success: boolean;
 	message?: string;
-	error?: string;
 }
 
 export interface ShutdownResponse {
-	success: boolean;
 	message?: string;
-	error?: string;
 }
 
 export interface StartTuningRequest {
@@ -119,15 +113,11 @@ export interface StartTuningRequest {
 }
 
 export interface StartTuningResponse {
-	success: boolean;
 	message?: string;
-	error?: string;
 }
 
 export interface StopTuningResponse {
-	success: boolean;
 	message?: string;
-	error?: string;
 }
 
 // Scheduling API types
@@ -137,9 +127,7 @@ export interface ScheduleProfileRequest {
 }
 
 export interface ScheduleProfileResponse {
-	success: boolean;
 	message?: string;
-	error?: string;
 }
 
 export interface ScheduledStatusResponse {
@@ -151,9 +139,7 @@ export interface ScheduledStatusResponse {
 }
 
 export interface CancelScheduledResponse {
-	success: boolean;
 	message?: string;
-	error?: string;
 }
 
 // Connection health
@@ -174,24 +160,18 @@ export interface FileMetadata {
 }
 
 export interface ListFilesResponse {
-	success: boolean;
 	directory: FileDirectory;
 	count: number;
 	files: FileMetadata[];
-	error?: string;
 }
 
 export interface DeleteFileResponse {
-	success: boolean;
 	message?: string;
-	error?: string;
 }
 
 export interface UploadFileResponse {
-	success: boolean;
 	message?: string;
 	filename?: string;
-	error?: string;
 }
 
 // === Kiln Configuration (GET/POST /api/config) ===
@@ -284,7 +264,5 @@ export interface KilnConfig {
 export type ConfigValue = string | number | boolean | number[] | null;
 
 export interface SaveConfigResponse {
-	success: boolean;
 	message?: string;
-	error?: string;
 }

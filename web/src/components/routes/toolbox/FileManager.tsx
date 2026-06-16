@@ -116,7 +116,7 @@ export function FileManager() {
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	};
 
-	const files = filesData?.success ? filesData.files : [];
+	const files = filesData ? filesData.files : [];
 	const totalSize = files.reduce((sum, file) => sum + file.size, 0);
 
 	return (

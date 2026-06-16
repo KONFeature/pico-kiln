@@ -9,7 +9,6 @@ import {
 import { readFileAsText } from "../utils";
 import { type PicoAPIClient, PicoAPIError } from "./client";
 import { usePico } from "./context";
-import { isLogicalFailure } from "./errors";
 import type {
 	CancelScheduledResponse,
 	DeleteFileResponse,
@@ -38,25 +37,6 @@ export const picoKeys = {
 		["file-content", directory, filename] as const,
 	config: ["pico", "config"] as const,
 };
-
-/**
- * Rethrow logical failures (`{ success: false }` returned with HTTP 200) as a
- * PicoAPIError so mutations surface them through `isError` instead of resolving
- * silently. The original response is attached so `getFriendlyError` can detect
- * the device-provided reason and trust it.
- */
-function unwrap<
-	T extends { success: boolean; error?: string; message?: string },
->(res: T, fallback: string): T {
-	if (!res.success) {
-		throw new PicoAPIError(
-			res.error ?? res.message ?? fallback,
-			undefined,
-			res,
-		);
-	}
-	return res;
-}
 
 /**
  * Narrow the optional Pico client to a guaranteed instance, throwing a uniform
@@ -130,10 +110,7 @@ export function useRunProfile() {
 	return useMutation<RunProfileResponse, PicoAPIError, string>({
 		mutationFn: async (profileName: string) => {
 			assertClient(client);
-			return unwrap(
-				await client.runProfile(profileName),
-				"Failed to start profile",
-			);
+			return await client.runProfile(profileName);
 		},
 		onSuccess: () => {
 			// Immediately refetch status after starting a profile
@@ -152,7 +129,7 @@ export function useStopProfile() {
 	return useMutation<StopResponse, PicoAPIError, void>({
 		mutationFn: async () => {
 			assertClient(client);
-			return unwrap(await client.stopProfile(), "Failed to stop profile");
+			return await client.stopProfile();
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -170,7 +147,7 @@ export function useShutdown() {
 	return useMutation<ShutdownResponse, PicoAPIError, void>({
 		mutationFn: async () => {
 			assertClient(client);
-			return unwrap(await client.shutdown(), "Failed to shut down kiln");
+			return await client.shutdown();
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -188,7 +165,7 @@ export function useClearError() {
 	return useMutation({
 		mutationFn: async () => {
 			assertClient(client);
-			return unwrap(await client.clearError(), "Failed to clear error");
+			return await client.clearError();
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -204,33 +181,26 @@ export function useReboot() {
 	const { client } = usePico();
 	const queryClient = useQueryClient();
 
-	return useMutation<{ success: boolean; message: string }, PicoAPIError, void>(
-		{
-			mutationFn: async () => {
-				assertClient(client);
-				try {
-					return unwrap(await client.reboot(), "Failed to reboot");
-				} catch (error) {
-					// Reboot drops the connection before responding, so a timeout or
-					// network failure (no HTTP status, and not an explicit
-					// `{ success: false }`) means the command landed. A real HTTP error
-					// or a logical rejection means it did NOT.
-					if (
-						error instanceof PicoAPIError &&
-						error.statusCode === undefined &&
-						!isLogicalFailure(error)
-					) {
-						return { success: true, message: "Reboot initiated" };
-					}
-					throw error;
+	return useMutation<{ message?: string }, PicoAPIError, void>({
+		mutationFn: async () => {
+			assertClient(client);
+			try {
+				return await client.reboot();
+			} catch (error) {
+				// Reboot drops the connection before responding, so a timeout or
+				// network failure (no HTTP status) means the command landed. A real
+				// HTTP error means it did NOT.
+				if (error instanceof PicoAPIError && error.statusCode === undefined) {
+					return { message: "Reboot initiated" };
 				}
-			},
-			onSuccess: () => {
-				// Invalidate all queries since the Pico is rebooting
-				queryClient.invalidateQueries({ queryKey: picoKeys.status });
-			},
+				throw error;
+			}
 		},
-	);
+		onSuccess: () => {
+			// Invalidate all queries since the Pico is rebooting
+			queryClient.invalidateQueries({ queryKey: picoKeys.status });
+		},
+	});
 }
 
 // === Tuning Mutations ===
@@ -250,10 +220,7 @@ export function useStartTuning() {
 	return useMutation<StartTuningResponse, PicoAPIError, StartTuningParams>({
 		mutationFn: async ({ mode, maxTemp }) => {
 			assertClient(client);
-			return unwrap(
-				await client.startTuning(mode, maxTemp),
-				"Failed to start tuning",
-			);
+			return await client.startTuning(mode, maxTemp);
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -271,7 +238,7 @@ export function useStopTuning() {
 	return useMutation<StopTuningResponse, PicoAPIError, void>({
 		mutationFn: async () => {
 			assertClient(client);
-			return unwrap(await client.stopTuning(), "Failed to stop tuning");
+			return await client.stopTuning();
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -300,10 +267,7 @@ export function useScheduleProfile() {
 	>({
 		mutationFn: async ({ profileName, startTime }) => {
 			assertClient(client);
-			return unwrap(
-				await client.scheduleProfile(profileName, startTime),
-				"Failed to schedule profile",
-			);
+			return await client.scheduleProfile(profileName, startTime);
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -344,10 +308,7 @@ export function useCancelScheduled() {
 	return useMutation<CancelScheduledResponse, PicoAPIError, void>({
 		mutationFn: async () => {
 			assertClient(client);
-			return unwrap(
-				await client.cancelScheduled(),
-				"Failed to cancel scheduled profile",
-			);
+			return await client.cancelScheduled();
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
@@ -433,10 +394,7 @@ export function useDeleteFile() {
 	>({
 		mutationFn: async ({ directory, filename }) => {
 			assertClient(client);
-			return unwrap(
-				await client.deleteFile(directory, filename),
-				"Failed to delete file",
-			);
+			return await client.deleteFile(directory, filename);
 		},
 		onSuccess: (_data, variables) => {
 			queryClient.invalidateQueries({
@@ -469,10 +427,7 @@ export function useDeleteAllFiles() {
 			let deletedCount = 0;
 			for (const filename of filenames) {
 				try {
-					unwrap(
-						await client.deleteFile(directory, filename),
-						"Failed to delete file",
-					);
+					await client.deleteFile(directory, filename);
 					deletedCount++;
 				} catch (e) {
 					errors.push(
@@ -527,10 +482,7 @@ export function useUploadFiles() {
 							// not valid JSON — leave content untouched
 						}
 					}
-					unwrap(
-						await client.uploadFile(directory, file.name, content),
-						"Failed to upload file",
-					);
+					await client.uploadFile(directory, file.name, content);
 					uploadedCount++;
 				} catch (e) {
 					errors.push(
@@ -619,7 +571,7 @@ export function useSaveConfig() {
 		{
 			mutationFn: async (patch) => {
 				assertClient(client);
-				return unwrap(await client.saveConfig(patch), "Failed to save config");
+				return await client.saveConfig(patch);
 			},
 			onSuccess: () => {
 				queryClient.invalidateQueries({ queryKey: picoKeys.config });

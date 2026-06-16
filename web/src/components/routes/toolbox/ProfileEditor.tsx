@@ -147,10 +147,7 @@ export function ProfileEditor() {
 		retry: 1,
 	});
 	const existingNames = useMemo(
-		() =>
-			new Set(
-				profilesData?.success ? profilesData.files.map((f) => f.name) : [],
-			),
+		() => new Set(profilesData ? profilesData.files.map((f) => f.name) : []),
 		[profilesData],
 	);
 
@@ -165,11 +162,9 @@ export function ProfileEditor() {
 			if (!client) throw new Error("Pico client not configured");
 			return client.uploadFile("profiles", filename, content);
 		},
-		onSuccess: (data) => {
-			if (data.success) {
-				setSavedSnapshot(JSON.stringify(profile));
-				queryClient.invalidateQueries({ queryKey: ["files", "profiles"] });
-			}
+		onSuccess: () => {
+			setSavedSnapshot(JSON.stringify(profile));
+			queryClient.invalidateQueries({ queryKey: ["files", "profiles"] });
 		},
 	});
 
@@ -815,7 +810,7 @@ export function ProfileEditor() {
 										</>
 									)}
 								</Button>
-								{uploadMutation.isSuccess && uploadMutation.data?.success && (
+								{uploadMutation.isSuccess && (
 									<Alert>
 										<CheckCircle className="h-4 w-4" />
 										<AlertDescription>
