@@ -3,6 +3,7 @@ import {
 	Edit,
 	Flame,
 	FolderOpen,
+	Gauge,
 	LineChart,
 	Menu,
 	ScrollText,
@@ -102,6 +103,16 @@ export default function Header() {
 					>
 						<LineChart size={20} />
 						<span className="font-medium">Visualizer</span>
+					</Link>
+
+					<Link
+						to="/analyze"
+						onClick={closeMenu}
+						className={navLinkClass}
+						activeProps={{ className: navLinkActiveClass }}
+					>
+						<Gauge size={20} />
+						<span className="font-medium">Analyze Tuning</span>
 					</Link>
 
 					<Link

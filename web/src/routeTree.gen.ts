@@ -14,6 +14,7 @@ import { Route as LogsRouteImport } from './routes/logs'
 import { Route as FilesRouteImport } from './routes/files'
 import { Route as EditorRouteImport } from './routes/editor'
 import { Route as ConfigRouteImport } from './routes/config'
+import { Route as AnalyzeRouteImport } from './routes/analyze'
 import { Route as IndexRouteImport } from './routes/index'
 
 const VisualizerRoute = VisualizerRouteImport.update({
@@ -41,6 +42,11 @@ const ConfigRoute = ConfigRouteImport.update({
   path: '/config',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AnalyzeRoute = AnalyzeRouteImport.update({
+  id: '/analyze',
+  path: '/analyze',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -49,6 +55,7 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/analyze': typeof AnalyzeRoute
   '/config': typeof ConfigRoute
   '/editor': typeof EditorRoute
   '/files': typeof FilesRoute
@@ -57,6 +64,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/analyze': typeof AnalyzeRoute
   '/config': typeof ConfigRoute
   '/editor': typeof EditorRoute
   '/files': typeof FilesRoute
@@ -66,6 +74,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/analyze': typeof AnalyzeRoute
   '/config': typeof ConfigRoute
   '/editor': typeof EditorRoute
   '/files': typeof FilesRoute
@@ -74,12 +83,27 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/config' | '/editor' | '/files' | '/logs' | '/visualizer'
+  fullPaths:
+    | '/'
+    | '/analyze'
+    | '/config'
+    | '/editor'
+    | '/files'
+    | '/logs'
+    | '/visualizer'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/config' | '/editor' | '/files' | '/logs' | '/visualizer'
+  to:
+    | '/'
+    | '/analyze'
+    | '/config'
+    | '/editor'
+    | '/files'
+    | '/logs'
+    | '/visualizer'
   id:
     | '__root__'
     | '/'
+    | '/analyze'
     | '/config'
     | '/editor'
     | '/files'
@@ -89,6 +113,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AnalyzeRoute: typeof AnalyzeRoute
   ConfigRoute: typeof ConfigRoute
   EditorRoute: typeof EditorRoute
   FilesRoute: typeof FilesRoute
@@ -133,6 +158,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConfigRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/analyze': {
+      id: '/analyze'
+      path: '/analyze'
+      fullPath: '/analyze'
+      preLoaderRoute: typeof AnalyzeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -145,6 +177,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AnalyzeRoute: AnalyzeRoute,
   ConfigRoute: ConfigRoute,
   EditorRoute: EditorRoute,
   FilesRoute: FilesRoute,
