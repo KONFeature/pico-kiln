@@ -2,6 +2,7 @@
 
 export type KilnState = "IDLE" | "RUNNING" | "TUNING" | "COMPLETE" | "ERROR";
 export type TempUnits = "c" | "f";
+export type LogLevel = "off" | "error" | "warn" | "info" | "debug";
 export type TuningMode = "SAFE" | "STANDARD" | "THOROUGH" | "HIGH_TEMP";
 export type ProfileStepType = "ramp" | "hold" | "cooling";
 
@@ -252,6 +253,8 @@ export interface KilnConfig {
 	LOGGING_INTERVAL: number;
 	ENABLE_WATCHDOG: boolean;
 	WATCHDOG_TIMEOUT: number;
+	LOG_LEVEL: LogLevel;
+	LOG_TO_FLASH: boolean;
 
 	// LCD (optional)
 	LCD_I2C_ID: number;

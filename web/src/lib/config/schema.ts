@@ -319,6 +319,25 @@ export const SECTIONS: ConfigSectionDef[] = [
 				validate: num(1, 600, true),
 			},
 			{
+				key: "LOG_LEVEL",
+				label: "Diagnostic log level",
+				help: 'Verbosity of the on-device diagnostic log. "off" disables all diagnostic logging; "debug" is the most verbose but churns the diag flash — use it only when investigating an issue.',
+				type: "select",
+				options: [
+					{ value: "off", label: "Off" },
+					{ value: "error", label: "Error" },
+					{ value: "warn", label: "Warning" },
+					{ value: "info", label: "Info" },
+					{ value: "debug", label: "Debug" },
+				],
+			},
+			{
+				key: "LOG_TO_FLASH",
+				label: "Persist diagnostic log to flash",
+				help: "Write the diagnostic log to flash so it survives a reboot and is retrievable via the logs API. Disable to keep logs in RAM only.",
+				type: "switch",
+			},
+			{
 				key: "ENABLE_WATCHDOG",
 				label: "Enable hardware watchdog",
 				help: "Resets the Pico automatically if the firmware ever hangs. Recommended on.",
