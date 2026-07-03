@@ -195,7 +195,11 @@ impl KilnController {
         self.elapsed_offset = 0.0;
         self.last_update_time = None;
         self.error = None;
-        self.current_step_index = 0;
+        // Skip steps the kiln has already climbed past: a fresh launch at 683 °C
+        // should join the step whose band still lies ahead, not re-run (and try
+        // to cool down through) earlier ramps/holds. On a cold start this lands
+        // on step 0, preserving the previous behaviour.
+        self.current_step_index = self.find_step_for_temp(self.current_temp);
         self.step_start_time = 0.0;
         self.step_start_temp = self.current_temp;
         self.temp_history.clear();
@@ -510,6 +514,67 @@ impl KilnController {
         true
     }
 
+    /// Find the first step whose target the kiln has *not* yet reached, so a
+    /// fresh launch can skip steps already satisfied by `current_temp`. Walks the
+    /// nominal schedule (seeded from [`FIND_START_TEMP`], like
+    /// `find_step_for_elapsed`), tracking the heat/cool direction so each step's
+    /// target is compared against `current_temp` in the direction the profile is
+    /// travelling. Returns the step index to start in (last step if every target
+    /// is already reached).
+    fn find_step_for_temp(&self, current_temp: f32) -> usize {
+        let prof = match &self.profile {
+            Some(p) if p.step_count() > 0 => p,
+            _ => return 0,
+        };
+        let steps = prof.steps();
+        let mut profile_temp = FIND_START_TEMP;
+        let mut heating = true;
+
+        for (i, step) in steps.iter().enumerate() {
+            let reached = match step.kind {
+                StepKind::Ramp => {
+                    let target = step.target_temp.unwrap_or(profile_temp);
+                    if target >= profile_temp {
+                        current_temp >= target
+                    } else {
+                        current_temp <= target
+                    }
+                }
+                StepKind::Hold => {
+                    let target = step.target_temp.unwrap_or(profile_temp);
+                    if heating {
+                        current_temp >= target
+                    } else {
+                        current_temp <= target
+                    }
+                }
+                StepKind::Cooling => match step.target_temp {
+                    Some(target) => current_temp <= target,
+                    None => false,
+                },
+            };
+            if !reached {
+                return i;
+            }
+            // Advance the nominal profile temperature / direction for the next step.
+            match step.kind {
+                StepKind::Ramp => {
+                    let target = step.target_temp.unwrap_or(profile_temp);
+                    heating = target >= profile_temp;
+                    profile_temp = target;
+                }
+                StepKind::Cooling => {
+                    if let Some(target) = step.target_temp {
+                        heating = false;
+                        profile_temp = target;
+                    }
+                }
+                StepKind::Hold => {}
+            }
+        }
+        steps.len() - 1
+    }
+
     /// Estimate which step `elapsed_seconds` falls in. Mirrors
     /// `_find_step_for_elapsed` (note: seeds `profile_temp` from 20, unlike the
     /// duration estimator). Returns `(index, time_in_step, step_start_temp)`.
@@ -633,6 +698,41 @@ mod tests {
         c.set_error(KilnError::NoActiveProfile);
         assert!(c.clear_error());
         assert_eq!(c.state, KilnState::Idle);
+    }
+
+    #[test]
+    fn fresh_launch_seeks_step_from_current_temp() {
+        // User scenario: kiln already hot (683 °C) when relaunching a profile.
+        // Steps 1 (0→100) and 2 (100→600) are already climbed past; the run must
+        // join step 3 (600→860) and ramp *up*, not restart at step 1.
+        let mut c = KilnController::new(cfg());
+        c.current_temp = 683.0;
+        let p = Profile::new(&[
+            Step::ramp(100.0, Some(50.0), None),
+            Step::ramp(600.0, Some(100.0), None),
+            Step::ramp(860.0, Some(150.0), None),
+        ])
+        .unwrap();
+        assert!(c.run_profile(p, 0));
+        assert_eq!(c.current_step_index(), 2);
+        // First tick: ascending target starts at current temp and climbs.
+        let target = c.update(683.0, 0);
+        assert!(target >= 683.0, "target should ramp up from 683, got {target}");
+        assert_eq!(c.state, KilnState::Running);
+    }
+
+    #[test]
+    fn fresh_launch_cold_starts_at_step_zero() {
+        // A cold kiln must still begin at step 0 (previous behaviour preserved).
+        let mut c = KilnController::new(cfg());
+        c.current_temp = 20.0;
+        let p = Profile::new(&[
+            Step::ramp(100.0, Some(50.0), None),
+            Step::ramp(600.0, Some(100.0), None),
+        ])
+        .unwrap();
+        assert!(c.run_profile(p, 0));
+        assert_eq!(c.current_step_index(), 0);
     }
 
     #[test]
