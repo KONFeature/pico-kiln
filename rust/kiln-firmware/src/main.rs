@@ -315,8 +315,14 @@ async fn control_task(
 
             // Flash handshake: if Core 0 is about to program flash, de-energise
             // the SSR now (flash still live) and park in RAM until it is done.
+            // `pause_ssr_off` (NOT `force_ssr_off`): only the pins are dropped;
+            // the duty schedule is untouched, so the `ssr_subtick` right after the
+            // park re-energises immediately. `force_ssr_off` zeroed the LOCKED
+            // duty, which re-latches only at the next SSR cycle boundary — an
+            // unintended relay-off of up to SSR_CYCLE_TIME (20 s) per flash flush,
+            // seen on hardware as a ~15 s heat dropout every 120 s at 100% duty.
             if flash_handshake::pause_requested() {
-                let _ = controller.force_ssr_off();
+                let _ = controller.pause_ssr_off();
                 flash_handshake::park_until_idle(platform::raw_watchdog_feed);
             }
 

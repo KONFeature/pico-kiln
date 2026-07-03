@@ -334,10 +334,25 @@ where
         Ok(on)
     }
 
-    /// Immediately de-energise the relay(s) and zero the duty. The firmware's
-    /// flash-write handshake calls this before pausing Core 1 (Oracle Q1).
+    /// Immediately de-energise the relay(s) and zero the duty — the EMERGENCY
+    /// path (sensor fault, over-temp, stop). Zeroing the schedule keeps the
+    /// relay off until a fresh `set_output`.
     pub fn force_ssr_off(&mut self) -> Result<(), O::Error> {
         self.ssr_sched.force_off();
+        self.ssr_out.force_off()
+    }
+
+    /// De-energise the relay(s) for a TRANSIENT pause (the firmware's flash-write
+    /// handshake) WITHOUT touching the duty schedule. The next
+    /// [`ssr_subtick`](Self::ssr_subtick) after the pause re-applies the scheduled
+    /// state, so heating resumes immediately.
+    ///
+    /// Using [`force_ssr_off`](Self::force_ssr_off) here instead would zero the
+    /// *locked* duty, which only re-latches at the next SSR cycle boundary — up to
+    /// a full `SSR_CYCLE_TIME` (20 s) of unintended relay-off per flash flush,
+    /// phase-locked to the flush cadence (observed on hardware as a ~15 s SSR
+    /// dropout every 120 s at 100% output).
+    pub fn pause_ssr_off(&mut self) -> Result<(), O::Error> {
         self.ssr_out.force_off()
     }
 

@@ -285,6 +285,43 @@ mod tests {
     }
 
     #[test]
+    fn flash_pause_does_not_zero_duty_until_next_cycle() {
+        // Regression: the firmware's flash-write handshake de-energises the SSR
+        // before parking Core 1. It used `force_ssr_off`, which zeroes the LOCKED
+        // duty — re-latched only at the next SSR cycle boundary — so a flash
+        // flush at 100% duty knocked the relay off for the REMAINDER of the 20 s
+        // cycle (observed: ~15 s dropout every 120 s flush). `pause_ssr_off` must
+        // leave the schedule untouched so the first sub-tick after the park
+        // re-energises immediately.
+        let mut c = new_controller();
+        let profile = Profile::new(&[Step::ramp(1200.0, Some(10_000.0), None)]).unwrap();
+        c.iterate(None, 500, 0); // warm-up read (25°C)
+        c.iterate(
+            Some(Command::RunProfile {
+                profile: name("glaze.json"),
+                parsed: profile,
+            }),
+            1_000,
+            1,
+        );
+        // Far below target → PID commands (near) full duty. Advance past a cycle
+        // boundary so the duty is locked in and the relay is ON.
+        c.iterate(None, 2_000, 2);
+        assert!(c.ssr_subtick(21_000).unwrap(), "relay ON at high duty");
+
+        // Flash pause mid-cycle: pins off, schedule untouched.
+        c.pause_ssr_off().unwrap();
+
+        // First sub-tick after the park (100 ms later, same cycle) must be ON
+        // again — with the old force_ssr_off this stayed OFF until the next
+        // cycle boundary (up to SSR_CYCLE_TIME later).
+        assert!(
+            c.ssr_subtick(21_100).unwrap(),
+            "relay must re-energise on the first sub-tick after a flash pause"
+        );
+    }
+
+    #[test]
     fn scheduled_profile_fires_when_due() {
         let mut c = new_controller();
         let profile = Profile::new(&[Step::hold(100.0, 10_000.0)]).unwrap();
