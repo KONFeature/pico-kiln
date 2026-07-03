@@ -232,6 +232,14 @@ export const SECTIONS: ConfigSectionDef[] = [
 				validate: num(0, 7200),
 			},
 			{
+				key: "STALL_RATE_RATIO",
+				label: "Stall rate ratio",
+				help: "Fallback minimum heating rate as a fraction of a step's target rate, used when the step sets no explicit min rate. E.g. 0.8 stalls below 80% of the target rate. Set 0 to disable the fallback check.",
+				type: "number",
+				unit: "× rate",
+				validate: num(0, 1),
+			},
+			{
 				key: "RATE_MEASUREMENT_WINDOW",
 				label: "Rate measurement window",
 				help: "Rolling window used to compute the average heating/cooling rate.",

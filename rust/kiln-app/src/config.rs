@@ -216,6 +216,7 @@ pub struct KilnConfig {
     pub stall_check_interval: f64,
     pub stall_consecutive_fails: u32,
     pub stall_min_step_time: f64,
+    pub stall_rate_ratio: f64,
     pub rate_measurement_window: f64,
     pub rate_recording_interval: f64,
 
@@ -280,6 +281,7 @@ impl Default for KilnConfig {
             stall_check_interval: 60.0,
             stall_consecutive_fails: 3,
             stall_min_step_time: 600.0,
+            stall_rate_ratio: 0.8,
             rate_measurement_window: 600.0,
             rate_recording_interval: 10.0,
 
@@ -329,6 +331,7 @@ impl KilnConfig {
             stall_check_interval: self.stall_check_interval as f32,
             stall_consecutive_fails: self.stall_consecutive_fails,
             stall_min_step_time: self.stall_min_step_time as f32,
+            stall_rate_ratio: self.stall_rate_ratio as f32,
         }
     }
 
@@ -410,6 +413,7 @@ impl KilnConfig {
             self.stall_consecutive_fails as u64,
         )?;
         j.float("STALL_MIN_STEP_TIME", self.stall_min_step_time)?;
+        j.float("STALL_RATE_RATIO", self.stall_rate_ratio)?;
         j.float("RATE_MEASUREMENT_WINDOW", self.rate_measurement_window)?;
         j.float("RATE_RECORDING_INTERVAL", self.rate_recording_interval)?;
 
@@ -518,6 +522,7 @@ fn apply_key(cfg: &mut KilnConfig, key: &str, r: &mut Reader) -> Result<(), Conf
         "STALL_CHECK_INTERVAL" => cfg.stall_check_interval = r.parse_number()?,
         "STALL_CONSECUTIVE_FAILS" => cfg.stall_consecutive_fails = r.parse_number()? as u32,
         "STALL_MIN_STEP_TIME" => cfg.stall_min_step_time = r.parse_number()?,
+        "STALL_RATE_RATIO" => cfg.stall_rate_ratio = r.parse_number()?,
         "RATE_MEASUREMENT_WINDOW" => cfg.rate_measurement_window = r.parse_number()?,
         "RATE_RECORDING_INTERVAL" => cfg.rate_recording_interval = r.parse_number()?,
 
@@ -905,6 +910,7 @@ mod tests {
         assert_eq!(c.stall_check_interval, 60.0);
         assert_eq!(c.stall_consecutive_fails, 3);
         assert_eq!(c.stall_min_step_time, 600.0);
+        assert_eq!(c.stall_rate_ratio, 0.8);
     }
 
     #[test]

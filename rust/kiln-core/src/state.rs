@@ -75,6 +75,11 @@ pub struct ControllerConfig {
     pub stall_check_interval: f32,
     pub stall_consecutive_fails: u32,
     pub stall_min_step_time: f32,
+    /// Fraction of a ramp's `desired_rate` used as the fallback minimum rate when
+    /// the step omits an explicit `min_rate`. A step running slower than this for
+    /// [`stall_consecutive_fails`](Self::stall_consecutive_fails) checks faults as
+    /// a stall. `0.0` disables the fallback check.
+    pub stall_rate_ratio: f32,
 }
 
 impl Default for ControllerConfig {
@@ -86,6 +91,7 @@ impl Default for ControllerConfig {
             stall_check_interval: 60.0,
             stall_consecutive_fails: 3,
             stall_min_step_time: 600.0,
+            stall_rate_ratio: 0.8,
         }
     }
 }
@@ -340,7 +346,7 @@ impl KilnController {
         // Stall detection (ramp steps only).
         let mut min_rate = current_step.min_rate;
         if current_step.kind == StepKind::Ramp && min_rate.is_none() {
-            min_rate = Some(current_step.desired_rate_or_default() * 0.8);
+            min_rate = Some(current_step.desired_rate_or_default() * self.cfg.stall_rate_ratio);
         }
         if current_step.kind == StepKind::Ramp {
             if let Some(mr) = min_rate {

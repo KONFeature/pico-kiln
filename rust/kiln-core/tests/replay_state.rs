@@ -85,6 +85,9 @@ fn parse_config(rest: &str) -> ControllerConfig {
         stall_check_interval: c[3].trim().parse().unwrap(),
         stall_consecutive_fails: c[4].trim().parse().unwrap(),
         stall_min_step_time: c[5].trim().parse().unwrap(),
+        // The golden CSV predates STALL_RATE_RATIO; the traces were generated with
+        // the 0.8 fallback, so keep that here to preserve the expected outputs.
+        stall_rate_ratio: 0.8,
     }
 }
 
