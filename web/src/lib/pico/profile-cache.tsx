@@ -8,6 +8,7 @@ import {
 	useCallback,
 	useContext,
 	useEffect,
+	useMemo,
 	useRef,
 	useState,
 } from "react";
@@ -16,9 +17,12 @@ import { picoKeys, useListFiles } from "./hooks";
 import type { Profile } from "./types";
 
 interface ProfileCacheContextValue {
-	// Get a cached profile by name (without .json extension)
+	// Get a cached profile by its filename stem (without .json extension) OR by
+	// its display name (the JSON `name` field). The firmware reports the running
+	// profile via `status.profile_name`, which is the display name — not the
+	// filename — so lookups must resolve both.
 	getProfile: (name: string) => Profile | undefined;
-	// Check if a profile is loaded
+	// Check if a profile is loaded (by filename stem or display name)
 	isProfileLoaded: (name: string) => boolean;
 	// Loading state
 	isPreloading: boolean;
@@ -133,18 +137,60 @@ export function ProfileCacheProvider({ children }: ProfileCacheProviderProps) {
 		loadProfilesSequentially();
 	}, [client, isConfigured, profileNames, queryClient]);
 
+	// Secondary index: display name (JSON `name` field) -> Profile. Lets callers
+	// resolve the running profile from `status.profile_name`, which is the
+	// display name rather than the filename stem the primary Map is keyed by.
+	const profilesByName = useMemo(() => {
+		const map = new Map<string, Profile>();
+		for (const profile of loadedProfiles.values()) {
+			if (profile.name) map.set(profile.name, profile);
+		}
+		return map;
+	}, [loadedProfiles]);
+
+	// Fallback: parse a profile straight from the persisted TanStack Query
+	// file-content cache. The in-memory Maps above rebuild lazily (and can't
+	// fetch while the kiln is RUNNING, since the Pico blocks file reads then), so
+	// on a reopen mid-run they may be empty even though the file content is
+	// persisted in localStorage. This reads it directly, keyed by filename stem
+	// or display name.
+	const getProfileFromQueryCache = useCallback(
+		(name: string): Profile | undefined => {
+			for (const profileName of profileNames) {
+				const content = queryClient.getQueryData<string>(
+					picoKeys.fileContent("profiles", `${profileName}.json`),
+				);
+				if (!content) continue;
+				try {
+					const profile: Profile = JSON.parse(content);
+					if (profileName === name || profile.name === name) {
+						return profile;
+					}
+				} catch {
+					// Ignore malformed cached content and keep scanning.
+				}
+			}
+			return undefined;
+		},
+		[profileNames, queryClient],
+	);
+
 	const getProfile = useCallback(
 		(name: string): Profile | undefined => {
-			return loadedProfiles.get(name);
+			return (
+				loadedProfiles.get(name) ??
+				profilesByName.get(name) ??
+				getProfileFromQueryCache(name)
+			);
 		},
-		[loadedProfiles],
+		[loadedProfiles, profilesByName, getProfileFromQueryCache],
 	);
 
 	const isProfileLoaded = useCallback(
 		(name: string): boolean => {
-			return loadedProfiles.has(name);
+			return getProfile(name) !== undefined;
 		},
-		[loadedProfiles],
+		[getProfile],
 	);
 
 	const value: ProfileCacheContextValue = {
