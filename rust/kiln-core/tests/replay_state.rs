@@ -88,11 +88,10 @@ fn parse_config(rest: &str) -> ControllerConfig {
         // The golden CSV predates STALL_RATE_RATIO; the traces were generated with
         // the 0.8 fallback, so keep that here to preserve the expected outputs.
         stall_rate_ratio: 0.8,
-        // The golden traces replay the Python reference, which has no SSR
-        // saturation gate (and the harness never drives ssr_output). Window 0
-        // disables the gate so the stall fixture faults exactly as Python did.
-        stall_saturation_output: 95.0,
-        stall_saturation_window: 0.0,
+        // The golden traces replay the Python reference, which has no arrival
+        // band (every confirmed stall errors). Band 0 disables the advance so
+        // the stall fixture faults exactly as Python did.
+        stall_arrival_band: 0.0,
     }
 }
 

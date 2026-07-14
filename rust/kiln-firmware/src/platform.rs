@@ -1299,33 +1299,46 @@ pub async fn wifi_monitor_task(
     password: &'static str,
 ) -> ! {
     loop {
-        // (Re)establish the association. Covers BOTH a dropped link and the
-        // never-connected boot case where init_network's bounded attempt timed out
-        // (stale creds / AP absent / DHCP silent): without the `is_link_up` guard a
-        // boot that never associated would `wait_link_up()` forever with nobody
-        // calling `join()`. cyw43 auto-reconnects a *dropped* link, so when it has
-        // already done so this falls straight through to the solid LED.
+        // (Re)establish the association AND the IP config. The loop keys on
+        // `is_config_up()` — not `is_link_up()` — because reachability is the
+        // goal: an association whose DHCP never answers is exactly as dead to
+        // the operator as no association, and exiting on link-up alone would
+        // show a solid "connected" LED on an unreachable device, then park on
+        // `wait_link_down()` forever. Covers BOTH a dropped link and the
+        // never-connected boot case where init_network's bounded attempt timed
+        // out (stale creds / AP absent / DHCP silent): without this guard a
+        // boot that never associated would park forever with nobody calling
+        // `join()`. cyw43 auto-reconnects a *dropped* link, so when it has
+        // already done so (address still configured) this falls straight
+        // through to the solid LED.
         let mut led = false;
-        while !stack.is_link_up() {
-            if control
-                .join(ssid, JoinOptions::new(password.as_bytes()))
-                .await
-                .is_ok()
+        while !stack.is_config_up() {
+            // Re-join only when the link itself is down; when associated but
+            // address-less, just wait out DHCP below (re-joining would bounce
+            // the association and restart DHCP from scratch).
+            if stack.is_link_up()
+                || control
+                    .join(ssid, JoinOptions::new(password.as_bytes()))
+                    .await
+                    .is_ok()
             {
                 // Bound the DHCP/static-config wait so an association that never
                 // gets an address re-attempts instead of blocking here forever.
                 let _ = embassy_time::with_timeout(Duration::from_secs(15), stack.wait_config_up())
                     .await;
             }
-            if !stack.is_link_up() {
+            if !stack.is_config_up() {
                 led = !led;
                 control.gpio_set(STATUS_LED_GPIO, led).await;
                 embassy_time::Timer::after(Duration::from_secs(2)).await;
             }
         }
-        control.gpio_set(STATUS_LED_GPIO, true).await; // connected: solid on
-        stack.wait_link_down().await;
-        control.gpio_set(STATUS_LED_GPIO, false).await; // dropped: off
+        control.gpio_set(STATUS_LED_GPIO, true).await; // reachable: solid on
+        // Park until the link drops — but ALSO wake on a lost IP config (lease
+        // expired and not renewed, DHCP server gone): `wait_config_down` covers
+        // the case where L2 stays up while reachability is lost.
+        embassy_futures::select::select(stack.wait_link_down(), stack.wait_config_down()).await;
+        control.gpio_set(STATUS_LED_GPIO, false).await; // unreachable: off
     }
 }
 
@@ -1514,7 +1527,10 @@ pub fn init_display(p: LcdPeriphs, config: &KilnConfig) -> Option<&'static mut L
 
 /// What to do with the `active_run` pointer after inspecting it.
 enum RecoveryOutcome {
-    /// No pointer — the last run ended cleanly (or never started). Nothing to do.
+    /// Do nothing and leave the pointer untouched. Usually "no pointer" (the
+    /// last run ended cleanly or never started); also the transient-failure
+    /// path (ResumeProfile channel full) where the pointer is deliberately
+    /// KEPT so the next boot retries instead of forfeiting the run.
     Nothing,
     /// Pointer present but we will NOT resume (last row not RUNNING, temperature
     /// drifted past the delta, or the profile is gone/corrupt). The caller
@@ -1556,24 +1572,41 @@ pub async fn attempt_recovery(state: &AppState) -> Option<kiln_app::server::Reco
     }
 }
 
+/// Consecutive crash-recovery resumes allowed before the run is forfeited.
+/// "Consecutive" = the previous resume died before its first steady row
+/// flushed (log tail still the RECOVERY marker); any steady progress restarts
+/// the count. Breaks a deterministic boot→resume→crash loop, which the
+/// RECOVERY-marker-is-resumable change would otherwise let spin forever.
+const MAX_RESUME_ATTEMPTS: u32 = 3;
+
 async fn recover_from_pointer(state: &AppState) -> RecoveryOutcome {
     use kiln_app::recovery_io;
 
-    // Read the active-run pointer. Absent → nothing was mid-firing.
-    let mut name_buf = [0u8; 96];
+    // Read the active-run pointer. Absent → nothing was mid-firing. Payload is
+    // the log filename plus an optional second line: the consecutive-resume
+    // counter (see `recovery_io::parse_active_run`; a fresh run's pointer has
+    // no counter — the CSV logger writes just the filename).
+    let mut name_buf = [0u8; 112];
     let n = match state.storage.read_active_run(&mut name_buf) {
         Ok(n) if n > 0 => n,
         _ => return RecoveryOutcome::Nothing,
     };
     let mut log_name = heapless::String::<96>::new();
-    match core::str::from_utf8(&name_buf[..n]) {
-        Ok(s) if log_name.push_str(s).is_ok() => {}
+    let prior_attempts = match core::str::from_utf8(&name_buf[..n]) {
+        Ok(s) => {
+            let (name, attempts) = recovery_io::parse_active_run(s);
+            if name.is_empty() || log_name.push_str(name).is_err() {
+                log::warn!(target: "boot", "recovery: declined — corrupt active_run pointer");
+                return RecoveryOutcome::Decline;
+            }
+            attempts
+        }
         // Corrupt / oversize pointer — consume it so it can't wedge every boot.
         _ => {
             log::warn!(target: "boot", "recovery: declined — corrupt active_run pointer");
             return RecoveryOutcome::Decline;
         }
-    }
+    };
 
     // Wait (bounded) for the first valid temperature, as the reference does — but
     // never hang boot: a cold workshop may read < 20 °C, in which case we proceed
@@ -1600,10 +1633,8 @@ async fn recover_from_pointer(state: &AppState) -> RecoveryOutcome {
                 .read_chunk(Directory::Logs, &log_name, start, &mut buf)
                 .ok()
         });
-    let entry = match read
-        .and_then(|n| core::str::from_utf8(&buf[..n]).ok())
-        .and_then(recovery_io::last_log_entry_from_csv)
-    {
+    let tail = read.and_then(|n| core::str::from_utf8(&buf[..n]).ok());
+    let entry = match tail.and_then(recovery_io::last_log_entry_from_csv) {
         Some(e) => e,
         // Pointer present but the file is missing / empty / unparseable — consume.
         None => {
@@ -1615,6 +1646,23 @@ async fn recover_from_pointer(state: &AppState) -> RecoveryOutcome {
             return RecoveryOutcome::Decline;
         }
     };
+
+    // Crash-loop breaker: a RECOVERY-marker tail means the PREVIOUS resume died
+    // before a single steady row flushed. Cap how many times that may repeat;
+    // a steady RUNNING tail proves progress and restarts the count.
+    let attempts = if tail.is_some_and(recovery_io::last_line_is_recovery_marker) {
+        prior_attempts
+    } else {
+        0
+    };
+    if attempts >= MAX_RESUME_ATTEMPTS {
+        log::warn!(
+            target: "boot",
+            "recovery: declined — {} consecutive resume attempts without progress (crash loop?)",
+            attempts
+        );
+        return RecoveryOutcome::Decline;
+    }
 
     // Both gates: last row RUNNING (content) AND temperature still close (recency).
     let decision = kiln_core::recovery::check_recovery(
@@ -1727,6 +1775,17 @@ async fn recover_from_pointer(state: &AppState) -> RecoveryOutcome {
     }
 
     // Keep the pointer: the run is live again, so a re-crash recovers it again.
+    // Re-write it with the bumped consecutive-resume counter (filename + \n + n);
+    // the CSV logger's recovery path appends to the existing file and does not
+    // touch the pointer, so the counter survives until a fresh run overwrites it
+    // or a clean run end clears it.
+    {
+        let mut payload = heapless::String::<112>::new();
+        let _ = payload.push_str(&log_name);
+        let _ = core::fmt::write(&mut payload, format_args!("\n{}", attempts + 1));
+        let _ = state.storage.write_active_run(payload.as_bytes());
+    }
+
     // Hand the CSV logger the interrupted run's file so it appends (no new header)
     // and writes the one-shot RECOVERY event row — data_logger.set_recovery_context.
     let mut filename = heapless::String::<96>::new();

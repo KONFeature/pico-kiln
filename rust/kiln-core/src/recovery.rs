@@ -33,10 +33,11 @@ fn abs(x: f32) -> f32 {
 
 /// The already-parsed tail of a run's CSV log — the inputs the recovery decision
 /// needs. The caller (`kiln-app`) does all the filesystem/CSV work and the
-/// `state`-string → [`KilnState`] parse before handing this over, so only
-/// `RUNNING` reaches here as [`KilnState::Running`]; every other logged string
-/// (terminal states, the `RECOVERY` marker, anything malformed) maps to some
-/// non-`Running` variant and is rejected identically.
+/// `state`-string → [`KilnState`] parse before handing this over. `RUNNING`
+/// (and, deliberately, the one-shot `RECOVERY` resume marker — see
+/// `kiln-app::recovery_io::parse_state`) reach here as [`KilnState::Running`];
+/// terminal states and anything malformed map to some non-`Running` variant
+/// and are rejected identically.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LastLogEntry {
     /// Last logged controller state (CSV `state` column, parsed).

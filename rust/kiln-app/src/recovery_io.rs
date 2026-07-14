@@ -97,6 +97,32 @@ pub fn last_log_entry_from_csv(content: &str) -> Option<LastLogEntry> {
     parse_last_log_entry(select_last_data_line(content)?)
 }
 
+/// Whether the file's last data line is the one-shot `RECOVERY` marker row —
+/// i.e. the previous crash-recovery resume died before a single steady row
+/// flushed. Feeds the consecutive-resume counter that breaks crash-loops: a
+/// steady `RUNNING` tail proves the last resume made progress and restarts the
+/// count.
+pub fn last_line_is_recovery_marker(content: &str) -> bool {
+    select_last_data_line(content)
+        .map(|line| line.split(',').nth(5) == Some("RECOVERY"))
+        .unwrap_or(false)
+}
+
+/// Split an `active_run` pointer payload into `(log_filename, resume_attempts)`.
+/// The pointer's first line is the CSV log filename; an optional second line
+/// carries the consecutive-resume counter written by the firmware's recovery
+/// path (absent — the CSV logger writes just the filename on a fresh run —
+/// means 0). A malformed counter parses as 0 rather than poisoning the pointer.
+pub fn parse_active_run(payload: &str) -> (&str, u32) {
+    let mut lines = payload.lines();
+    let name = lines.next().unwrap_or("").trim();
+    let attempts = lines
+        .next()
+        .and_then(|l| l.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    (name, attempts)
+}
+
 /// The profile-name portion of a `{profile}_{YYYY-MM-DD}_{HH-MM-SS}.csv`
 /// filename — everything before the last two `_`-separated components, with any
 /// directory prefix stripped. `None` if there are fewer than two underscores
@@ -138,6 +164,24 @@ mod tests {
         assert_eq!(e.last_temp, 300.5);
         assert_eq!(e.last_target_temp, 305.0);
         assert_eq!(e.step_index, Some(2));
+    }
+
+    #[test]
+    fn recovery_marker_tail_is_detected() {
+        let marker_tail = "header\nrow,RUNNING\n2023-11-14 22:13:20,1234.5,250.00,300.00,80.00,RECOVERY,,,,90.0\n";
+        assert!(last_line_is_recovery_marker(marker_tail));
+        let steady_tail = "header\n2023-11-14 22:13:20,30.0,40.00,200.00,100.00,RUNNING,ramp,0,3,1800.0\n";
+        assert!(!last_line_is_recovery_marker(steady_tail));
+        assert!(!last_line_is_recovery_marker("header only\n"));
+    }
+
+    #[test]
+    fn active_run_pointer_parses_name_and_attempts() {
+        assert_eq!(parse_active_run("run_2025_x.csv"), ("run_2025_x.csv", 0));
+        assert_eq!(parse_active_run("run_2025_x.csv\n2"), ("run_2025_x.csv", 2));
+        // Malformed counter is 0, not an error.
+        assert_eq!(parse_active_run("run_2025_x.csv\nzz"), ("run_2025_x.csv", 0));
+        assert_eq!(parse_active_run(""), ("", 0));
     }
 
     #[test]

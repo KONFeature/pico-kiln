@@ -421,10 +421,11 @@ pub async fn csv_logger_task(
                     crate::logging::request_flush();
                 }
                 if first_row_due {
-                    // The first data row must be DURABLE, not just pending: it is
-                    // what makes the log recovery-eligible (header-only files are
-                    // declined). The run-start edge already nudged the flusher;
-                    // this nudge covers the row itself.
+                    // Nudge the flusher for the first data row: it is what makes
+                    // the log recovery-eligible (header-only files are declined).
+                    // The nudge is async — the row lands on the flusher's next
+                    // wake — so the header-only window shrinks to flusher latency
+                    // (sub-second), not zero.
                     crate::logging::request_flush();
                     first_row_due = false;
                 }

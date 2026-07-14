@@ -1,6 +1,9 @@
 /target
 **/*.rs.bk
 Cargo.lock
+# EXCEPT the firmware binary's lockfile: the flashed image must be reproducible
+# from the repo (it carries a vendored, patched cyw43 — see kiln-firmware/vendor).
+!kiln-firmware/Cargo.lock
 
 # Device runtime config — holds WiFi credentials (like config.py). Keep
 # config.example.json in the repo; generate config.json locally for deploy.

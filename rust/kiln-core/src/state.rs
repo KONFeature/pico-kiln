@@ -29,11 +29,7 @@ fn abs(x: f32) -> f32 {
 /// Temperature-loss tolerance (°C) for recovery detection — `TEMP_LOSS_THRESHOLD`.
 pub const TEMP_LOSS_THRESHOLD: f32 = 5.0;
 
-/// Arrival band (°C): within this margin of a ramp's final target the kiln is
-/// *arriving*, not stalling — the PID throttles on approach, the measured rate
-/// over the window legitimately collapses, and the reference's stall check
-/// would fault 1 °C short of the step boundary (seen on hardware at 879/880).
-pub const STALL_ARRIVAL_BAND: f32 = 5.0;
+
 /// Start temperature assumed by `_find_step_for_elapsed` (note: differs from the
 /// duration estimator, which seeds from `steps[0].target_temp`).
 const FIND_START_TEMP: f32 = 20.0;
@@ -86,15 +82,17 @@ pub struct ControllerConfig {
     /// [`stall_consecutive_fails`](Self::stall_consecutive_fails) checks faults as
     /// a stall. `0.0` disables the fallback check.
     pub stall_rate_ratio: f32,
-    /// SSR output (%) at or above which the loop counts as saturated for the
-    /// stall gate: a kiln can only be *stalled* when the SSR is already giving
-    /// everything it has. Below this, a slow rate means the PID is deliberately
-    /// limiting power (integral still winding up, rate control), not a stall.
-    pub stall_saturation_output: f32,
-    /// How long (seconds) the SSR must have been continuously saturated before a
-    /// slow rate may count as a stall failure. `0.0` disables the saturation
-    /// gate (the reference Python behaviour — used by the golden replays).
-    pub stall_saturation_window: f32,
+    /// Arrival band (°C): when a stall fires within this margin of the ramp's
+    /// final target, the step ADVANCES instead of erroring. Near the target a
+    /// collapsed rate is usually the PID landing the setpoint (or mis-tuned
+    /// gains under-driving on approach — seen on hardware: fresh launch at
+    /// 870 °C toward 880 °C, no integral wind-up yet, 50–60 % power, ~0.1 °C/min
+    /// forever). Advancing self-heals: the next step's target moves ahead, the
+    /// error grows, the integral winds up, and power returns. A genuine element
+    /// failure still faults — it cannot hold the desired rate *outside* the
+    /// band, where a stall remains a hard ERROR. `0.0` disables the band (every
+    /// stall errors — the reference Python behaviour, used by golden replays).
+    pub stall_arrival_band: f32,
 }
 
 impl Default for ControllerConfig {
@@ -107,8 +105,7 @@ impl Default for ControllerConfig {
             stall_consecutive_fails: 3,
             stall_min_step_time: 600.0,
             stall_rate_ratio: 0.8,
-            stall_saturation_output: 95.0,
-            stall_saturation_window: 300.0,
+            stall_arrival_band: 10.0,
         }
     }
 }
@@ -141,9 +138,6 @@ pub struct KilnController {
     last_temp_recording: f32,
     last_stall_check: f32,
     stall_fail_count: u32,
-    /// Elapsed second at which the SSR output last *entered* saturation
-    /// (≥ [`ControllerConfig::stall_saturation_output`]); `None` while below.
-    saturated_since: Option<f32>,
 
     error: Option<KilnError>,
 
@@ -170,7 +164,6 @@ impl KilnController {
             last_temp_recording: 0.0,
             last_stall_check: 0.0,
             stall_fail_count: 0,
-            saturated_since: None,
             error: None,
             recovery_target_temp: None,
         }
@@ -233,7 +226,6 @@ impl KilnController {
         self.last_temp_recording = 0.0;
         self.last_stall_check = 0.0;
         self.stall_fail_count = 0;
-        self.saturated_since = None;
         true
     }
 
@@ -258,7 +250,6 @@ impl KilnController {
         self.last_temp_recording = 0.0;
         self.last_stall_check = 0.0;
         self.stall_fail_count = 0;
-        self.saturated_since = None;
     }
 
     /// Set the ERROR state with a typed reason. Mirrors `set_error`.
@@ -366,18 +357,10 @@ impl KilnController {
             }
         }
 
-        // Track SSR saturation for the stall gate. `ssr_output` is written by
-        // the control loop after the previous tick's PID update, so this sees a
-        // one-tick-old value — irrelevant against a minutes-long window.
-        if self.ssr_output >= self.cfg.stall_saturation_output {
-            if self.saturated_since.is_none() {
-                self.saturated_since = Some(elapsed);
-            }
-        } else {
-            self.saturated_since = None;
-        }
-
-        // Stall detection (ramp steps only).
+        // Stall detection (ramp steps only). Accrual is identical to the
+        // reference: a measured rate below min_rate for stall_consecutive_fails
+        // checks IS a stall — the kiln is burning power outside the profile.
+        // Only the *outcome* differs near the target (see below).
         let mut min_rate = current_step.min_rate;
         if current_step.kind == StepKind::Ramp && min_rate.is_none() {
             min_rate = Some(current_step.desired_rate_or_default() * self.cfg.stall_rate_ratio);
@@ -391,41 +374,49 @@ impl KilnController {
                         let actual_rate =
                             self.temp_history.get_rate(self.cfg.rate_measurement_window);
                         if abs(actual_rate) < mr {
-                            // Two false-positive guards before counting a failure
-                            // (both observed on hardware: error at 879 °C on an
-                            // 880 °C step boundary with the PID throttling):
-                            //
-                            // 1. Arrival band — within STALL_ARRIVAL_BAND of the
-                            //    ramp's final target the rate legitimately
-                            //    collapses as the PID lands the setpoint; step
-                            //    completion is about to fire, not a stall.
-                            // 2. Saturation — a kiln can only be physically
-                            //    stalled if the SSR has been giving ~everything
-                            //    (≥ stall_saturation_output) continuously for
-                            //    stall_saturation_window seconds. A slow rate at
-                            //    partial power is the PID limiting (integral
-                            //    wind-up still in progress), not a stall.
-                            //    A window of 0 disables this gate (the reference
-                            //    Python behaviour, used by the golden replays).
-                            let target = current_step.target_temp.unwrap_or(0.0);
-                            let arriving = abs(target - self.current_temp) <= STALL_ARRIVAL_BAND;
-                            let saturated = self.cfg.stall_saturation_window <= 0.0
-                                || self.saturated_since.is_some_and(|since| {
-                                    elapsed - since >= self.cfg.stall_saturation_window
-                                });
-                            if arriving || !saturated {
-                                // Not a stall candidate — don't accrue, don't
-                                // reset (a genuine stall interrupted by a brief
-                                // dip below saturation keeps its count).
-                            } else {
-                                self.stall_fail_count += 1;
-                                if self.stall_fail_count >= self.cfg.stall_consecutive_fails {
-                                    self.set_error(KilnError::Stall {
-                                        actual_rate: abs(actual_rate),
-                                        min_rate: mr,
-                                    });
-                                    return 0.0;
+                            self.stall_fail_count += 1;
+                            if self.stall_fail_count >= self.cfg.stall_consecutive_fails {
+                                // Stall confirmed. Within the arrival band of the
+                                // ramp's target, ADVANCE instead of erroring: a
+                                // near-target stall is the PID under-driving on
+                                // approach (mis-tuned Ki, no wind-up on a hot
+                                // fresh launch — hardware: stuck at ~870 °C
+                                // toward 880 °C at 50–60 % power gaining
+                                // 0.1 °C/min). Advancing self-heals: the next
+                                // step's target moves ahead, error grows, the
+                                // integral winds up, power returns. A genuine
+                                // element/insulation failure cannot hold the
+                                // desired rate OUTSIDE the band and still errors
+                                // there (at worst one step later if it dies
+                                // exactly near a boundary). advance_to_next_step
+                                // resets stall_fail_count/history, so the next
+                                // step starts with a clean accrual, not an
+                                // inherited near-trip count.
+                                let target = current_step.target_temp.unwrap_or(0.0);
+                                let arriving = self.cfg.stall_arrival_band > 0.0
+                                    && abs(target - self.current_temp)
+                                        <= self.cfg.stall_arrival_band;
+                                if arriving {
+                                    if self.current_step_index >= n_steps - 1 {
+                                        // Nothing to advance into — the run has
+                                        // done all it physically can.
+                                        self.state = KilnState::Complete;
+                                        self.target_temp = 0.0;
+                                        return 0.0;
+                                    }
+                                    self.advance_to_next_step(elapsed);
+                                    let next =
+                                        self.profile.as_ref().unwrap().steps()
+                                            [self.current_step_index];
+                                    let target = self.get_step_target_temp(elapsed, &next);
+                                    self.target_temp = target;
+                                    return target;
                                 }
+                                self.set_error(KilnError::Stall {
+                                    actual_rate: abs(actual_rate),
+                                    min_rate: mr,
+                                });
+                                return 0.0;
                             }
                         } else {
                             self.stall_fail_count = 0;
@@ -567,7 +558,6 @@ impl KilnController {
         self.last_temp_recording = elapsed_seconds;
         self.last_stall_check = elapsed_seconds;
         self.stall_fail_count = 0;
-        self.saturated_since = None;
 
         if let (Some(llt), Some(cur)) = (last_logged_temp, current_temp) {
             let is_cooling = current_step.kind == StepKind::Cooling
@@ -804,28 +794,24 @@ mod tests {
         assert_eq!(c.current_step_index(), 0);
     }
 
-    /// Drive `n` stall checks: constant temp, one update per check interval.
-    /// Returns after `n` checks have run (each `update` past `stall_min_step_time`
-    /// with `elapsed - last_stall_check >= stall_check_interval` counts one).
+    /// Small stall timings so a handful of 1 s ticks drives multiple checks.
     fn stall_cfg() -> ControllerConfig {
         ControllerConfig {
             stall_check_interval: 2.0,
             stall_consecutive_fails: 2,
             stall_min_step_time: 4.0,
             rate_recording_interval: 1.0,
-            stall_saturation_output: 95.0,
-            stall_saturation_window: 3.0,
+            stall_arrival_band: 10.0,
             ..ControllerConfig::default()
         }
     }
 
-    /// Run a flat-temperature ramp for `seconds`, ticking once per second with
-    /// the given constant SSR output. Returns the controller state at the end.
-    fn run_flat(c: &mut KilnController, temp: f32, ssr: f32, seconds: i64) -> KilnState {
+    /// Tick once per second at a constant temperature until the state leaves
+    /// `Running` or `seconds` elapse. Returns the final state.
+    fn run_flat(c: &mut KilnController, temp: f32, seconds: i64) -> KilnState {
         for s in 1..=seconds {
-            c.ssr_output = ssr;
             let _ = c.update(temp, s * 1000);
-            if c.state == KilnState::Error {
+            if c.state != KilnState::Running {
                 break;
             }
         }
@@ -833,66 +819,72 @@ mod tests {
     }
 
     #[test]
-    fn stall_faults_when_saturated_and_flat() {
-        // Baseline: SSR pinned at 100 % long past the saturation window, zero
-        // rate → genuine stall → ERROR.
+    fn stall_faults_outside_arrival_band() {
+        // Flat at 100 °C on a ramp to 500: far from target, rate 0 → genuine
+        // stall → ERROR (reference behaviour preserved).
         let mut c = KilnController::new(stall_cfg());
         c.current_temp = 100.0;
         let p = Profile::new(&[Step::ramp(500.0, Some(100.0), Some(50.0))]).unwrap();
         assert!(c.run_profile(p, 0));
-        let end = run_flat(&mut c, 100.0, 100.0, 60);
+        let end = run_flat(&mut c, 100.0, 60);
         assert_eq!(end, KilnState::Error);
         assert!(matches!(c.error(), Some(KilnError::Stall { .. })));
     }
 
     #[test]
-    fn stall_suppressed_below_saturation() {
-        // Same flat rate, but the SSR sits at 60 % — the PID is limiting power
-        // (rate control / integral wind-up), not a stalled kiln. No error.
+    fn stall_in_arrival_band_advances_step() {
+        // The 870/880 incident: fresh launch lands near the ramp target, the
+        // under-wound PID crawls (~0 rate). The confirmed stall inside the band
+        // must ADVANCE to the next step (self-heal), not error — and the
+        // advance must reset the accrual (fail count / history / min-step-time)
+        // so the next step cannot trip instantly on inherited state.
         let mut c = KilnController::new(stall_cfg());
-        c.current_temp = 100.0;
-        let p = Profile::new(&[Step::ramp(500.0, Some(100.0), Some(50.0))]).unwrap();
-        assert!(c.run_profile(p, 0));
-        let end = run_flat(&mut c, 100.0, 60.0, 60);
-        assert_eq!(end, KilnState::Running);
-    }
-
-    #[test]
-    fn stall_suppressed_in_arrival_band() {
-        // Kiln 1 °C short of the ramp target (the 879/880 incident): the rate
-        // collapses as the PID lands the setpoint, SSR still saturated — the
-        // arrival band must suppress the stall, letting step completion win.
-        let mut c = KilnController::new(stall_cfg());
-        c.current_temp = 100.0;
+        c.current_temp = 870.0;
         let p = Profile::new(&[
             Step::ramp(880.0, Some(100.0), Some(50.0)),
             Step::hold(880.0, 10_000.0),
         ])
         .unwrap();
         assert!(c.run_profile(p, 0));
-        // Jump close to target (simulates hours of climbing), then sit flat at
-        // 879 — inside the 5 °C arrival band — with the SSR saturated.
-        let end = run_flat(&mut c, 879.0, 100.0, 60);
-        assert_eq!(end, KilnState::Running, "arrival band must suppress stall");
-        assert_eq!(c.current_step_index(), 0);
-        // Crossing the boundary completes the step instead of erroring.
-        c.ssr_output = 100.0;
-        let _ = c.update(880.0, 61_000);
-        assert_eq!(c.current_step_index(), 1);
+        let end = run_flat(&mut c, 870.0, 60);
+        assert_eq!(end, KilnState::Running, "in-band stall must not error");
+        assert_eq!(c.current_step_index(), 1, "must have advanced to the hold");
+        assert_eq!(c.stall_fail_count, 0, "advance must clear the fail count");
+        // The hold keeps running at its target — no immediate re-trip.
+        let _ = c.update(870.0, 120_000);
+        assert_eq!(c.state, KilnState::Running);
+        assert_eq!(c.target_temp, 880.0);
     }
 
     #[test]
-    fn stall_saturation_window_zero_disables_gate() {
-        // Reference behaviour (golden replays): window 0 → saturation not
-        // required, flat rate faults even at 0 % output.
+    fn stall_in_band_on_last_step_completes() {
+        // Same near-target stall but on the profile's final step: nothing to
+        // advance into — the run has done all it physically can → Complete.
+        let mut c = KilnController::new(stall_cfg());
+        c.current_temp = 870.0;
+        let p = Profile::new(&[Step::ramp(880.0, Some(100.0), Some(50.0))]).unwrap();
+        assert!(c.run_profile(p, 0));
+        let end = run_flat(&mut c, 870.0, 60);
+        assert_eq!(end, KilnState::Complete);
+        assert_eq!(c.target_temp, 0.0);
+    }
+
+    #[test]
+    fn stall_arrival_band_zero_is_reference_behaviour() {
+        // Band 0 disables the advance: every confirmed stall errors, even 1 °C
+        // from the target (the golden replays pin this).
         let mut c = KilnController::new(ControllerConfig {
-            stall_saturation_window: 0.0,
+            stall_arrival_band: 0.0,
             ..stall_cfg()
         });
-        c.current_temp = 100.0;
-        let p = Profile::new(&[Step::ramp(500.0, Some(100.0), Some(50.0))]).unwrap();
+        c.current_temp = 879.0;
+        let p = Profile::new(&[
+            Step::ramp(880.0, Some(100.0), Some(50.0)),
+            Step::hold(880.0, 10_000.0),
+        ])
+        .unwrap();
         assert!(c.run_profile(p, 0));
-        let end = run_flat(&mut c, 100.0, 0.0, 60);
+        let end = run_flat(&mut c, 879.0, 60);
         assert_eq!(end, KilnState::Error);
     }
 

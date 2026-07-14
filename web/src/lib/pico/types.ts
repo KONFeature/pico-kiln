@@ -245,6 +245,7 @@ export interface KilnConfig {
 	STALL_CONSECUTIVE_FAILS: number;
 	STALL_MIN_STEP_TIME: number;
 	STALL_RATE_RATIO: number;
+	STALL_ARRIVAL_BAND: number;
 	RATE_MEASUREMENT_WINDOW: number;
 	RATE_RECORDING_INTERVAL: number;
 	MAX_RECOVERY_TEMP_DELTA: number;

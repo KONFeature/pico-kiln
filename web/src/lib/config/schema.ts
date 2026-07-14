@@ -240,6 +240,14 @@ export const SECTIONS: ConfigSectionDef[] = [
 				validate: num(0, 1),
 			},
 			{
+				key: "STALL_ARRIVAL_BAND",
+				label: "Stall arrival band",
+				help: "When a stall fires within this margin of the ramp's target, the step advances instead of erroring — the kiln has effectively arrived and the next step's target re-energizes the PID. Set 0 to make every stall an error.",
+				type: "number",
+				unit: "°C",
+				validate: num(0, 50),
+			},
+			{
 				key: "RATE_MEASUREMENT_WINDOW",
 				label: "Rate measurement window",
 				help: "Rolling window used to compute the average heating/cooling rate.",
