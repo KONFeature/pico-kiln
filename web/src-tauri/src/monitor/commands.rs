@@ -1,7 +1,6 @@
 //! Tauri commands bridging the frontend to the background monitor.
 
 use serde_json::Value;
-use tauri::{AppHandle, Runtime};
 
 use super::{HistoryPoint, Monitor, MonitoringStatus};
 
@@ -32,11 +31,10 @@ pub fn monitoring_status(monitor: tauri::State<'_, Monitor>) -> MonitoringStatus
     monitor.monitoring_status()
 }
 
-/// Force an immediate poll, e.g. right after the user issues a control command
-/// so the UI reflects the new state without waiting for the next tick.
+/// Kick off an immediate poll + short fast-poll burst, e.g. right after the
+/// user issues a control command, so the UI reflects the new state quickly even
+/// though the firmware takes a second or two to update.
 #[tauri::command]
-pub async fn refresh_kiln<R: Runtime>(app: AppHandle<R>, monitor: tauri::State<'_, Monitor>) -> Result<(), ()> {
-    let monitor = (*monitor).clone();
-    monitor.poll_now(&app).await;
-    Ok(())
+pub fn refresh_kiln(monitor: tauri::State<'_, Monitor>) {
+    monitor.request_refresh();
 }

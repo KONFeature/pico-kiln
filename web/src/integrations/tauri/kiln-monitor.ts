@@ -102,16 +102,48 @@ export function isActiveStatus(status: KilnStatus | undefined | null): boolean {
 	return Boolean(status.scheduled_profile);
 }
 
+function tempTarget(status: KilnStatus): string {
+	const temp = `${Math.round(status.current_temp)}\u00b0C`;
+	return status.target_temp && status.target_temp > 0
+		? `${temp} \u2192 ${Math.round(status.target_temp)}\u00b0C`
+		: temp;
+}
+
+function countdown(seconds: number): string {
+	if (seconds <= 0) return "moments";
+	const h = Math.floor(seconds / 3600);
+	const m = Math.floor((seconds % 3600) / 60);
+	if (h > 0) return `${h}h ${m}m`;
+	if (m > 0) return `${m}m`;
+	return "less than a minute";
+}
+
+/**
+ * Content text for the foreground-service notification. This is the snapshot
+ * shown the instant the service starts; the Rust monitor then re-posts the same
+ * notification each poll to keep the temperature live (including while the app
+ * is backgrounded). Kept in sync with `notification_content` in monitor/mod.rs.
+ */
 function serviceLabel(status: KilnStatus): string {
 	switch (status.state) {
-		case "RUNNING":
-			return status.profile_name
-				? `Firing: ${status.profile_name}`
-				: "Firing in progress";
+		case "RUNNING": {
+			const prefix = status.profile_name ? `${status.profile_name}: ` : "";
+			let label = `${prefix}${tempTarget(status)}`;
+			if (
+				status.step_index !== undefined &&
+				status.total_steps !== undefined &&
+				status.total_steps > 0
+			) {
+				label += ` \u00b7 Step ${status.step_index + 1}/${status.total_steps}`;
+			}
+			return label;
+		}
 		case "TUNING":
-			return "PID tuning in progress";
+			return `PID tuning \u00b7 ${tempTarget(status)}`;
 		default:
-			return "Monitoring kiln";
+			return status.scheduled_profile
+				? `Firing starts in ${countdown(status.scheduled_profile.seconds_until_start)}`
+				: "Monitoring kiln";
 	}
 }
 

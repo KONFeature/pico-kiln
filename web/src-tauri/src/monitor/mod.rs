@@ -34,6 +34,11 @@ const CONN_LOST_ALERT_MS: i64 = 10 * 60 * 1000;
 const HISTORY_PERSIST_INTERVAL_MS: i64 = 30 * 1000;
 /// HTTP request timeout for a status poll.
 const POLL_TIMEOUT_MS: u64 = 10_000;
+/// After a control command the firmware can take a second or two to reflect the
+/// new state, so a refresh kicks off a short window of fast polls instead of a
+/// single (likely-still-stale) poll.
+const REFRESH_BURST_MS: i64 = 12_000;
+const BURST_INTERVAL: Duration = Duration::from_millis(1500);
 /// Must match `androidNotificationId` / `androidNotificationChannelId` in
 /// tauri.conf.json: we re-post to the foreground service's own notification to
 /// update it in place (the plugin has no runtime-update API).
@@ -86,6 +91,9 @@ struct MonitorState {
     last_persist: i64,
     /// Last rendered ongoing-notification text; skip re-posting when unchanged.
     last_notif: Option<String>,
+    /// Epoch ms until which the supervisor polls at `BURST_INTERVAL` (set by a
+    /// refresh so a control action is reflected quickly).
+    burst_until: i64,
 }
 
 impl MonitorState {
@@ -103,6 +111,7 @@ impl MonitorState {
             history: Vec::new(),
             last_persist: 0,
             last_notif: None,
+            burst_until: 0,
         }
     }
 }
@@ -113,6 +122,8 @@ struct Inner {
     fgs_active: AtomicBool,
     http: reqwest::Client,
     data_dir: Mutex<Option<std::path::PathBuf>>,
+    /// Wakes the supervisor loop for an immediate poll (refresh requests).
+    wake: tokio::sync::Notify,
 }
 
 impl Inner {
@@ -168,6 +179,7 @@ impl Monitor {
                 fgs_active: AtomicBool::new(false),
                 http,
                 data_dir: Mutex::new(None),
+                wake: tokio::sync::Notify::new(),
             }),
         }
     }
@@ -279,9 +291,23 @@ impl Monitor {
         }
     }
 
-    /// Trigger an immediate poll (used by the `refresh_kiln` command).
-    pub async fn poll_now<R: Runtime>(&self, app: &AppHandle<R>) {
-        self.poll_once(app).await;
+    /// Request the supervisor to poll now and enter a short fast-poll burst, so
+    /// a control action shows up quickly despite the firmware's update lag.
+    /// Goes through the single loop rather than polling here, preserving the
+    /// one-poller-per-kiln invariant.
+    pub fn request_refresh(&self) {
+        self.inner.st().burst_until = now_ms() + REFRESH_BURST_MS;
+        self.inner.wake.notify_one();
+    }
+
+    /// Delay before the next poll: fast during a refresh burst, otherwise the
+    /// state-dependent cadence.
+    fn next_delay(&self) -> Duration {
+        if now_ms() < self.inner.st().burst_until {
+            BURST_INTERVAL
+        } else {
+            self.cadence()
+        }
     }
 
     /// One poll cycle. Never holds the state lock across the network await.
@@ -471,7 +497,11 @@ impl Monitor {
         tauri::async_runtime::spawn(async move {
             loop {
                 monitor.poll_once(&app).await;
-                tokio::time::sleep(monitor.cadence()).await;
+                let delay = monitor.next_delay();
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = monitor.inner.wake.notified() => {}
+                }
             }
         });
     }
