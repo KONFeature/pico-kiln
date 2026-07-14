@@ -34,6 +34,11 @@ const CONN_LOST_ALERT_MS: i64 = 10 * 60 * 1000;
 const HISTORY_PERSIST_INTERVAL_MS: i64 = 30 * 1000;
 /// HTTP request timeout for a status poll.
 const POLL_TIMEOUT_MS: u64 = 10_000;
+/// Must match `androidNotificationId` / `androidNotificationChannelId` in
+/// tauri.conf.json: we re-post to the foreground service's own notification to
+/// update it in place (the plugin has no runtime-update API).
+const FGS_NOTIFICATION_ID: i32 = 9001;
+const FGS_CHANNEL_ID: &str = "kiln_monitor";
 
 /// A single temperature sample served to the frontend live chart.
 #[derive(Debug, Clone, Serialize)]
@@ -79,6 +84,8 @@ struct MonitorState {
     conn_lost_alerted: bool,
     history: Vec<HistoryPoint>,
     last_persist: i64,
+    /// Last rendered ongoing-notification text; skip re-posting when unchanged.
+    last_notif: Option<String>,
 }
 
 impl MonitorState {
@@ -95,6 +102,7 @@ impl MonitorState {
             conn_lost_alerted: false,
             history: Vec::new(),
             last_persist: 0,
+            last_notif: None,
         }
     }
 }
@@ -187,6 +195,10 @@ impl Monitor {
 
     pub fn set_fgs_active(&self, active: bool) {
         self.inner.fgs_active.store(active, Ordering::SeqCst);
+        if !active {
+            // Force a fresh notification render on the next promotion.
+            self.inner.st().last_notif = None;
+        }
     }
 
     pub fn is_kiln_active(&self) -> bool {
@@ -361,7 +373,41 @@ impl Monitor {
         let _ = app.emit("kiln://sample", &point);
         let _ = app.emit("kiln://monitoring", self.monitoring_status());
 
+        self.update_ongoing_notification(app, &status);
         self.fire_alerts(app, alerts);
+    }
+
+    /// Refresh the foreground service's persistent notification with live kiln
+    /// state. Android only: on desktop notifications don't update in place by
+    /// id, so re-posting each poll would just spam toasts.
+    fn update_ongoing_notification<R: Runtime>(&self, app: &AppHandle<R>, status: &Value) {
+        if !cfg!(target_os = "android") {
+            return;
+        }
+        if !self.inner.fgs_active.load(Ordering::SeqCst) {
+            return;
+        }
+        let Some((title, body)) = notification_content(status) else {
+            return;
+        };
+        {
+            let mut st = self.inner.st();
+            let key = format!("{title}\u{1}{body}");
+            if st.last_notif.as_deref() == Some(key.as_str()) {
+                return;
+            }
+            st.last_notif = Some(key);
+        }
+        let _ = app
+            .notification()
+            .builder()
+            .id(FGS_NOTIFICATION_ID)
+            .channel_id(FGS_CHANNEL_ID)
+            .title(title)
+            .body(body)
+            .ongoing()
+            .silent()
+            .show();
     }
 
     fn on_poll_err<R: Runtime>(&self, app: &AppHandle<R>, err: String) {
@@ -455,6 +501,77 @@ fn push_history(history: &mut Vec<HistoryPoint>, point: HistoryPoint) {
     if history.len() > HISTORY_MAX_POINTS {
         let overflow = history.len() - HISTORY_MAX_POINTS;
         history.drain(0..overflow);
+    }
+}
+
+/// Compact wall of text for the ongoing notification, or `None` when there is
+/// nothing active worth showing.
+fn notification_content(status: &Value) -> Option<(String, String)> {
+    let state = status.get("state").and_then(Value::as_str).unwrap_or("");
+    let temp = status.get("current_temp").and_then(Value::as_f64);
+    let target = status
+        .get("target_temp")
+        .and_then(Value::as_f64)
+        .filter(|t| *t > 0.0);
+
+    let temp_target = |t: Option<f64>| -> String {
+        match (temp, t) {
+            (Some(c), Some(tg)) => format!("{c:.0}\u{b0}C \u{2192} {tg:.0}\u{b0}C"),
+            (Some(c), None) => format!("{c:.0}\u{b0}C"),
+            _ => String::new(),
+        }
+    };
+
+    match state {
+        "RUNNING" => {
+            let title = status
+                .get("profile_name")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(|p| format!("Firing: {p}"))
+                .unwrap_or_else(|| "Kiln firing".to_string());
+            let mut body = temp_target(target);
+            if let (Some(idx), Some(total)) = (
+                status.get("step_index").and_then(Value::as_i64),
+                status.get("total_steps").and_then(Value::as_i64),
+            ) {
+                if total > 0 {
+                    body.push_str(&format!(" \u{b7} Step {}/{}", idx + 1, total));
+                }
+            }
+            Some((title, body))
+        }
+        "TUNING" => Some(("PID tuning".to_string(), temp_target(target))),
+        _ => {
+            let sched = status.get("scheduled_profile").filter(|v| !v.is_null())?;
+            let secs = sched
+                .get("seconds_until_start")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let body = match sched.get("profile_filename").and_then(Value::as_str) {
+                Some(name) if !name.is_empty() => {
+                    let name = name.trim_end_matches(".json");
+                    format!("Starts in {} \u{b7} {name}", format_countdown(secs))
+                }
+                _ => format!("Starts in {}", format_countdown(secs)),
+            };
+            Some(("Firing scheduled".to_string(), body))
+        }
+    }
+}
+
+fn format_countdown(secs: i64) -> String {
+    if secs <= 0 {
+        return "moments".to_string();
+    }
+    let hours = secs / 3600;
+    let minutes = (secs % 3600) / 60;
+    if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        "less than a minute".to_string()
     }
 }
 
