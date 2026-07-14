@@ -424,7 +424,7 @@ impl Monitor {
             }
             st.last_notif = Some(key);
         }
-        let _ = app
+        if let Err(e) = app
             .notification()
             .builder()
             .id(FGS_NOTIFICATION_ID)
@@ -433,7 +433,10 @@ impl Monitor {
             .body(body)
             .ongoing()
             .silent()
-            .show();
+            .show()
+        {
+            log::warn!("kiln: failed to update ongoing notification: {e}");
+        }
     }
 
     fn on_poll_err<R: Runtime>(&self, app: &AppHandle<R>, err: String) {

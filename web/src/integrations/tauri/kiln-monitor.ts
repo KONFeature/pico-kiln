@@ -7,12 +7,18 @@
 
 import { invoke, isTauri as tauriIsTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { sendNotification } from "@tauri-apps/plugin-notification";
 import {
 	isServiceRunning,
 	startService,
 	stopService,
 } from "tauri-plugin-background-service";
 import type { KilnStatus } from "@/lib/pico/types";
+
+// Must match `androidNotificationId` / `androidNotificationChannelId` in
+// tauri.conf.json and FGS_* in monitor/mod.rs.
+const FGS_NOTIFICATION_ID = 9001;
+const FGS_CHANNEL_ID = "kiln_monitor";
 
 /** True when running inside the Tauri shell (desktop or mobile). */
 export function isTauri(): boolean {
@@ -119,31 +125,88 @@ function countdown(seconds: number): string {
 }
 
 /**
- * Content text for the foreground-service notification. This is the snapshot
- * shown the instant the service starts; the Rust monitor then re-posts the same
- * notification each poll to keep the temperature live (including while the app
- * is backgrounded). Kept in sync with `notification_content` in monitor/mod.rs.
+ * Title + body for the foreground-service notification. Kept in sync with
+ * `notification_content` in monitor/mod.rs. Returns null for states that don't
+ * warrant a notification.
  */
-function serviceLabel(status: KilnStatus): string {
+function describeStatus(
+	status: KilnStatus,
+): { title: string; body: string } | null {
 	switch (status.state) {
 		case "RUNNING": {
-			const prefix = status.profile_name ? `${status.profile_name}: ` : "";
-			let label = `${prefix}${tempTarget(status)}`;
+			const title = status.profile_name
+				? `Firing: ${status.profile_name}`
+				: "Kiln firing";
+			let body = tempTarget(status);
 			if (
 				status.step_index !== undefined &&
 				status.total_steps !== undefined &&
 				status.total_steps > 0
 			) {
-				label += ` \u00b7 Step ${status.step_index + 1}/${status.total_steps}`;
+				body += ` \u00b7 Step ${status.step_index + 1}/${status.total_steps}`;
 			}
-			return label;
+			return { title, body };
 		}
 		case "TUNING":
-			return `PID tuning \u00b7 ${tempTarget(status)}`;
+			return { title: "PID tuning", body: tempTarget(status) };
 		default:
 			return status.scheduled_profile
-				? `Firing starts in ${countdown(status.scheduled_profile.seconds_until_start)}`
-				: "Monitoring kiln";
+				? {
+						title: "Firing scheduled",
+						body: `Starts in ${countdown(status.scheduled_profile.seconds_until_start)}`,
+					}
+				: null;
+	}
+}
+
+/** One-line content text for the initial foreground-service notification. */
+function serviceLabel(status: KilnStatus): string {
+	const parts = describeStatus(status);
+	if (!parts) return "Monitoring kiln";
+	return parts.body ? `${parts.title} \u00b7 ${parts.body}` : parts.title;
+}
+
+/** True inside the Tauri Android webview (where the FGS notification lives). */
+function isAndroid(): boolean {
+	return (
+		isTauri() &&
+		typeof navigator !== "undefined" &&
+		/android/i.test(navigator.userAgent)
+	);
+}
+
+let lastNotifKey: string | null = null;
+
+/**
+ * Refresh the foreground-service notification's content in place while the app
+ * is foregrounded (webview alive). Re-posts to the same id + channel so it
+ * updates rather than stacking. The Rust monitor does the equivalent for the
+ * backgrounded case. Android only — desktop notifications don't update by id.
+ */
+export async function updateOngoingNotification(
+	status: KilnStatus | null,
+): Promise<void> {
+	if (!isAndroid() || !status) return;
+	const parts = describeStatus(status);
+	if (!parts) {
+		// Idle: the service (and its notification) is gone; re-post on next start.
+		lastNotifKey = null;
+		return;
+	}
+	const key = `${parts.title}\u0001${parts.body}`;
+	if (key === lastNotifKey) return;
+	lastNotifKey = key;
+	try {
+		sendNotification({
+			id: FGS_NOTIFICATION_ID,
+			channelId: FGS_CHANNEL_ID,
+			title: parts.title,
+			body: parts.body,
+			ongoing: true,
+			silent: true,
+		});
+	} catch {
+		// Notifications disabled or channel missing — non-fatal.
 	}
 }
 

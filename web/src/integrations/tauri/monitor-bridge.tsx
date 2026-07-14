@@ -15,6 +15,7 @@ import {
 	setKilnUrl,
 	stopForegroundService,
 	syncForegroundService,
+	updateOngoingNotification,
 } from "./kiln-monitor";
 
 export function KilnMonitorBridge() {
@@ -47,6 +48,9 @@ export function KilnMonitorBridge() {
 		onKilnStatus((status) => {
 			queryClient.setQueryData(picoKeys.status, status);
 			void syncForegroundService(status);
+			// Keep the persistent notification's temperature live while foregrounded;
+			// the Rust monitor covers the backgrounded case.
+			void updateOngoingNotification(status);
 		})
 			.then((fn) => {
 				if (alive) unlisten = fn;
