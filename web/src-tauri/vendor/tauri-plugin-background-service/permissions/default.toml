@@ -2,6 +2,11 @@
 
 [default]
 description = "Default permissions for the background service plugin"
+# NOTE (vendored): the desktop-service OS-service permissions
+# (allow-install-service, allow-*-os-service, ...) are intentionally omitted.
+# Those commands are gated behind the `desktop-service` feature (off here), so
+# their permission definitions aren't generated on Android/desktop and would
+# fail ACL resolution (SetPermissionNotFound). This app doesn't use them.
 permissions = [
     "allow-start",
     "allow-stop",
@@ -12,10 +17,4 @@ permissions = [
     "allow-disable-auto-restart",
     "allow-get-desired-service-state",
     "allow-validate-setup",
-    "allow-install-service",
-    "allow-uninstall-service",
-    "allow-start-os-service",
-    "allow-stop-os-service",
-    "allow-restart-os-service",
-    "allow-get-os-service-status",
 ]
