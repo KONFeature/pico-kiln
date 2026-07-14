@@ -73,7 +73,7 @@ export default function Header() {
 					isOpen ? "translate-x-0" : "-translate-x-full"
 				}`}
 			>
-				<div className="flex items-center justify-between p-4 border-b border-sidebar-border">
+				<div className="flex items-center justify-between p-4 border-b border-sidebar-border safe-top">
 					<h2 className="text-xl font-bold">Navigation</h2>
 					<button
 						onClick={() => setIsOpen(false)}
