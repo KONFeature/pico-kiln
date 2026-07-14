@@ -22,13 +22,11 @@ class LifecycleService : Service() {
         const val EXTRA_SERVICE_TYPE = "foregroundServiceType"
         const val ACTION_START = "START"
         const val ACTION_STOP  = "STOP"
+        // Refresh the content of the already-running foreground notification.
+        const val ACTION_UPDATE = "UPDATE"
+        const val EXTRA_TITLE  = "title"
+        const val EXTRA_BODY   = "body"
         internal const val RESTART_TIMEOUT_MS = 30_000L
-        // Poll interval for refreshing the notification from the live-content
-        // file written by the app (see LIVE_CONTENT_FILE).
-        internal const val LIVE_UPDATE_INTERVAL_MS = 5_000L
-        // File (in the app data dir) the app writes with live notification
-        // content: line 1 = title, line 2 = body. Absent/empty = no override.
-        internal const val LIVE_CONTENT_FILE = "kiln_notif.txt"
 
         @Volatile var isRunning = false
         @Volatile var autoRestarting = false
@@ -62,10 +60,6 @@ class LifecycleService : Service() {
     private val restartTimeoutHandler = Handler(Looper.getMainLooper())
     private var restartTimeoutRunnable: Runnable? = null
 
-    private val liveUpdateHandler = Handler(Looper.getMainLooper())
-    private var liveUpdateRunnable: Runnable? = null
-    private var lastLiveContent: String? = null
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // ACTION_STOP: clear prefs and stop
         if (intent?.action == ACTION_STOP) {
@@ -90,10 +84,25 @@ class LifecycleService : Service() {
                 .apply()
             // Persist DurableState: desiredRunning=false
             DurableState.save(this, buildStopState(DurableState.load(this)))
-            stopLiveUpdates()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
+        }
+
+        // ACTION_UPDATE: refresh the live notification content in place. The
+        // service re-posts its own notification (same id), which reliably
+        // updates the foreground notification even while backgrounded.
+        if (intent?.action == ACTION_UPDATE) {
+            if (!isRunning) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            val title = intent.getStringExtra(EXTRA_TITLE)?.takeIf { it.isNotBlank() }
+                ?: applicationInfo.loadLabel(packageManager).toString()
+            val body = intent.getStringExtra(EXTRA_BODY) ?: ""
+            getSystemService(NotificationManager::class.java)
+                .notify(notifId(), buildLiveNotification(title, body))
+            return START_STICKY
         }
 
         // OS restart: null intent or null action means Android restarted the service
@@ -120,7 +129,6 @@ class LifecycleService : Service() {
             return START_NOT_STICKY
         }
         isRunning = true
-        startLiveUpdates()
 
         // Persist config for OS restart detection
         getSharedPreferences("bg_service", Context.MODE_PRIVATE).edit()
@@ -139,7 +147,6 @@ class LifecycleService : Service() {
             restartTimeoutHandler.removeCallbacks(it)
             restartTimeoutRunnable = null
         }
-        stopLiveUpdates()
         isRunning = false
         autoRestarting = false
         super.onDestroy()
@@ -287,49 +294,9 @@ class LifecycleService : Service() {
         }
     }
 
-    // --- Live notification updates (app-driven content) ---
-    //
-    // The app writes temperature/step content to LIVE_CONTENT_FILE each poll
-    // (reliable even while backgrounded). We re-post the foreground-service
-    // notification from within the service on a timer, which reliably updates
-    // it in place — unlike an external NotificationManager.notify() call.
-
-    private fun startLiveUpdates() {
-        stopLiveUpdates()
-        val runnable = object : Runnable {
-            override fun run() {
-                try {
-                    refreshLiveNotification()
-                } catch (_: Exception) {
-                    // Best-effort: never let a bad read crash the service.
-                }
-                liveUpdateHandler.postDelayed(this, LIVE_UPDATE_INTERVAL_MS)
-            }
-        }
-        liveUpdateRunnable = runnable
-        liveUpdateHandler.post(runnable)
-    }
-
-    private fun stopLiveUpdates() {
-        liveUpdateRunnable?.let { liveUpdateHandler.removeCallbacks(it) }
-        liveUpdateRunnable = null
-        lastLiveContent = null
-    }
-
-    private fun refreshLiveNotification() {
-        val file = java.io.File(dataDir, LIVE_CONTENT_FILE)
-        if (!file.exists()) return
-        val text = file.readText().trim()
-        if (text.isEmpty() || text == lastLiveContent) return
-        lastLiveContent = text
-        val lines = text.split("\n", limit = 2)
-        val title = lines.getOrNull(0)?.takeIf { it.isNotBlank() }
-            ?: applicationInfo.loadLabel(packageManager).toString()
-        val body = lines.getOrNull(1)?.trim() ?: ""
-        getSystemService(NotificationManager::class.java)
-            .notify(notifId(), buildLiveNotification(title, body))
-    }
-
+    // Build the ongoing notification with explicit title + body (live content
+    // pushed via ACTION_UPDATE), as opposed to buildNotification()'s app-name
+    // title + single label line.
     private fun buildLiveNotification(title: String, body: String): Notification {
         val pi = packageManager.getLaunchIntentForPackage(packageName)
             ?.let { PendingIntent.getActivity(this, 0, it,

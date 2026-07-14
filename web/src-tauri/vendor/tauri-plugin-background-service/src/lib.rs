@@ -924,6 +924,26 @@ async fn get_os_service_status<R: Runtime>(
     }
 }
 
+// ─── Live notification update ────────────────────────────────────────────────
+
+/// Update the running Android foreground-service notification's content in
+/// place. The service re-posts its own notification (unchanged id), which is
+/// the reliable way to refresh an FGS notification while backgrounded.
+///
+/// No-op on non-Android targets and safe to call frequently. Only has an effect
+/// while the foreground service is running.
+#[cfg(target_os = "android")]
+pub fn update_notification<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
+    let mobile = app.state::<Arc<MobileLifecycle<R>>>();
+    if let Err(e) = mobile.update_notification(title, body) {
+        log::warn!("background-service: update_notification failed: {e}");
+    }
+}
+
+/// No-op stub on platforms without the Android foreground service.
+#[cfg(not(target_os = "android"))]
+pub fn update_notification<R: Runtime>(_app: &AppHandle<R>, _title: &str, _body: &str) {}
+
 // ─── Plugin Builder ──────────────────────────────────────────────────────────
 
 /// Create the Tauri plugin with your service factory.

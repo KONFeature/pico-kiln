@@ -24,9 +24,11 @@ log = "0.4"
 tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2.8.0"
 tauri-plugin-notification = "2"
-# Vendored from crates.io 0.7.1 with a patched Android LifecycleService that
-# self-refreshes its foreground notification from a file the app writes each
-# poll (see vendor/.../LifecycleService.kt and monitor::write_notif_label).
+# Vendored from crates.io 0.7.1 with one addition: an `updateNotification`
+# command so the app can refresh the foreground-service notification content
+# in place (the service re-posts its own notification, reliable while
+# backgrounded). See vendor/.../{LifecycleService,BackgroundServicePlugin}.kt
+# and tauri_plugin_background_service::update_notification.
 tauri-plugin-background-service = { path = "vendor/tauri-plugin-background-service" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["time", "sync", "macros", "rt"] }

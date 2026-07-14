@@ -91,6 +91,17 @@ impl<R: Runtime> MobileLifecycle<R> {
         }
     }
 
+    /// Update the Android foreground-service notification content in place.
+    ///
+    /// Sends `ACTION_UPDATE` to the running `LifecycleService`, which re-posts
+    /// its own notification (same id). No-op on iOS.
+    pub fn update_notification(&self, title: &str, body: &str) -> Result<(), ServiceError> {
+        self.handle
+            .run_mobile_plugin::<()>("updateNotification", UpdateNotificationArgs { title, body })
+            .map_err(|e| ServiceError::Platform(e.to_string()))?;
+        Ok(())
+    }
+
     /// Stop the OS-specific keepalive mechanism.
     ///
     /// - Android: stops the Foreground Service.
@@ -227,6 +238,14 @@ impl<R: Runtime> MobileLifecycle<R> {
 #[serde(rename_all = "camelCase")]
 struct CompleteBgTaskArgs {
     success: bool,
+}
+
+/// Arguments sent to the native `updateNotification` handler.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateNotificationArgs<'a> {
+    title: &'a str,
+    body: &'a str,
 }
 
 impl<R: Runtime> MobileKeepalive for MobileLifecycle<R> {

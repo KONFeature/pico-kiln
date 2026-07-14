@@ -17,6 +17,11 @@ import org.json.JSONArray
     var foregroundServiceType: String = "dataSync"
 }
 
+@InvokeArg class UpdateNotificationArgs {
+    var title: String = ""
+    var body: String = ""
+}
+
 @InvokeArg
 class GetAutoStartConfigResult {
     var pending: Boolean = false
@@ -130,6 +135,17 @@ class BackgroundServicePlugin(private val activity: Activity) : Plugin(activity)
             .putBoolean("bg_show_stop_action", showStopAction)
             .putString("bg_on_timeout_policy", onTimeoutPolicy)
             .apply()
+        invoke.resolve()
+    }
+
+    @Command
+    fun updateNotification(invoke: Invoke) {
+        val args = invoke.parseArgs(UpdateNotificationArgs::class.java)
+        activity.startService(Intent(activity, LifecycleService::class.java).apply {
+            action = LifecycleService.ACTION_UPDATE
+            putExtra(LifecycleService.EXTRA_TITLE, args.title)
+            putExtra(LifecycleService.EXTRA_BODY, args.body)
+        })
         invoke.resolve()
     }
 

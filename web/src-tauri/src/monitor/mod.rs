@@ -394,44 +394,31 @@ impl Monitor {
         let _ = app.emit("kiln://sample", &point);
         let _ = app.emit("kiln://monitoring", self.monitoring_status());
 
-        self.write_notif_label(Some(&status));
+        self.update_notification(app, Some(&status));
         self.fire_alerts(app, alerts);
     }
 
-    /// Publish live notification content for the Android foreground service to
-    /// display. We write it to a file in the app data dir (`kiln_notif.txt`,
-    /// title on line 1, body on line 2); the patched `LifecycleService` reads
-    /// it on a timer and re-posts its own notification from within the service
-    /// — the only mechanism that reliably updates an FGS notification in place
-    /// while backgrounded. Writing a file works from this background task where
-    /// a cross-plugin `notify()` call did not.
-    fn write_notif_label(&self, status: Option<&Value>) {
-        if !cfg!(target_os = "android") {
+    /// Push live notification content to the Android foreground service. The
+    /// service re-posts its own notification (same id) from within its own
+    /// context, which reliably updates it in place — including while the app is
+    /// backgrounded/locked. Only fires while the service is active and when the
+    /// content actually changed.
+    fn update_notification<R: Runtime>(&self, app: &AppHandle<R>, status: Option<&Value>) {
+        if !self.inner.fgs_active.load(Ordering::SeqCst) {
             return;
         }
-        let dir = match self.inner.dir().clone() {
-            Some(d) => d,
-            None => return,
+        let Some((title, body)) = status.and_then(notification_content) else {
+            return;
         };
-        let content = status.and_then(notification_content);
         {
             let mut st = self.inner.st();
-            let key = content.as_ref().map(|(t, b)| format!("{t}\n{b}"));
-            if st.last_notif == key {
+            let key = format!("{title}\n{body}");
+            if st.last_notif.as_deref() == Some(key.as_str()) {
                 return;
             }
-            st.last_notif = key;
+            st.last_notif = Some(key);
         }
-        let path = dir.join("kiln_notif.txt");
-        match content {
-            Some((title, body)) => {
-                let _ = std::fs::write(path, format!("{title}\n{body}"));
-            }
-            // Idle: clear so the service stops showing stale content.
-            None => {
-                let _ = std::fs::remove_file(path);
-            }
-        }
+        tauri_plugin_background_service::update_notification(app, &title, &body);
     }
 
     fn on_poll_err<R: Runtime>(&self, app: &AppHandle<R>, err: String) {

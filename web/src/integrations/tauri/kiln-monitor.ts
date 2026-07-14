@@ -7,18 +7,12 @@
 
 import { invoke, isTauri as tauriIsTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { sendNotification } from "@tauri-apps/plugin-notification";
 import {
 	isServiceRunning,
 	startService,
 	stopService,
 } from "tauri-plugin-background-service";
 import type { KilnStatus } from "@/lib/pico/types";
-
-// Must match `androidNotificationId` / `androidNotificationChannelId` in
-// tauri.conf.json and FGS_* in monitor/mod.rs.
-const FGS_NOTIFICATION_ID = 9001;
-const FGS_CHANNEL_ID = "kiln_monitor";
 
 /** True when running inside the Tauri shell (desktop or mobile). */
 export function isTauri(): boolean {
@@ -159,55 +153,16 @@ function describeStatus(
 	}
 }
 
-/** One-line content text for the initial foreground-service notification. */
+/**
+ * One-line content text for the foreground-service notification set when the
+ * service first starts. Live updates thereafter are pushed natively by the Rust
+ * monitor via `update_notification` (works while backgrounded), so no JS-side
+ * re-post is needed.
+ */
 function serviceLabel(status: KilnStatus): string {
 	const parts = describeStatus(status);
 	if (!parts) return "Monitoring kiln";
 	return parts.body ? `${parts.title} \u00b7 ${parts.body}` : parts.title;
-}
-
-/** True inside the Tauri Android webview (where the FGS notification lives). */
-function isAndroid(): boolean {
-	return (
-		isTauri() &&
-		typeof navigator !== "undefined" &&
-		/android/i.test(navigator.userAgent)
-	);
-}
-
-let lastNotifKey: string | null = null;
-
-/**
- * Refresh the foreground-service notification's content in place while the app
- * is foregrounded (webview alive). Re-posts to the same id + channel so it
- * updates rather than stacking. The Rust monitor does the equivalent for the
- * backgrounded case. Android only — desktop notifications don't update by id.
- */
-export async function updateOngoingNotification(
-	status: KilnStatus | null,
-): Promise<void> {
-	if (!isAndroid() || !status) return;
-	const parts = describeStatus(status);
-	if (!parts) {
-		// Idle: the service (and its notification) is gone; re-post on next start.
-		lastNotifKey = null;
-		return;
-	}
-	const key = `${parts.title}\u0001${parts.body}`;
-	if (key === lastNotifKey) return;
-	lastNotifKey = key;
-	try {
-		sendNotification({
-			id: FGS_NOTIFICATION_ID,
-			channelId: FGS_CHANNEL_ID,
-			title: parts.title,
-			body: parts.body,
-			ongoing: true,
-			silent: true,
-		});
-	} catch {
-		// Notifications disabled or channel missing — non-fatal.
-	}
 }
 
 /**
