@@ -39,11 +39,6 @@ const POLL_TIMEOUT_MS: u64 = 10_000;
 /// single (likely-still-stale) poll.
 const REFRESH_BURST_MS: i64 = 12_000;
 const BURST_INTERVAL: Duration = Duration::from_millis(1500);
-/// Must match `androidNotificationId` / `androidNotificationChannelId` in
-/// tauri.conf.json: we re-post to the foreground service's own notification to
-/// update it in place (the plugin has no runtime-update API).
-const FGS_NOTIFICATION_ID: i32 = 9001;
-const FGS_CHANNEL_ID: &str = "kiln_monitor";
 
 /// A single temperature sample served to the frontend live chart.
 #[derive(Debug, Clone, Serialize)]
@@ -399,43 +394,43 @@ impl Monitor {
         let _ = app.emit("kiln://sample", &point);
         let _ = app.emit("kiln://monitoring", self.monitoring_status());
 
-        self.update_ongoing_notification(app, &status);
+        self.write_notif_label(Some(&status));
         self.fire_alerts(app, alerts);
     }
 
-    /// Refresh the foreground service's persistent notification with live kiln
-    /// state. Android only: on desktop notifications don't update in place by
-    /// id, so re-posting each poll would just spam toasts.
-    fn update_ongoing_notification<R: Runtime>(&self, app: &AppHandle<R>, status: &Value) {
+    /// Publish live notification content for the Android foreground service to
+    /// display. We write it to a file in the app data dir (`kiln_notif.txt`,
+    /// title on line 1, body on line 2); the patched `LifecycleService` reads
+    /// it on a timer and re-posts its own notification from within the service
+    /// — the only mechanism that reliably updates an FGS notification in place
+    /// while backgrounded. Writing a file works from this background task where
+    /// a cross-plugin `notify()` call did not.
+    fn write_notif_label(&self, status: Option<&Value>) {
         if !cfg!(target_os = "android") {
             return;
         }
-        if !self.inner.fgs_active.load(Ordering::SeqCst) {
-            return;
-        }
-        let Some((title, body)) = notification_content(status) else {
-            return;
+        let dir = match self.inner.dir().clone() {
+            Some(d) => d,
+            None => return,
         };
+        let content = status.and_then(notification_content);
         {
             let mut st = self.inner.st();
-            let key = format!("{title}\u{1}{body}");
-            if st.last_notif.as_deref() == Some(key.as_str()) {
+            let key = content.as_ref().map(|(t, b)| format!("{t}\n{b}"));
+            if st.last_notif == key {
                 return;
             }
-            st.last_notif = Some(key);
+            st.last_notif = key;
         }
-        if let Err(e) = app
-            .notification()
-            .builder()
-            .id(FGS_NOTIFICATION_ID)
-            .channel_id(FGS_CHANNEL_ID)
-            .title(title)
-            .body(body)
-            .ongoing()
-            .silent()
-            .show()
-        {
-            log::warn!("kiln: failed to update ongoing notification: {e}");
+        let path = dir.join("kiln_notif.txt");
+        match content {
+            Some((title, body)) => {
+                let _ = std::fs::write(path, format!("{title}\n{body}"));
+            }
+            // Idle: clear so the service stops showing stale content.
+            None => {
+                let _ = std::fs::remove_file(path);
+            }
         }
     }
 
