@@ -3,6 +3,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import Header from "@/components/Header";
+import { KilnMonitorBridge } from "@/integrations/tauri/monitor-bridge";
 import TanStackQueryDevtools from "../integrations/tanstack-query/devtools";
 
 interface MyRouterContext {
@@ -18,6 +19,7 @@ function RootComponent() {
 		<>
 			<Header />
 			<Outlet />
+			<KilnMonitorBridge />
 			<TanStackDevtools
 				config={{
 					position: "bottom-right",

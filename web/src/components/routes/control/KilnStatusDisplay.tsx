@@ -19,6 +19,8 @@ import {
 	CollapsibleContent,
 	CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useKilnHistory } from "@/integrations/tauri/hooks";
+import { isTauri } from "@/integrations/tauri/kiln-monitor";
 import type { PicoAPIError } from "@/lib/pico/client";
 import { STATE_DESCRIPTIONS, STATE_LABELS } from "@/lib/pico/errors";
 import { useClearError } from "@/lib/pico/hooks";
@@ -151,7 +153,11 @@ export function KilnStatusDisplay({
 		error: clearingError,
 	} = useClearError();
 	const { getProfile } = useProfileCache();
-	const tempHistory = useTemperatureHistory(status, dataUpdatedAt);
+	// In Tauri the native monitor owns a persisted 4h history (survives the app
+	// being backgrounded); on the web build accumulate in-memory while mounted.
+	const webHistory = useTemperatureHistory(status, dataUpdatedAt);
+	const nativeHistory = useKilnHistory();
+	const tempHistory = isTauri() ? nativeHistory : webHistory;
 
 	const runningProfile = status?.profile_name
 		? getProfile(status.profile_name)

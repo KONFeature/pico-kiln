@@ -6,6 +6,12 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
+import {
+	getKilnStatus,
+	getMonitoringStatus,
+	isTauri,
+	refreshKiln,
+} from "@/integrations/tauri/kiln-monitor";
 import { readFileAsText } from "../utils";
 import { type PicoAPIClient, PicoAPIError } from "./client";
 import { usePico } from "./context";
@@ -39,6 +45,14 @@ export const picoKeys = {
 };
 
 /**
+ * In a Tauri build a native command triggers an immediate poll so the UI
+ * reflects a control action without waiting for the next supervisor tick.
+ */
+function maybeRefresh() {
+	if (isTauri()) void refreshKiln();
+}
+
+/**
  * Narrow the optional Pico client to a guaranteed instance, throwing a uniform
  * PicoAPIError when no client is configured yet. Lets every hook drop its own
  * `if (!client)` guard.
@@ -60,11 +74,29 @@ export function useKilnStatus(
 	options?: Partial<UseQueryOptions<KilnStatus, PicoAPIError>>,
 ) {
 	const { client, isConfigured } = usePico();
+	const queryClient = useQueryClient();
 
 	return useQuery<KilnStatus, PicoAPIError>({
 		queryKey: picoKeys.status,
 		queryFn: async () => {
 			assertClient(client);
+			// In Tauri the Rust supervisor is the single poller; read its latest
+			// snapshot.
+			if (isTauri()) {
+				const native = await getKilnStatus();
+				if (native) return native;
+				// No snapshot yet. If the supervisor is configured it is the ONLY
+				// poller allowed to touch the 2-connection-limited kiln — never open
+				// a second direct fetch. Nudge it and reuse the last cached status
+				// (live events also populate the cache) until its first poll lands.
+				const health = await getMonitoringStatus();
+				if (health.running) {
+					void refreshKiln();
+					const cached = queryClient.getQueryData<KilnStatus>(picoKeys.status);
+					if (cached) return cached;
+					throw new PicoAPIError("Waiting for background monitor…");
+				}
+			}
 			return await client.getStatus();
 		},
 		enabled: isConfigured && Boolean(client),
@@ -115,6 +147,7 @@ export function useRunProfile() {
 		onSuccess: () => {
 			// Immediately refetch status after starting a profile
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
+			maybeRefresh();
 		},
 	});
 }
@@ -133,6 +166,7 @@ export function useStopProfile() {
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
+			maybeRefresh();
 		},
 	});
 }
@@ -151,6 +185,7 @@ export function useShutdown() {
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
+			maybeRefresh();
 		},
 	});
 }
@@ -169,6 +204,7 @@ export function useClearError() {
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
+			maybeRefresh();
 		},
 	});
 }
@@ -224,6 +260,7 @@ export function useStartTuning() {
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
+			maybeRefresh();
 		},
 	});
 }
@@ -242,6 +279,7 @@ export function useStopTuning() {
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: picoKeys.status });
+			maybeRefresh();
 		},
 	});
 }

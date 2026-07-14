@@ -9,6 +9,18 @@
     "beforeDevCommand": "bun dev",
     "beforeBuildCommand": "bun run build"
   },
+  "plugins": {
+    "background-service": {
+      "androidForegroundServiceTypes": ["dataSync"],
+      "androidValidateForegroundServiceType": true,
+      "androidOnTimeout": "notifyUser",
+      "androidNotificationChannelId": "kiln_monitor",
+      "androidNotificationChannelName": "Kiln monitoring",
+      "androidNotificationId": 9001,
+      "androidShowStopAction": false,
+      "androidRequestNotificationPermissionOnLoad": true
+    }
+  },
   "app": {
     "windows": [
       {
