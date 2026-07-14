@@ -142,3 +142,4 @@ config.py
 backup/
 
 .omo/
+.pi-subagents/

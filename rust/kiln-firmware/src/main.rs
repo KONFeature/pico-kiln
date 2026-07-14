@@ -489,28 +489,24 @@ async fn core0_main(
         // is no upstream network in AP mode. The `Control` handle is moved into
         // the monitor (nothing else uses it after this).
         //
-        // DIAGNOSTIC: the monitor is the ONLY thing issuing cyw43 control ioctls
-        // after boot. cyw43 0.7's runner `panic!`s on any non-zero ioctl status
-        // (runner.rs:714), which halts Core 0 (USB + WiFi both die). On a WPA3-SAE
-        // link a rekey/flap makes the monitor's re-`join()` ioctl error → panic.
-        // Flipped off to confirm: if STA stops dying, that path is the culprit and
-        // the durable fix is patching cyw43 to not panic on an ioctl error.
-        const ENABLE_WIFI_MONITOR: bool = false;
-        if ENABLE_WIFI_MONITOR {
-            spawner.spawn(
-                platform::wifi_monitor_task(
-                    control,
-                    sta_stack,
-                    config.wifi_ssid.as_str(),
-                    config.wifi_password.as_str(),
-                )
-                .unwrap(),
-            );
-        } else {
-            // Drop the handle so nothing issues control ioctls post-boot; cyw43's
-            // own firmware auto-reconnects a dropped link without driver ioctls.
-            core::mem::drop(control);
-        }
+        // The monitor was previously disabled because cyw43 0.7's runner
+        // `panic!`ed on any non-zero ioctl status, so a WPA3-SAE rekey/flap made
+        // the monitor's re-`join()` ioctl kill Core 0 (USB + WiFi both died).
+        // Running WITHOUT it proved worse: an AP-initiated deauth overnight left
+        // the chip dissociated forever (LED off, unreachable) because cyw43's
+        // firmware does not retry a hard dissociation and nothing else re-joins.
+        // The vendored cyw43 (vendor/cyw43, [patch.crates-io]) downgrades the
+        // panic to a warn and marks the link down on DEAUTH_IND/DISASSOC_IND, so
+        // the monitor is both safe and able to see the drop.
+        spawner.spawn(
+            platform::wifi_monitor_task(
+                control,
+                sta_stack,
+                config.wifi_ssid.as_str(),
+                config.wifi_password.as_str(),
+            )
+            .unwrap(),
+        );
         spawner.spawn(platform::ntp_task(clock, sta_stack).unwrap());
     } else {
         // Unconfigured: open SoftAP for first-time provisioning. No NTP (so

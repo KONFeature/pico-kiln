@@ -109,3 +109,18 @@ stack-debug = []
 opt-level = 2
 lto = "fat"
 codegen-units = 1
+
+# Vendored cyw43 0.7.0 with two cherry-picks from upstream embassy main (see
+# vendor/cyw43/README.pico-kiln.md):
+#   1. runner.rs: non-zero ioctl status warns instead of panic!() — the panic
+#      killed Core 0 (USB + WiFi) on a WPA3-SAE rekey/flap re-join, which is why
+#      wifi_monitor_task had to be disabled (main.rs). With the panic gone the
+#      monitor is safe to run.
+#   2. runner.rs: DEAUTH_IND / DISASSOC_IND mark the link down — without them an
+#      AP-initiated deauth (AP reboot, idle-station timeout: the overnight
+#      "LED off, never reconnects" failure) left is_link_up() stale forever, so
+#      no reconnect logic could ever trigger.
+# Applies to cyw43-pio's dep too (single cyw43 instance). Drop this patch when
+# a cyw43 release ≥ 0.8 ships both fixes.
+[patch.crates-io]
+cyw43 = { path = "vendor/cyw43" }

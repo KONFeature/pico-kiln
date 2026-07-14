@@ -1,0 +1,67 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+<!-- next-header -->
+## Unreleased - ReleaseDate
+
+## 0.7.0 - 2026-03-10
+
+- Reset WPA security before creating secure AP
+- Add `get_rssi()` to `Controller`
+- Implement link state monitoring
+- Always unsubscribe to cyw43 events (fix event leak)
+- Add SDIO support for STM32
+- Allow specifying nvram, get LWB+ working
+- Improve join handling with better error reporting
+- Replace `num_enum` dependency with internal macro
+- Bump bt-hci to 0.8.0.
+- Update to embedded-io 0.7
+- Update embassy-sync to 0.8.0
+- Update embassy-net-driver-channel to 0.4.0
+
+## 0.6.0 - 2025-11-27
+
+- Updated documentation for Control::join() #4678
+- Bump bt-hci to 0.6.0.
+- Add error handling to HCI transport implementation.
+- Reset WPA security on AP creation #4709
+
+## 0.5.0 - 2025-08-28
+
+- bump bt-hci to 0.4.0
+
+## 0.4.1 - 2025-08-26 (yanked)
+
+- bump bt-hci to 0.4.0
+
+## 0.4.0 - 2025-07-15
+
+- bump embassy-sync to 0.7.0
+- bump bt-hci to 0.3.0
+- make State::new const fn
+
+## 0.3.0 - 2025-01-05
+
+- Update `embassy-time` to 0.4.0
+- Add Bluetooth support.
+- Add WPA3 support.
+- Expand wifi security configuration options.
+
+## 0.2.0 - 2024-08-05
+
+- Update to new versions of embassy-{time,sync}
+- Add more fields to the BssInfo packet struct #2461
+- Extend the Scan API #2282
+- Reuse buf to reduce stack usage #2580
+- Add MAC address getter to cyw43 controller #2818
+- Add function to join WPA2 network with precomputed PSK. #2885
+- Add function to close soft AP. #3042
+- Fixing missing re-export #3211
+
+## 0.1.0 - 2024-01-11
+
+- First release
