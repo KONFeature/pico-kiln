@@ -149,3 +149,30 @@ The deliberate "narrower than Python" deltas have since been implemented:
   AP. The CYW43439 firmware *does* support it (`cyw43_ll_wifi_join(bssid, channel)`);
   restoring the pin would mean forking/vendoring cyw43 or upstreaming a join-with-
   BSSID PR to embassy. Skipped on purpose — only matters for multiple same-SSID APs.
+
+---
+
+## Next step — Core 0 liveness watchdog (planned, not implemented)
+
+**Motivation (2026-07 overnight incident):** Core 0 hung silently mid-firing
+(no panic — the panic handler would have reset the chip). WiFi, USB, logging,
+and the web server all died while Core 1 kept the SSR firing at full authority
+with zero monitoring for hours (~120 °C gained between the last logged row and
+the manual power cycle). The hardware watchdog did not help because **Core 1
+alone feeds it** — a dead Core 0 goes unnoticed.
+
+**Planned design (follow-up, safety-relevant — do not bolt on casually):**
+- Core 0 publishes a heartbeat (e.g. an `AtomicU32` counter bumped by a
+  dedicated low-priority task each second).
+- Core 1's control loop checks the heartbeat age each tick. If Core 0 has been
+  silent for a bounded window (e.g. 60 s) **while a run is active**:
+  - log nothing (Core 0 owns the log path — it's dead), but
+  - either stop feeding the watchdog (forcing a clean chip reset, after which
+    `attempt_recovery` resumes the run from the last flushed CSV row), or
+  - force a controlled abort to SSR-off ERROR state.
+  Reset-and-recover is the preferred option: it restores monitoring AND the
+  run, whereas abort sacrifices the firing to a Core 0 software bug.
+- Needs care around legitimate Core 0 silence: flash-write parks
+  (`flash_handshake`), long littlefs GC pauses, and USB enumeration stalls
+  must not trip it — the heartbeat task must run above/independent of those,
+  or the window must comfortably exceed the worst-case park.

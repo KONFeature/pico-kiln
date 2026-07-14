@@ -11,12 +11,21 @@ use kiln_core::recovery::LastLogEntry;
 use kiln_core::state::KilnState;
 
 /// Map a CSV `state` column to [`KilnState`]. Only `RUNNING` matters to the
-/// decision; every other string (terminal states, the `RECOVERY` marker, or
-/// anything malformed) maps to a non-`Running` variant and is rejected
-/// identically — exactly the reference's `state != 'RUNNING'` test.
+/// decision; terminal states and anything malformed map to a non-`Running`
+/// variant and are rejected identically — the reference's `state != 'RUNNING'`
+/// test.
+///
+/// DELIBERATE DELTA from the reference: the one-shot `RECOVERY` marker row (the
+/// first row appended on a crash-recovery resume) maps to `Running`. It carries
+/// a live elapsed/temperature and describes a run that was RUNNING an instant
+/// later — so a re-crash *before the first steady row flushed* must be
+/// re-resumable. The reference mapped it to non-Running, which made a crash in
+/// that window consume the pointer and forfeit the run. Safe because the
+/// `active_run` pointer is cleared on every clean run end: a terminal RECOVERY
+/// row can never be resurrected on a later boot.
 fn parse_state(s: &str) -> KilnState {
     match s {
-        "RUNNING" => KilnState::Running,
+        "RUNNING" | "RECOVERY" => KilnState::Running,
         "TUNING" => KilnState::Tuning,
         "COMPLETE" => KilnState::Complete,
         "ERROR" => KilnState::Error,
@@ -132,11 +141,16 @@ mod tests {
     }
 
     #[test]
-    fn recovery_event_row_is_non_running_with_blank_index() {
-        // state column is RECOVERY, step fields empty.
+    fn recovery_event_row_is_resumable_with_blank_index() {
+        // The one-shot RECOVERY marker (state column RECOVERY, step fields
+        // empty) is written the instant a resume starts — a re-crash before the
+        // first steady row flushes must be re-resumable from it. The blank step
+        // index recomputes the step from elapsed.
         let line = "2023-11-14 22:13:20,1234.5,250.00,300.00,80.00,RECOVERY,,,,90.0";
         let e = parse_last_log_entry(line).unwrap();
-        assert_ne!(e.state, KilnState::Running);
+        assert_eq!(e.state, KilnState::Running);
+        assert_eq!(e.elapsed_seconds, 1234.5);
+        assert_eq!(e.last_temp, 250.0);
         assert_eq!(e.step_index, None);
     }
 

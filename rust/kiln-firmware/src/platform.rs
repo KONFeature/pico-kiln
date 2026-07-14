@@ -1569,7 +1569,10 @@ async fn recover_from_pointer(state: &AppState) -> RecoveryOutcome {
     match core::str::from_utf8(&name_buf[..n]) {
         Ok(s) if log_name.push_str(s).is_ok() => {}
         // Corrupt / oversize pointer — consume it so it can't wedge every boot.
-        _ => return RecoveryOutcome::Decline,
+        _ => {
+            log::warn!(target: "boot", "recovery: declined — corrupt active_run pointer");
+            return RecoveryOutcome::Decline;
+        }
     }
 
     // Wait (bounded) for the first valid temperature, as the reference does — but
@@ -1603,7 +1606,14 @@ async fn recover_from_pointer(state: &AppState) -> RecoveryOutcome {
     {
         Some(e) => e,
         // Pointer present but the file is missing / empty / unparseable — consume.
-        None => return RecoveryOutcome::Decline,
+        None => {
+            log::warn!(
+                target: "boot",
+                "recovery: declined — log \"{}\" missing/empty/unparseable (header-only?)",
+                log_name.as_str()
+            );
+            return RecoveryOutcome::Decline;
+        }
     };
 
     // Both gates: last row RUNNING (content) AND temperature still close (recency).
@@ -1613,6 +1623,22 @@ async fn recover_from_pointer(state: &AppState) -> RecoveryOutcome {
         state.config.max_recovery_temp_delta as f32,
     );
     if !decision.can_recover {
+        // Distinguish the two gates so /api/logs says WHY the run was forfeited.
+        if entry.state != kiln_core::state::KilnState::Running {
+            log::warn!(
+                target: "boot",
+                "recovery: declined — last row of \"{}\" not RUNNING",
+                log_name.as_str()
+            );
+        } else {
+            log::warn!(
+                target: "boot",
+                "recovery: declined — temp drifted: last logged {}°C vs current {}°C (max delta {}°C)",
+                entry.last_temp,
+                current_temp,
+                state.config.max_recovery_temp_delta as f32
+            );
+        }
         return RecoveryOutcome::Decline;
     }
 
@@ -1621,13 +1647,25 @@ async fn recover_from_pointer(state: &AppState) -> RecoveryOutcome {
     // not appear on a retry, so we must not loop on it.
     let stem = match recovery_io::profile_stem(&log_name) {
         Some(s) => s,
-        None => return RecoveryOutcome::Decline,
+        None => {
+            log::warn!(
+                target: "boot",
+                "recovery: declined — no profile stem in \"{}\"",
+                log_name.as_str()
+            );
+            return RecoveryOutcome::Decline;
+        }
     };
     let mut fname = heapless::String::<80>::new();
     if recovery_io::write_lowercase(&mut fname, stem).is_err() || fname.push_str(".json").is_err() {
         return RecoveryOutcome::Decline;
     }
     if state.storage.size(Directory::Profiles, &fname).is_none() {
+        log::warn!(
+            target: "boot",
+            "recovery: declined — profile \"{}\" not found",
+            fname.as_str()
+        );
         return RecoveryOutcome::Decline;
     }
     let mut pbuf = [0u8; 8192];
@@ -1641,28 +1679,52 @@ async fn recover_from_pointer(state: &AppState) -> RecoveryOutcome {
     .await
     {
         Some(n) => n,
-        None => return RecoveryOutcome::Decline,
+        None => {
+            log::warn!(
+                target: "boot",
+                "recovery: declined — profile \"{}\" unreadable",
+                fname.as_str()
+            );
+            return RecoveryOutcome::Decline;
+        }
     };
     let parsed = match core::str::from_utf8(&pbuf[..pn])
         .ok()
         .and_then(|t| kiln_app::profile_json::parse_profile(t).ok())
     {
         Some(p) => p,
-        None => return RecoveryOutcome::Decline,
+        None => {
+            log::warn!(
+                target: "boot",
+                "recovery: declined — profile \"{}\" corrupt (parse failed)",
+                fname.as_str()
+            );
+            return RecoveryOutcome::Decline;
+        }
     };
     let profile = match ProfileName::new(&fname) {
         Ok(p) => p,
         Err(_) => return RecoveryOutcome::Decline,
     };
 
-    let _ = state.commands.try_send(Command::ResumeProfile {
-        profile,
-        parsed,
-        elapsed_seconds: decision.elapsed_seconds,
-        last_logged_temp: Some(decision.last_temp),
-        current_temp: Some(current_temp),
-        step_index: decision.step_index,
-    });
+    if state
+        .commands
+        .try_send(Command::ResumeProfile {
+            profile,
+            parsed,
+            elapsed_seconds: decision.elapsed_seconds,
+            last_logged_temp: Some(decision.last_temp),
+            current_temp: Some(current_temp),
+            step_index: decision.step_index,
+        })
+        .is_err()
+    {
+        // Boot-time channel full should be impossible (nothing else sends yet);
+        // if it ever happens, keep the pointer so the NEXT boot retries instead
+        // of silently forfeiting the run.
+        log::error!(target: "boot", "recovery: ResumeProfile channel full — resume NOT sent");
+        return RecoveryOutcome::Nothing;
+    }
 
     // Keep the pointer: the run is live again, so a re-crash recovers it again.
     // Hand the CSV logger the interrupted run's file so it appends (no new header)

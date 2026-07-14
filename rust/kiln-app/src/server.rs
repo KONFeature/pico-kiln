@@ -311,12 +311,24 @@ pub async fn csv_logger_task(
     let mut rx = status.receiver().unwrap();
     let mut logging = false;
     let mut filename = heapless::String::<96>::new();
+    // Row cadence is paced on MONOTONIC seconds, not the NTP wall clock: before
+    // the first NTP sync `clock.unix_seconds()` is `None`, and the old
+    // `unwrap_or(0)` pacing froze at `now - last_log == 0` — no data row could
+    // ever flush pre-sync, so a crash in that window left a header-only log and
+    // recovery was structurally impossible. The wall clock is still used for the
+    // log *filename* (run starts are NTP-gated by the API, so it is synced then).
+    let mono_secs = || (embassy_time::Instant::now().as_millis() / 1000) as i64;
     let mut last_log: i64 = 0;
+    // Set on the run-start / recovery-resume edge so the FIRST data row renders
+    // immediately (not one full logging interval later) — shrinking the
+    // header-only window where a power cycle forfeits crash recovery to ~0.
+    let mut first_row_due = false;
     let mut prev_state = KilnState::Idle;
 
     loop {
         let s = rx.changed().await;
         let now = clock.unix_seconds().unwrap_or(0);
+        let mono_now = mono_secs();
         let active = matches!(s.state, KilnState::Running | KilnState::Tuning);
 
         if active && !logging {
@@ -345,7 +357,8 @@ pub async fn csv_logger_task(
                     .is_ok()
                 {
                     logging = true;
-                    last_log = 0;
+                    last_log = mono_now;
+                    first_row_due = true;
                     // Steady rows now flow to this file via the unified flusher.
                     crate::logging::csv_set_name(&filename);
                     crate::logging::request_flush();
@@ -371,7 +384,8 @@ pub async fn csv_logger_task(
                         .is_ok()
                     {
                         logging = true;
-                        last_log = 0;
+                        last_log = mono_now;
+                        first_row_due = true;
                         // Steady rows now flow to this file via the unified flusher;
                         // nudge it so the first rows land early (recovery stays
                         // possible from near the start).
@@ -400,13 +414,21 @@ pub async fn csv_logger_task(
             // only the flash write is deferred and coalesced with the diag log.
             // `csv_push_row` returning true means we crossed the high-water mark;
             // nudge the flusher so the pending batch never approaches overflow.
-            if leaving || (now - last_log) >= interval {
+            if leaving || first_row_due || (mono_now - last_log) >= interval {
                 let mut row = heapless::String::<CSV_ROW_CAP>::new();
                 let _ = csv::write_row(&mut row, &s);
                 if crate::logging::csv_push_row(&row) {
                     crate::logging::request_flush();
                 }
-                last_log = now;
+                if first_row_due {
+                    // The first data row must be DURABLE, not just pending: it is
+                    // what makes the log recovery-eligible (header-only files are
+                    // declined). The run-start edge already nudged the flusher;
+                    // this nudge covers the row itself.
+                    crate::logging::request_flush();
+                    first_row_due = false;
+                }
+                last_log = mono_now;
             }
 
             if leaving {
