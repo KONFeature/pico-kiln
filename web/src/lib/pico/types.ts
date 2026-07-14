@@ -88,6 +88,11 @@ export interface KilnStatus {
 	// Recovery mode information
 	is_recovering?: boolean; // True if in recovery mode
 	recovery_target_temp?: number; // Target temp for recovery (°C)
+
+	// Consecutive near-target stall-advances without a genuine step completion.
+	// Non-zero on COMPLETE means the run gave up near its final target(s)
+	// instead of truly reaching them (degraded finish).
+	stall_advances?: number;
 }
 
 // API Request/Response types

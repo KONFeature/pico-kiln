@@ -544,6 +544,7 @@ where
             step_elapsed,
             is_recovering: self.state.is_recovering(),
             recovery_target_temp: self.state.recovery_target_temp(),
+            stall_advances: self.state.stall_advances(),
             measured_rate: self.state.measured_rate(),
             profile_name: self.current_profile,
             scheduled,

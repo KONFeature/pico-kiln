@@ -138,6 +138,10 @@ pub struct KilnController {
     last_temp_recording: f32,
     last_stall_check: f32,
     stall_fail_count: u32,
+    /// Consecutive arrival-band stall-advances with no genuine step completion
+    /// in between. Diagnostic: >0 at Complete means the run "gave up near
+    /// target" on its final step(s) rather than truly reaching them.
+    stall_advances: u32,
 
     error: Option<KilnError>,
 
@@ -164,6 +168,7 @@ impl KilnController {
             last_temp_recording: 0.0,
             last_stall_check: 0.0,
             stall_fail_count: 0,
+            stall_advances: 0,
             error: None,
             recovery_target_temp: None,
         }
@@ -197,6 +202,13 @@ impl KilnController {
     pub fn recovery_target_temp(&self) -> Option<f32> {
         self.recovery_target_temp
     }
+    /// Consecutive arrival-band stall-advances without a genuine step
+    /// completion in between (see the stall block in `update_running`). Non-zero
+    /// on a Complete run means the final step(s) were entered by giving up near
+    /// their targets, not by reaching them.
+    pub fn stall_advances(&self) -> u32 {
+        self.stall_advances
+    }
     /// Measured rate over the configured window (°C/h).
     pub fn measured_rate(&self) -> f32 {
         self.temp_history.get_rate(self.cfg.rate_measurement_window)
@@ -226,6 +238,7 @@ impl KilnController {
         self.last_temp_recording = 0.0;
         self.last_stall_check = 0.0;
         self.stall_fail_count = 0;
+        self.stall_advances = 0;
         true
     }
 
@@ -250,6 +263,7 @@ impl KilnController {
         self.last_temp_recording = 0.0;
         self.last_stall_check = 0.0;
         self.stall_fail_count = 0;
+        self.stall_advances = 0;
     }
 
     /// Set the ERROR state with a typed reason. Mirrors `set_error`.
@@ -332,6 +346,9 @@ impl KilnController {
 
         let n_steps = self.profile.as_ref().unwrap().step_count();
         if self.is_step_complete(elapsed) {
+            // A genuine completion (target reached / hold elapsed) proves the
+            // kiln is progressing — restart the consecutive stall-advance count.
+            self.stall_advances = 0;
             if self.current_step_index >= n_steps - 1 {
                 self.state = KilnState::Complete;
                 self.target_temp = 0.0;
@@ -376,27 +393,44 @@ impl KilnController {
                         if abs(actual_rate) < mr {
                             self.stall_fail_count += 1;
                             if self.stall_fail_count >= self.cfg.stall_consecutive_fails {
-                                // Stall confirmed. Within the arrival band of the
-                                // ramp's target, ADVANCE instead of erroring: a
-                                // near-target stall is the PID under-driving on
-                                // approach (mis-tuned Ki, no wind-up on a hot
-                                // fresh launch — hardware: stuck at ~870 °C
-                                // toward 880 °C at 50–60 % power gaining
-                                // 0.1 °C/min). Advancing self-heals: the next
-                                // step's target moves ahead, error grows, the
-                                // integral winds up, power returns. A genuine
-                                // element/insulation failure cannot hold the
-                                // desired rate OUTSIDE the band and still errors
-                                // there (at worst one step later if it dies
-                                // exactly near a boundary). advance_to_next_step
-                                // resets stall_fail_count/history, so the next
-                                // step starts with a clean accrual, not an
-                                // inherited near-trip count.
+                                // Stall confirmed. Within the arrival band of an
+                                // ASCENDING ramp's target, ADVANCE instead of
+                                // erroring: a near-target stall on the way up is
+                                // the PID under-driving on approach (mis-tuned
+                                // Ki, no wind-up on a hot fresh launch —
+                                // hardware: stuck at ~870 °C toward 880 °C at
+                                // 50–60 % power gaining 0.1 °C/min). Advancing
+                                // self-heals: the next step's target moves
+                                // ahead, error grows, the integral winds up,
+                                // power returns. A genuine element/insulation
+                                // failure cannot hold the desired rate OUTSIDE
+                                // the band and still errors there (at worst one
+                                // step later if it dies exactly near a
+                                // boundary). advance_to_next_step resets
+                                // stall_fail_count/history, so the next step
+                                // starts with a clean accrual, not an inherited
+                                // near-trip count.
+                                //
+                                // DESCENDING ramps (controlled cooling — e.g. a
+                                // rate-limited descent through quartz inversion
+                                // or an annealing hold-down) are EXCLUDED: the
+                                // self-heal rationale is heating-only, and
+                                // advancing would skip a deliberately protective
+                                // step on a kiln that merely cools too slowly.
+                                // A stalled descent errors, as before.
                                 let target = current_step.target_temp.unwrap_or(0.0);
+                                let ascending = target > self.step_start_temp;
                                 let arriving = self.cfg.stall_arrival_band > 0.0
+                                    && ascending
                                     && abs(target - self.current_temp)
                                         <= self.cfg.stall_arrival_band;
                                 if arriving {
+                                    // Track consecutive stall-advances (reset on
+                                    // any genuine step completion) so a stuck
+                                    // kiln walking closely-spaced targets is
+                                    // observable — and a Complete reached this
+                                    // way is distinguishable from a real finish.
+                                    self.stall_advances += 1;
                                     if self.current_step_index >= n_steps - 1 {
                                         // Nothing to advance into — the run has
                                         // done all it physically can.
@@ -558,6 +592,7 @@ impl KilnController {
         self.last_temp_recording = elapsed_seconds;
         self.last_stall_check = elapsed_seconds;
         self.stall_fail_count = 0;
+        self.stall_advances = 0;
 
         if let (Some(llt), Some(cur)) = (last_logged_temp, current_temp) {
             let is_cooling = current_step.kind == StepKind::Cooling
@@ -850,6 +885,7 @@ mod tests {
         assert_eq!(end, KilnState::Running, "in-band stall must not error");
         assert_eq!(c.current_step_index(), 1, "must have advanced to the hold");
         assert_eq!(c.stall_fail_count, 0, "advance must clear the fail count");
+        assert_eq!(c.stall_advances(), 1, "stall-advance must be counted");
         // The hold keeps running at its target — no immediate re-trip.
         let _ = c.update(870.0, 120_000);
         assert_eq!(c.state, KilnState::Running);
@@ -867,6 +903,58 @@ mod tests {
         let end = run_flat(&mut c, 870.0, 60);
         assert_eq!(end, KilnState::Complete);
         assert_eq!(c.target_temp, 0.0);
+    }
+
+    #[test]
+    fn descending_ramp_stall_errors_even_in_band() {
+        // Controlled cooling expressed as a downward ramp (e.g. rate-limited
+        // descent for annealing / quartz inversion). Stuck 8 °C ABOVE the
+        // target — inside the band — must ERROR, not advance: skipping a
+        // protective cooling step can crack ware, and the advance self-heal
+        // rationale (integral wind-up on approach) is heating-only.
+        let mut c = KilnController::new(stall_cfg());
+        c.current_temp = 568.0;
+        let p = Profile::new(&[
+            Step::ramp(560.0, Some(80.0), Some(40.0)),
+            Step::ramp(100.0, Some(100.0), None),
+        ])
+        .unwrap();
+        assert!(c.run_profile(p, 0));
+        let end = run_flat(&mut c, 568.0, 60);
+        assert_eq!(end, KilnState::Error);
+        assert!(matches!(c.error(), Some(KilnError::Stall { .. })));
+    }
+
+    #[test]
+    fn genuine_completion_resets_stall_advance_count() {
+        // One stall-advance, then a real step completion: the consecutive
+        // counter must reset, so a later Complete is not misreported as
+        // degraded.
+        let mut c = KilnController::new(stall_cfg());
+        c.current_temp = 870.0;
+        let p = Profile::new(&[
+            Step::ramp(880.0, Some(100.0), Some(50.0)),
+            Step::hold(880.0, 30.0),
+            Step::hold(880.0, 10_000.0),
+        ])
+        .unwrap();
+        assert!(c.run_profile(p, 0));
+        // Stall-advance off the ramp into the first hold (fires ~8 s in with
+        // the shortened test timings; stop before the 30 s hold can elapse).
+        let end = run_flat(&mut c, 870.0, 15);
+        assert_eq!(end, KilnState::Running);
+        assert_eq!(c.current_step_index(), 1);
+        assert_eq!(c.stall_advances(), 1);
+        // Let the 30 s hold complete genuinely (time-based; tick every second
+        // — the NTP-jump guard clamps any >60 s delta to 1 s).
+        for s in 16..=90 {
+            let _ = c.update(880.0, s * 1000);
+            if c.current_step_index() == 2 {
+                break;
+            }
+        }
+        assert_eq!(c.current_step_index(), 2, "hold must have completed");
+        assert_eq!(c.stall_advances(), 0, "genuine completion must reset");
     }
 
     #[test]

@@ -136,7 +136,8 @@ fn write_normal<W: Write>(w: &mut W, s: &Status) -> fmt::Result {
     }
     write!(
         w,
-        ",\"measured_rate\":{:.1},\"scheduled_profile\":",
+        ",\"stall_advances\":{},\"measured_rate\":{:.1},\"scheduled_profile\":",
+        s.stall_advances,
         s.measured_rate
     )?;
     match &s.scheduled {
@@ -244,7 +245,7 @@ mod tests {
 \"ssr_output\":0.00,\"elapsed\":0.0,\"profile_name\":null,\"error\":null,\"error_message\":null,\
 \"step_index\":null,\
 \"step_name\":null,\"total_steps\":null,\"desired_rate\":0.0,\"step_elapsed\":0.0,\
-\"is_recovering\":false,\"recovery_target_temp\":null,\"measured_rate\":0.0,\
+\"is_recovering\":false,\"recovery_target_temp\":null,\"stall_advances\":0,\"measured_rate\":0.0,\
 \"scheduled_profile\":null}"
         );
     }
@@ -278,7 +279,7 @@ mod tests {
 \"target_temp\":200.00,\"ssr_output\":75.50,\"elapsed\":65.2,\"profile_name\":\"cone6.json\",\
 \"error\":null,\"error_message\":null,\"step_index\":1,\"step_name\":\"ramp\",\"total_steps\":3,\
 \"desired_rate\":120.0,\
-\"step_elapsed\":12.5,\"is_recovering\":false,\"recovery_target_temp\":null,\"measured_rate\":95.0,\
+\"step_elapsed\":12.5,\"is_recovering\":false,\"recovery_target_temp\":null,\"stall_advances\":0,\"measured_rate\":95.0,\
 \"scheduled_profile\":{\"profile_filename\":\"bisque.json\",\"start_time\":1700000000,\
 \"start_time_iso\":\"2023-11-14 22:13:20\",\"seconds_until_start\":3600}}"
         );

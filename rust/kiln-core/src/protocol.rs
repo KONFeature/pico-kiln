@@ -248,6 +248,12 @@ pub struct Status {
     pub step_elapsed: f32,
     pub is_recovering: bool,
     pub recovery_target_temp: Option<f32>,
+    /// Consecutive arrival-band stall-advances without a genuine step
+    /// completion in between. Non-zero means the kiln entered its current (or,
+    /// on Complete, final) step(s) by giving up near their targets rather than
+    /// reaching them — a Complete with `stall_advances > 0` is a degraded
+    /// finish, not a true one.
+    pub stall_advances: u32,
     /// Measured rate over the controller's window (°C/h).
     pub measured_rate: f32,
     /// The active (running or just-completed) profile's filename, if any.
@@ -276,6 +282,7 @@ impl Status {
             step_elapsed: 0.0,
             is_recovering: false,
             recovery_target_temp: None,
+            stall_advances: 0,
             measured_rate: 0.0,
             profile_name: None,
             scheduled: None,
