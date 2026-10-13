@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronDown } from "lucide-react";
+import { ChevronDown, TriangleAlert } from "lucide-react";
 import type { ReactNode } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -33,7 +33,7 @@ export function ErrorAlert({
 
 	return (
 		<Alert variant={variant} className={className}>
-			<AlertTriangle className="h-4 w-4" />
+			<TriangleAlert className="h-4 w-4" />
 			<AlertTitle>{title}</AlertTitle>
 			<AlertDescription>
 				<span>{message}</span>

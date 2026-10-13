@@ -1,7 +1,7 @@
 import {
 	Calendar,
 	Clock,
-	Loader2,
+	LoaderCircle,
 	Play,
 	Power,
 	RotateCw,
@@ -232,7 +232,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 						>
 							{cancelScheduled.isPending ? (
 								<>
-									<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+									<LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
 									Cancelling...
 								</>
 							) : (
@@ -286,7 +286,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 								>
 									{runProfile.isPending ? (
 										<>
-											<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+											<LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
 											Starting...
 										</>
 									) : (
@@ -318,7 +318,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 							{/* Loading indicator when profile is being loaded */}
 							{selectedProfile && !selectedProfileData && isPreloading && (
 								<div className="flex items-center gap-2 text-sm text-muted-foreground pt-4 border-t">
-									<Loader2 className="w-4 h-4 animate-spin" />
+									<LoaderCircle className="w-4 h-4 animate-spin" />
 									Loading profile details ({preloadProgress.loaded}/
 									{preloadProgress.total})...
 								</div>
@@ -343,7 +343,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 								>
 									{stopProfile.isPending ? (
 										<>
-											<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+											<LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
 											Stopping...
 										</>
 									) : (
@@ -431,7 +431,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 						>
 							{shutdown.isPending ? (
 								<>
-									<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+									<LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
 									Shutting down...
 								</>
 							) : (
@@ -473,7 +473,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 						>
 							{reboot.isPending ? (
 								<>
-									<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+									<LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
 									Rebooting...
 								</>
 							) : (
@@ -533,7 +533,7 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 						>
 							{scheduleProfile.isPending ? (
 								<>
-									<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+									<LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
 									Scheduling...
 								</>
 							) : (

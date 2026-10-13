@@ -1,12 +1,12 @@
 import {
-	CheckCircle,
 	CircleAlert,
+	CircleCheckBig,
 	Download,
 	File,
 	Folder,
-	Loader2,
+	LoaderCircle,
 	RefreshCw,
-	Trash2,
+	Trash,
 	Upload,
 } from "lucide-react";
 import { useState } from "react";
@@ -223,7 +223,7 @@ export function FileManager() {
 									disabled={!isFileOpsAvailable}
 									className="w-full sm:w-auto"
 								>
-									<Trash2 className="w-4 h-4 mr-2 flex-shrink-0" />
+									<Trash className="w-4 h-4 mr-2 flex-shrink-0" />
 									<span className="truncate">Delete All</span>
 								</Button>
 							)}
@@ -237,7 +237,7 @@ export function FileManager() {
 
 							{isLoadingFiles && (
 								<div className="flex items-center justify-center py-8 text-muted-foreground">
-									<Loader2 className="w-5 h-5 mr-2 animate-spin" />
+									<LoaderCircle className="w-5 h-5 mr-2 animate-spin" />
 									Loading files...
 								</div>
 							)}
@@ -294,7 +294,7 @@ export function FileManager() {
 														disabled={!isFileOpsAvailable}
 														className="h-9 w-9 p-0"
 													>
-														<Trash2 className="w-4 h-4 text-destructive" />
+														<Trash className="w-4 h-4 text-destructive" />
 													</Button>
 												</div>
 											</div>
@@ -342,12 +342,12 @@ export function FileManager() {
 						>
 							{deleteMutation.isPending ? (
 								<>
-									<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+									<LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
 									Deleting...
 								</>
 							) : (
 								<>
-									<Trash2 className="w-4 h-4 mr-2" />
+									<Trash className="w-4 h-4 mr-2" />
 									Delete
 								</>
 							)}
@@ -397,12 +397,12 @@ export function FileManager() {
 						>
 							{deleteAllMutation.isPending ? (
 								<>
-									<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+									<LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
 									Deleting...
 								</>
 							) : (
 								<>
-									<Trash2 className="w-4 h-4 mr-2" />
+									<Trash className="w-4 h-4 mr-2" />
 									Delete All
 								</>
 							)}
@@ -458,7 +458,7 @@ export function FileManager() {
 						)}
 						{uploadMutation.isSuccess && (
 							<Alert>
-								<CheckCircle className="h-4 w-4" />
+								<CircleCheckBig className="h-4 w-4" />
 								<AlertDescription>
 									{uploadMutation.data.uploadedCount} file
 									{uploadMutation.data.uploadedCount !== 1 ? "s" : ""} uploaded
@@ -483,7 +483,7 @@ export function FileManager() {
 						>
 							{uploadMutation.isPending ? (
 								<>
-									<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+									<LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
 									Uploading...
 								</>
 							) : (

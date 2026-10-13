@@ -10,7 +10,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
 	CircleCheckBig,
 	CircleX,
-	Loader2,
+	LoaderCircle,
 	type LucideIcon,
 	Router,
 	Usb,
@@ -124,7 +124,7 @@ export function PicoQuickConnect({
 								<span className="font-medium">{preset.label}</span>
 								<span className="ml-auto inline-flex">
 									{isPending ? (
-										<Loader2
+										<LoaderCircle
 											className="h-4 w-4 animate-spin"
 											aria-label="Connecting"
 										/>

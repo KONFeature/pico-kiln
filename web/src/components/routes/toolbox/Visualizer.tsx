@@ -1,4 +1,4 @@
-import { Activity, LineChart, ScrollText, Zap } from "lucide-react";
+import { Activity, ChartLine, ScrollText, Zap } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -45,7 +45,7 @@ export function Visualizer() {
 								onClick={() => setVisualizerType("profile")}
 								className="flex items-center gap-2 h-auto py-3 px-4"
 							>
-								<LineChart className="w-5 h-5 flex-shrink-0" />
+								<ChartLine className="w-5 h-5 flex-shrink-0" />
 								<div className="text-left">
 									<div className="font-semibold">Profile</div>
 									<div className="text-xs opacity-80">

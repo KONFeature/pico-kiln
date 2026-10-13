@@ -1,6 +1,6 @@
 // Connection status indicator component
 
-import { Loader2, Wifi, WifiOff } from "lucide-react";
+import { LoaderCircle, Wifi, WifiOff } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { usePico } from "@/lib/pico/context";
 import { getFriendlyError } from "@/lib/pico/errors";
@@ -22,7 +22,7 @@ export function ConnectionStatus() {
 	if (isLoading && !data) {
 		return (
 			<Badge variant="outline" className="flex items-center gap-2">
-				<Loader2 className="w-3 h-3 animate-spin" />
+				<LoaderCircle className="w-3 h-3 animate-spin" />
 				<span>Connecting...</span>
 			</Badge>
 		);

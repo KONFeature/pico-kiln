@@ -2,15 +2,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
 import { curveLinear } from "@visx/curve";
 import {
-	CheckCircle,
 	ChevronDown,
 	ChevronUp,
 	CircleAlert,
+	CircleCheckBig,
 	Download,
 	FileUp,
 	Plus,
 	RotateCcw,
-	Trash2,
+	Trash,
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { Grid } from "@/components/charts/grid";
@@ -697,7 +697,7 @@ export function ProfileEditor() {
 										aria-label="Delete step"
 										className="h-8 w-8"
 									>
-										<Trash2 className="w-4 h-4 text-destructive" />
+										<Trash className="w-4 h-4 text-destructive" />
 									</Button>
 								</div>
 							</div>
@@ -812,7 +812,7 @@ export function ProfileEditor() {
 								</Button>
 								{uploadMutation.isSuccess && (
 									<Alert>
-										<CheckCircle className="h-4 w-4" />
+										<CircleCheckBig className="h-4 w-4" />
 										<AlertDescription>
 											Profile uploaded successfully:{" "}
 											{uploadMutation.data.filename}
@@ -852,7 +852,7 @@ export function ProfileEditor() {
 								setStepToDelete(null);
 							}}
 						>
-							<Trash2 className="w-4 h-4 mr-2" />
+							<Trash className="w-4 h-4 mr-2" />
 							Delete
 						</Button>
 					</DialogFooter>

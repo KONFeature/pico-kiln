@@ -1,13 +1,13 @@
 import { Link } from "@tanstack/react-router";
 import {
-	Edit,
+	ChartLine,
 	Flame,
 	FolderOpen,
 	Gauge,
-	LineChart,
 	Menu,
 	ScrollText,
 	Settings,
+	SquarePen,
 	X,
 } from "lucide-react";
 import { useState } from "react";
@@ -101,7 +101,7 @@ export default function Header() {
 						className={navLinkClass}
 						activeProps={{ className: navLinkActiveClass }}
 					>
-						<LineChart size={20} />
+						<ChartLine size={20} />
 						<span className="font-medium">Visualizer</span>
 					</Link>
 
@@ -121,7 +121,7 @@ export default function Header() {
 						className={navLinkClass}
 						activeProps={{ className: navLinkActiveClass }}
 					>
-						<Edit size={20} />
+						<SquarePen size={20} />
 						<span className="font-medium">Profile Editor</span>
 					</Link>
 

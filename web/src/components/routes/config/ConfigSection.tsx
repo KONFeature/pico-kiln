@@ -1,4 +1,4 @@
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -43,7 +43,7 @@ export function ConfigSection({ section, form, disabled }: ConfigSectionProps) {
 							</p>
 						)}
 					</div>
-					<ChevronDownIcon
+					<ChevronDown
 						className={cn(
 							"size-5 shrink-0 text-muted-foreground transition-transform",
 							open && "rotate-180",

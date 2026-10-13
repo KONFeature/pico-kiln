@@ -3,7 +3,7 @@
 // the plain web build.
 
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle } from "lucide-react";
+import { TriangleAlert } from "lucide-react";
 import { useEffect } from "react";
 import { usePico } from "@/lib/pico/context";
 import { picoKeys } from "@/lib/pico/hooks";
@@ -75,7 +75,7 @@ export function KilnMonitorBridge() {
 	return (
 		<div className="fixed inset-x-0 bottom-0 z-50 flex justify-center px-4 pb-4">
 			<div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 shadow-sm backdrop-blur dark:text-amber-300">
-				<AlertTriangle className="h-4 w-4 flex-shrink-0" />
+				<TriangleAlert className="h-4 w-4 flex-shrink-0" />
 				<span>{message}</span>
 			</div>
 		</div>

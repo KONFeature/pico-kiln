@@ -1,4 +1,4 @@
-import { Loader2, Play, Square, Zap } from "lucide-react";
+import { LoaderCircle, Play, Square, Zap } from "lucide-react";
 import { useState } from "react";
 import { ErrorAlert } from "@/components/ErrorAlert";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -130,7 +130,7 @@ export function TuningControls({ status }: TuningControlsProps) {
 							>
 								{startTuning.isPending ? (
 									<>
-										<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+										<LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
 										Starting...
 									</>
 								) : (
@@ -196,7 +196,7 @@ export function TuningControls({ status }: TuningControlsProps) {
 							>
 								{stopTuning.isPending ? (
 									<>
-										<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+										<LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
 										Stopping...
 									</>
 								) : (

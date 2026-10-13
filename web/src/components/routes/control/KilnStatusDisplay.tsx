@@ -1,11 +1,11 @@
 import {
-	AlertTriangle,
 	ChevronDown,
 	CircleAlert,
 	Clock,
-	Loader2,
+	LoaderCircle,
 	RefreshCw,
 	TrendingUp,
+	TriangleAlert,
 	WifiOff,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
@@ -206,7 +206,7 @@ export function KilnStatusDisplay({
 				<StatusHeader onRefresh={onRefresh} isLoading={isLoading} />
 				<CardContent>
 					<div className="flex items-center justify-center py-8">
-						<Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+						<LoaderCircle className="w-8 h-8 animate-spin text-muted-foreground" />
 					</div>
 				</CardContent>
 			</Card>
@@ -374,7 +374,7 @@ export function KilnStatusDisplay({
 					{(status.error_message || status.state === "ERROR") && (
 						<>
 							<Alert variant="destructive">
-								<AlertTriangle className="w-4 h-4" />
+								<TriangleAlert className="w-4 h-4" />
 								<AlertDescription>
 									<div className="flex flex-col gap-2">
 										<span>{status.error_message ?? "Error mode"}</span>
@@ -387,7 +387,7 @@ export function KilnStatusDisplay({
 										>
 											{isClearingPending ? (
 												<>
-													<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+													<LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
 													Clearing...
 												</>
 											) : (

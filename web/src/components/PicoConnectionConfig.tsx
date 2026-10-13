@@ -1,6 +1,6 @@
 // Pico connection configuration component
 
-import { CircleCheckBig, CircleX, Loader2 } from "lucide-react";
+import { CircleCheckBig, CircleX, LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -105,7 +105,7 @@ export function PicoConnectionConfig({
 							>
 								{testConnection.isPending ? (
 									<>
-										<Loader2 className="w-4 h-4 mr-2 animate-spin" />
+										<LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
 										Testing...
 									</>
 								) : (
