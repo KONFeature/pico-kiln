@@ -164,10 +164,16 @@ fn compute_active(status: &Value) -> bool {
 
 impl Monitor {
     pub fn new() -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_millis(POLL_TIMEOUT_MS))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        let builder = reqwest::Client::builder().timeout(Duration::from_millis(POLL_TIMEOUT_MS));
+        // Android: skip rustls-platform-verifier (needs JNI init we don't do)
+        // and trust the bundled Mozilla roots, as reqwest 0.12 did.
+        #[cfg(target_os = "android")]
+        let builder = builder.tls_certs_only(
+            webpki_root_certs::TLS_SERVER_ROOT_CERTS
+                .iter()
+                .filter_map(|der| reqwest::Certificate::from_der(der).ok()),
+        );
+        let http = builder.build().unwrap_or_else(|_| reqwest::Client::new());
         Self {
             inner: Arc::new(Inner {
                 state: Mutex::new(MonitorState::new()),

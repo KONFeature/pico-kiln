@@ -6,7 +6,7 @@ authors = ["you"]
 license = ""
 repository = ""
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.88"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -15,23 +15,30 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.6.2", features = [] }
+tauri-build = { version = "2.7.2", features = [] }
 
 [dependencies]
-serde_json = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-log = "0.4"
-tauri = { version = "2.11.2", features = [] }
-tauri-plugin-log = "2.8.0"
-tauri-plugin-notification = "2"
-# Vendored from crates.io 0.7.1 with one addition: an `updateNotification`
+serde_json = "1.0.154"
+serde = { version = "1.0.229", features = ["derive"] }
+log = "0.4.34"
+tauri = { version = "2.12.3", features = [] }
+tauri-plugin-log = "2.10.1"
+tauri-plugin-notification = "2.6.0"
+# Vendored from crates.io 1.0.1 with one addition: an `updateNotification`
 # command so the app can refresh the foreground-service notification content
 # in place (the service re-posts its own notification, reliable while
-# backgrounded). See vendor/.../{LifecycleService,BackgroundServicePlugin}.kt
+# backgrounded). See vendor/.../PICO-KILN-PATCHES.md (`PICO-KILN PATCH` markers)
 # and tauri_plugin_background_service::update_notification.
 tauri-plugin-background-service = { path = "vendor/tauri-plugin-background-service" }
-async-trait = "0.1"
-tokio = { version = "1", features = ["time", "sync", "macros", "rt"] }
-tokio-util = "0.7"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+async-trait = "0.1.92"
+tokio = { version = "1.53.2", features = ["time", "sync", "macros", "rt"] }
+tokio-util = "0.7.20"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+
+# reqwest 0.13's `rustls` verifies via rustls-platform-verifier, which on Android
+# needs JNI init + its Kotlin AAR or it panics on the first HTTPS handshake. The
+# monitor pins the bundled Mozilla roots there instead (what 0.12 did), see
+# monitor::Monitor::new.
+[target.'cfg(target_os = "android")'.dependencies]
+webpki-root-certs = "1.0.9"

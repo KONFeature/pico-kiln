@@ -58,6 +58,18 @@ pub async fn connect(path: &PathBuf) -> Result<TransportStream, ServiceError> {
         .map_err(|e| ServiceError::Ipc(format!("connect failed: {e}")))
 }
 
+/// Pure allow/deny decision for a peer UID against our own UID.
+///
+/// Returns `true` iff `peer_uid == my_uid`. Extracted as a pure two-argument
+/// function (deterministic, no hidden I/O) so that BOTH the Linux
+/// (`SO_PEERCRED`) and macOS (`getpeereid`) arms of [`peer_cred_check`] route
+/// the decision through ONE site. Each arm only extracts `peer_uid` via its
+/// platform syscall; the equality check is centralized here so the two arms
+/// can never drift out of sync (symmetric-wiring hazard).
+fn peer_uid_allowed(peer_uid: libc::uid_t, my_uid: libc::uid_t) -> bool {
+    peer_uid == my_uid
+}
+
 /// Check that the peer on the given stream has the same UID as the current
 /// process. Rejects connections from different users.
 ///
@@ -84,7 +96,7 @@ pub fn peer_cred_check(stream: &TransportStream) -> bool {
             creds.uid
         };
         let my_uid = unsafe { libc::getuid() };
-        if peer_uid != my_uid {
+        if !peer_uid_allowed(peer_uid, my_uid) {
             log::warn!("IPC connection rejected: uid mismatch ({peer_uid} != {my_uid})");
             return false;
         }
@@ -100,7 +112,7 @@ pub fn peer_cred_check(stream: &TransportStream) -> bool {
             return false;
         }
         let my_uid = unsafe { libc::getuid() };
-        if peer_uid != my_uid {
+        if !peer_uid_allowed(peer_uid, my_uid) {
             log::warn!("IPC connection rejected: uid mismatch ({peer_uid} != {my_uid})");
             return false;
         }
@@ -108,6 +120,7 @@ pub fn peer_cred_check(stream: &TransportStream) -> bool {
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
+        let _ = stream;
         log::warn!("IPC: no peer credential check available on this platform");
     }
 
@@ -133,4 +146,77 @@ pub async fn accept(listener: &mut TransportListener) -> Result<TransportStream,
 /// [`tokio::io::split`] (not `into_split`) for cross-platform compatibility.
 pub fn split(stream: TransportStream) -> (TransportReadHalf, TransportWriteHalf) {
     tokio::io::split(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// BGS-29: the control socket must reject a foreign UID.
+    ///
+    /// `peer_uid_allowed` is platform-independent integer equality, so this
+    /// single test pins the allow/deny decision for BOTH the Linux
+    /// (SO_PEERCRED) and macOS (getpeereid) arms — each arm only extracts
+    /// `peer_uid` via its platform syscall; the decision is centralized in
+    /// `peer_uid_allowed`. `wrapping_add`/`wrapping_sub` avoid a root/0
+    /// collision and u32 overflow.
+    #[test]
+    fn bgs29_control_socket_rejects_foreign_uid() {
+        let my_uid: libc::uid_t = unsafe { libc::getuid() };
+        assert!(
+            peer_uid_allowed(my_uid, my_uid),
+            "same-UID peer must be allowed"
+        );
+        assert!(
+            !peer_uid_allowed(my_uid.wrapping_add(1), my_uid),
+            "foreign UID (my_uid + 1) must be rejected"
+        );
+        assert!(
+            !peer_uid_allowed(my_uid.wrapping_sub(1), my_uid),
+            "foreign UID (my_uid - 1) must be rejected"
+        );
+    }
+
+    /// DESK-06: real same-UID Unix-socket loopback syscall test. Binds a
+    /// `UnixListener`, connects a loopback peer from the SAME process, then
+    /// runs `peer_cred_check` against the server-side stream. The kernel's
+    /// `getsockopt(SO_PEERCRED)` (Linux) / `getpeereid` (macOS) must extract
+    /// our own UID and accept the connection. This is the syscall-level
+    /// complement to the pure `peer_uid_allowed` decision test above.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn desk06_same_uid_loopback_passes_peer_cred_check() {
+        use std::os::unix::net::UnixStream;
+        use tokio::net::UnixListener;
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "tauri-bg-desk06-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).expect("bind UnixListener");
+
+        // Connect a same-process loopback peer. Use the std sync stream so
+        // the connect happens before we accept.
+        let _client = UnixStream::connect(&path).expect("loopback connect");
+
+        let (server_stream, _addr) = listener.accept().await.expect("accept");
+        let transport_stream: TransportStream = server_stream;
+
+        // The peer is the same process, so the kernel reports OUR uid and
+        // peer_cred_check must accept. This exercises the real
+        // getsockopt(SO_PEERCRED) / getpeereid syscall.
+        let allowed = peer_cred_check(&transport_stream);
+        assert!(
+            allowed,
+            "same-UID loopback connection must pass peer_cred_check"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
 }

@@ -45,7 +45,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # nightly: kiln-app needs impl_trait_in_assoc_type (TAIT). Floating nightly
       # matches the local `cargo +nightly` flow; pin nightly-YYYY-MM-DD here if it

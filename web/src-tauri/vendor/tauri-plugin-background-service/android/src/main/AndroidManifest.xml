@@ -4,9 +4,27 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- PICO-KILN PATCH: upstream 1.0's call stack (spec 08 C6) is not used by
+         the kiln monitor, so its permissions are not declared here: they would
+         merge into the app and make it request CAMERA / RECORD_AUDIO /
+         MANAGE_OWN_CALLS / USE_FULL_SCREEN_INTENT and phoneCall/microphone
+         FGS types. Upstream declared FOREGROUND_SERVICE_PHONE_CALL,
+         FOREGROUND_SERVICE_MICROPHONE, USE_FULL_SCREEN_INTENT, MANAGE_OWN_CALLS,
+         RECORD_AUDIO and CAMERA here. -->
+    <!-- POST_NOTIFICATIONS: the foreground service's persistent notification
+         must be allowed to post (Android 13+); the FGS itself is exempt, but
+         user-facing notifications (recovery, timeout, message, ring) are not. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- AND-09: REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is intentionally NOT
+         declared by this library. It is Play-policy-restricted, so it must be
+         opted in by the HOST application in its own manifest. The Tauri
+         `requestBatteryExemption` command still launches the system
+         ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS dialog; the host-declared
+         permission is what authorizes that dialog (without it the dialog throws
+         SecurityException at runtime). See docs/android.md
+         "Battery optimization exemption". -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application>
@@ -21,15 +39,38 @@
             </intent-filter>
         </receiver>
 
+        <!-- spec 08 / M-NATIVE-1 (Step 9): native ring Answer/Decline → Rust
+             control plane. The notification action PendingIntents are
+             getBroadcast intents targeting this receiver; it runs while the
+             device is locked / the webview is closed and drives
+             answer_call/reject_call in the in-process headless Core. Not
+             exported — only the app's own notification PendingIntents fire it. -->
+        <receiver
+            android:name=".CallActionReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <!-- Message notification actions: inline Reply and Mark as read route
+             through a broadcast receiver so they can reach the headless Rust
+             Core without opening the webview. -->
+        <receiver
+            android:name=".MessageNotificationActionReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
         <service
             android:name=".LifecycleService"
-            android:foregroundServiceType="dataSync|specialUse"
+            android:foregroundServiceType="dataSync|remoteMessaging|specialUse"
             android:exported="false"
             android:stopWithTask="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Background service for continuous task execution" />
         </service>
+
+        <!-- PICO-KILN PATCH: upstream's self-managed Telecom ConnectionService
+             (.BackgroundCallConnectionService, call stack) is not declared; see
+             the permissions note above. -->
     </application>
 
 </manifest>

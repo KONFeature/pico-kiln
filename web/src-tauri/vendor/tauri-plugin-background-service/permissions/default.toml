@@ -2,7 +2,7 @@
 
 [default]
 description = "Default permissions for the background service plugin"
-# NOTE (vendored): the desktop-service OS-service permissions
+# PICO-KILN PATCH (vendored): the desktop-service OS-service permissions
 # (allow-install-service, allow-*-os-service, ...) are intentionally omitted.
 # Those commands are gated behind the `desktop-service` feature (off here), so
 # their permission definitions aren't generated on Android/desktop and would
@@ -16,5 +16,19 @@ permissions = [
     "allow-enable-auto-restart",
     "allow-disable-auto-restart",
     "allow-get-desired-service-state",
+    "allow-get-desired-state-status",
     "allow-validate-setup",
+    "allow-get-lifecycle-status",
+    "allow-configure-recovery",
+    "allow-native-lifecycle-event",
+    "allow-get-scheduling-status",
+    "allow-get-pending-bg-task",
+    # BGS-21 (doc-08 Step 12): mobile notification-permission UI consumer.
+    "allow-get-notification-permission-status",
+    "allow-request-notification-permission",
+    # BGS-22 (doc-08 Step 14): Android battery-optimization (Doze) exemption
+    # request — Settings UI affordance.
+    "allow-request-battery-exemption",
+    "allow-can-use-full-screen-intent",
+    "allow-open-full-screen-intent-settings",
 ]
