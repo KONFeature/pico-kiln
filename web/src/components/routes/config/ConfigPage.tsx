@@ -3,7 +3,14 @@ import { useEffect, useMemo, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useConfigDraft } from "@/lib/config/draft-context";
-import { buildPatch, SECTIONS, withDefaults } from "@/lib/config/schema";
+import {
+	buildPatch,
+	HARDWARE_KEYS,
+	hardwarePatch,
+	isFiringLocked,
+	SECTIONS,
+	withDefaults,
+} from "@/lib/config/schema";
 import { useKilnConfig, useKilnStatus, useSaveConfig } from "@/lib/pico/hooks";
 import type { ConfigValue, KilnConfig, KilnState } from "@/lib/pico/types";
 import { ConfigSection } from "./ConfigSection";
@@ -51,6 +58,11 @@ export function ConfigPage() {
 		<ConfigForm
 			serverConfig={withDefaults(configQuery.data)}
 			state={status?.state}
+			firingLockMessage={
+				isFiringLocked(status)
+					? (status?.error_message ?? status?.error)
+					: undefined
+			}
 		/>
 	);
 }
@@ -58,9 +70,23 @@ export function ConfigPage() {
 interface ConfigFormProps {
 	serverConfig: KilnConfig;
 	state?: KilnState;
+	/** Set while the controller refuses to fire because of its config.json. */
+	firingLockMessage?: string;
 }
 
-function ConfigForm({ serverConfig, state }: ConfigFormProps) {
+const HARDWARE_LABELS: Record<(typeof HARDWARE_KEYS)[number], string> = {
+	THERMOCOUPLE_TYPE: "thermocouple type",
+	SSR_PIN: "relay pin(s)",
+	MAINS_FREQUENCY: "mains frequency",
+	MAX_TEMP: "maximum temperature",
+};
+
+function ConfigForm({
+	serverConfig,
+	state,
+	firingLockMessage,
+}: ConfigFormProps) {
+	const firingLocked = firingLockMessage !== undefined;
 	const locked = state === "RUNNING" || state === "TUNING";
 	const save = useSaveConfig();
 	const { draft, isDirty, setDraft, clearDraft } = useConfigDraft();
@@ -77,7 +103,12 @@ function ConfigForm({ serverConfig, state }: ConfigFormProps) {
 	const form = useForm({
 		defaultValues: initialValues,
 		onSubmit: async ({ value }: { value: FormValues }) => {
-			const patch = buildPatch(value, serverConfig);
+			// While firing is locked the firmware only accepts a save that states
+			// the hardware keys explicitly (the values shown are its defaults).
+			const patch = {
+				...buildPatch(value, serverConfig),
+				...(firingLocked ? hardwarePatch(value) : {}),
+			};
 			if (Object.keys(patch).length === 0) return;
 			await save.mutateAsync(patch);
 			// Clear the draft immediately; the refetched serverConfig will confirm
@@ -114,6 +145,28 @@ function ConfigForm({ serverConfig, state }: ConfigFormProps) {
 					<AlertDescription>
 						The kiln is currently {state?.toLowerCase()}. Settings are read-only
 						until it finishes. Stop the run to make changes.
+					</AlertDescription>
+				</Alert>
+			)}
+
+			{firingLocked && !locked && (
+				<Alert variant="destructive">
+					<AlertTitle>Firing is locked</AlertTitle>
+					<AlertDescription>
+						<p>{firingLockMessage}</p>
+						<p>
+							Check the{" "}
+							{HARDWARE_KEYS.map((k) => HARDWARE_LABELS[k]).join(", ")} below
+							against your kiln: they are saved exactly as shown, even if you
+							did not change them. Then save and reboot the controller.
+						</p>
+						<Button
+							className="mt-2"
+							onClick={() => form.handleSubmit()}
+							disabled={!canSubmit || save.isPending}
+						>
+							{save.isPending ? "Saving…" : "Confirm settings and save"}
+						</Button>
 					</AlertDescription>
 				</Alert>
 			)}

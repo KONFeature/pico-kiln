@@ -135,14 +135,18 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 
 	const isRunning = status?.state === "RUNNING";
 	const hasScheduled = Boolean(status?.scheduled_profile);
+	// The controller refuses to start from ERROR until the error is cleared.
+	const inError = status?.state === "ERROR";
 	const canStart =
 		!isRunning &&
 		!hasScheduled &&
+		!inError &&
 		selectedProfile &&
 		status?.state !== "TUNING";
 	const canSchedule =
 		!isRunning &&
 		!hasScheduled &&
+		!inError &&
 		selectedProfile &&
 		status?.state !== "TUNING";
 	const canStop = isRunning;
@@ -277,6 +281,13 @@ export function ProfileControls({ status }: ProfileControlsProps) {
 									</SelectContent>
 								</Select>
 							</div>
+
+							{inError && (
+								<p className="text-sm text-destructive">
+									The kiln is in ERROR. Read the error, then use Clear Error
+									before starting or scheduling a firing.
+								</p>
+							)}
 
 							<div className="grid grid-cols-2 gap-2">
 								<Button

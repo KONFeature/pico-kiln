@@ -253,6 +253,8 @@ export interface KilnConfig {
 	STALL_ARRIVAL_BAND: number;
 	RATE_MEASUREMENT_WINDOW: number;
 	RATE_RECORDING_INTERVAL: number;
+	HEAT_WATCH_WINDOW: number;
+	HEAT_WATCH_MIN_RISE: number;
 	MAX_RECOVERY_TEMP_DELTA: number;
 
 	// Logging + watchdog

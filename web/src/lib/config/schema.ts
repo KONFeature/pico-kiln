@@ -1,5 +1,6 @@
-import type { ConfigValue, KilnConfig } from "@/lib/pico/types";
+import type { ConfigValue, KilnConfig, KilnStatus } from "@/lib/pico/types";
 import {
+	fixed,
 	host,
 	ipv4Optional,
 	num,
@@ -122,7 +123,7 @@ export const SECTIONS: ConfigSectionDef[] = [
 				help: "Software median filter size used to reject single-sample spikes. 1 disables it.",
 				type: "number",
 				unit: "samples",
-				validate: num(1, 15, true),
+				validate: num(1, 8, true),
 			},
 		],
 	},
@@ -156,9 +157,9 @@ export const SECTIONS: ConfigSectionDef[] = [
 			{
 				key: "THERMAL_H",
 				label: "Thermal efficiency (H)",
-				help: "Feed-forward thermal-model coefficient. 0 disables the model and uses pure PID.",
+				help: "Gain-scheduling coefficient: PID gains are scaled by 1 + H x (T - ambient). 0 disables it and uses constant gains. The firmware accepts at most 0.01 (gains x14 at 1300 °C).",
 				type: "number",
-				validate: num(0, 10000),
+				validate: num(0, 0.01),
 			},
 			{
 				key: "THERMAL_T_AMBIENT",
@@ -166,7 +167,7 @@ export const SECTIONS: ConfigSectionDef[] = [
 				help: "Room temperature assumed by the thermal model.",
 				type: "number",
 				unit: "°C",
-				validate: num(-20, 60),
+				validate: num(-20, 40),
 			},
 		],
 	},
@@ -264,6 +265,22 @@ export const SECTIONS: ConfigSectionDef[] = [
 				validate: num(1, 600),
 			},
 			{
+				key: "HEAT_WATCH_WINDOW",
+				label: "Heating-response window",
+				help: "Safety check: while the kiln is well below its setpoint at (near) full power, the reading must rise by the minimum below within this window, or the firing stops with an error. Catches a thermocouple that reads low (shorted, out of the chamber, wrong type) and dead elements.",
+				type: "number",
+				unit: "s",
+				validate: num(300, 3600),
+			},
+			{
+				key: "HEAT_WATCH_MIN_RISE",
+				label: "Heating-response minimum rise",
+				help: "Minimum temperature rise expected per heating-response window at full power. The default (5 °C per 15 min) is far below what any working kiln achieves.",
+				type: "number",
+				unit: "°C",
+				validate: num(1, 50),
+			},
+			{
 				key: "MAX_RECOVERY_TEMP_DELTA",
 				label: "Max recovery temp drop",
 				help: "After a crash or power loss, recovery is declined if the kiln cooled more than this.",
@@ -354,10 +371,10 @@ export const SECTIONS: ConfigSectionDef[] = [
 			{
 				key: "WATCHDOG_TIMEOUT",
 				label: "Watchdog timeout",
-				help: "How long the firmware can be unresponsive before the watchdog resets it.",
+				help: "How long the firmware can be unresponsive before the watchdog resets it. The RP2350 supports at most 16 s, and it must be at least twice the temperature read interval.",
 				type: "number",
 				unit: "ms",
-				validate: num(1000, 30000, true),
+				validate: num(1000, 16000, true),
 			},
 		],
 	},
@@ -370,25 +387,25 @@ export const SECTIONS: ConfigSectionDef[] = [
 			{
 				key: "LCD_I2C_ID",
 				label: "I²C bus id",
-				help: "Which I²C peripheral the LCD is wired to (0 or 1).",
+				help: "The I²C peripheral the LCD is wired to. Fixed by the firmware: 0.",
 				type: "number",
-				validate: num(0, 1, true),
+				validate: fixed(0),
 			},
 			{
 				key: "LCD_I2C_SCL",
 				label: "SCL pin",
-				help: `I²C clock pin. ${PIN_HELP}`,
+				help: "I²C clock pin. Fixed by the firmware: GPIO 21.",
 				type: "number",
 				unit: "GPIO",
-				validate: num(0, 29, true),
+				validate: fixed(21),
 			},
 			{
 				key: "LCD_I2C_SDA",
 				label: "SDA pin",
-				help: `I²C data pin. ${PIN_HELP}`,
+				help: "I²C data pin. Fixed by the firmware: GPIO 20.",
 				type: "number",
 				unit: "GPIO",
-				validate: num(0, 29, true),
+				validate: fixed(20),
 			},
 			{
 				key: "LCD_I2C_FREQ",
@@ -457,10 +474,10 @@ export const SECTIONS: ConfigSectionDef[] = [
 			{
 				key: "SSR_PIN",
 				label: "SSR pin(s)",
-				help: `Comma-separated GPIO pin(s) driving the relay(s), e.g. "15" or "15, 14". Up to 10. ${PIN_HELP}`,
+				help: `Comma-separated GPIO pin(s) driving the relay(s), e.g. "15" or "15, 14". Up to 10, from GPIO 6 to 15 (the pins the firmware reserves for relays).`,
 				type: "pinlist",
 				unit: "GPIO",
-				validate: pinList(10),
+				validate: pinList(10, 6, 15),
 			},
 		],
 	},
@@ -537,6 +554,44 @@ export const SECTIONS: ConfigSectionDef[] = [
 
 /** Flat list of every field def, in section order. */
 export const ALL_FIELDS: ConfigFieldDef[] = SECTIONS.flatMap((s) => s.fields);
+
+/**
+ * Every firing-lock error the firmware reports starts with this (kiln-app
+ * `errors::firing_lock_message`; a firmware test pins the prefix).
+ */
+export const FIRING_LOCKED_PREFIX = "Firing locked:";
+
+/**
+ * Keys the firmware requires in every config save while firing is locked
+ * (kiln-app `config::LOCK_CONFIRM_KEYS`). While locked the kiln runs on built-in
+ * defaults, so leaving them out would save e.g. thermocouple type K.
+ */
+export const HARDWARE_KEYS = [
+	"THERMOCOUPLE_TYPE",
+	"SSR_PIN",
+	"MAINS_FREQUENCY",
+	"MAX_TEMP",
+] as const;
+
+/** True when the controller reports a firing lock (untrusted config.json). */
+export function isFiringLocked(
+	status?: Pick<KilnStatus, "error" | "error_message">,
+): boolean {
+	const message = status?.error_message ?? status?.error ?? "";
+	return message.startsWith(FIRING_LOCKED_PREFIX);
+}
+
+/** The hardware keys' form values in wire form, sent with every locked save. */
+export function hardwarePatch(
+	values: Record<string, ConfigValue>,
+): Record<string, ConfigValue> {
+	const patch: Record<string, ConfigValue> = {};
+	for (const key of HARDWARE_KEYS) {
+		const def = ALL_FIELDS.find((f) => f.key === key);
+		if (def) patch[key] = normalize(def, values[key]);
+	}
+	return patch;
+}
 
 /** Fill the LCD_* keys the GET response omits when the LCD is disabled. */
 export function withDefaults(raw: KilnConfig): KilnConfig {

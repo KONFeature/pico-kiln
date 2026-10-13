@@ -16,6 +16,16 @@ export function num(min: number, max: number, integer = false): Validator {
 	};
 }
 
+/** A value the firmware hardwires: only `fixedValue` is accepted. */
+export function fixed(fixedValue: number): Validator {
+	return (value) => {
+		const n = typeof value === "number" ? value : Number(value);
+		if (n !== fixedValue)
+			return `Must be ${fixedValue} (fixed by the firmware wiring)`;
+		return undefined;
+	};
+}
+
 /** Non-empty string up to maxLen chars. */
 export function str(maxLen: number, required = true): Validator {
 	return (value) => {
@@ -56,7 +66,7 @@ export function host(): Validator {
  * 1..maxPins unique integer GPIO pins, each within [0, 29]. Value is a number[]
  * (parsed from the comma-separated input by ConfigField).
  */
-export function pinList(maxPins = 10): Validator {
+export function pinList(maxPins = 10, minPin = 0, maxPin = 29): Validator {
 	return (value) => {
 		if (!Array.isArray(value)) return "Enter one or more pins";
 		if (value.length === 0) return "At least one pin is required";
@@ -64,7 +74,8 @@ export function pinList(maxPins = 10): Validator {
 		const seen = new Set<number>();
 		for (const p of value) {
 			if (!Number.isInteger(p)) return "Pins must be whole numbers";
-			if (p < 0 || p > 29) return "Pins must be between 0 and 29";
+			if (p < minPin || p > maxPin)
+				return `Pins must be between ${minPin} and ${maxPin}`;
 			if (seen.has(p)) return `Duplicate pin: ${p}`;
 			seen.add(p);
 		}

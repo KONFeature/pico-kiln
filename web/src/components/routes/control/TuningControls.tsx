@@ -122,9 +122,15 @@ export function TuningControls({ status }: TuningControlsProps) {
 								</p>
 							</div>
 
+							{status?.state === "ERROR" && (
+								<p className="text-sm text-destructive">
+									The kiln is in ERROR. Clear the error before starting tuning.
+								</p>
+							)}
+
 							<Button
 								onClick={handleStart}
-								disabled={startTuning.isPending}
+								disabled={startTuning.isPending || status?.state === "ERROR"}
 								className="w-full"
 								size="lg"
 							>
