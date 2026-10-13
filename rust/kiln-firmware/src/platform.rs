@@ -1069,7 +1069,7 @@ fn static_config(config: &KilnConfig) -> Option<StaticConfigV4> {
     // Dotted subnet mask (255.255.255.0) → CIDR prefix length.
     let prefix = mask.octets().iter().map(|b| b.count_ones()).sum::<u32>() as u8;
     // `StaticConfigV4.dns_servers` is an embassy-net (heapless 0.9) Vec.
-    let mut dns_servers: heapless_v09::Vec<Ipv4Address, 3> = heapless_v09::Vec::new();
+    let mut dns_servers: heapless::Vec<Ipv4Address, 3> = heapless::Vec::new();
     let _ = dns_servers.push(dns);
     Some(StaticConfigV4 {
         address: Ipv4Cidr::new(ip, prefix),
@@ -1094,8 +1094,8 @@ fn static_config(config: &KilnConfig) -> Option<StaticConfigV4> {
 /// (mesh/extenders), where the chip's own pick can be suboptimal.
 async fn scan_visible(control: &mut Control<'static>, ssid: &str) -> bool {
     // Scan all APs and filter by SSID bytes in the loop, rather than setting
-    // `ScanOptions.ssid` — that field is a cyw43-version `heapless::String`, which
-    // differs from this crate's heapless; filtering here avoids the mismatch. Drain
+    // `ScanOptions.ssid` — keeps the join path independent of the chip-side filter
+    // (and of the cyw43 field's `heapless::String` type). Drain
     // the scanner fully (rather than early-return) so the chip-side scan completes
     // before the join sequence starts.
     let mut found = false;
@@ -1253,7 +1253,7 @@ pub async fn init_softap(spawner: &embassy_executor::Spawner, p: Core0Periphs) -
 
     let mut rng = RoscRng;
     let seed = rng.next_u64();
-    let dns_servers: heapless_v09::Vec<Ipv4Address, 3> = heapless_v09::Vec::new();
+    let dns_servers: heapless::Vec<Ipv4Address, 3> = heapless::Vec::new();
     let net_config = embassy_net::Config::ipv4_static(StaticConfigV4 {
         address: Ipv4Cidr::new(Ipv4Address::new(192, 168, 4, 1), 24),
         gateway: None,
@@ -1437,7 +1437,7 @@ pub fn init_usb_ncm(
     spawner.spawn(usb_ncm_task(runner).unwrap());
 
     // Static IP: this device is the gateway on the USB /24. No DNS (no portal).
-    let dns_servers: heapless_v09::Vec<Ipv4Address, 3> = heapless_v09::Vec::new();
+    let dns_servers: heapless::Vec<Ipv4Address, 3> = heapless::Vec::new();
     let net_config = embassy_net::Config::ipv4_static(StaticConfigV4 {
         address: Ipv4Cidr::new(NCM_DEVICE_IP, 24),
         gateway: None,
@@ -1898,12 +1898,12 @@ async fn ntp_query(stack: Stack<'static>) -> Option<u64> {
     .await
     .ok()?
     .ok()?;
-    // sntpc 0.10 already converts to the Unix epoch (`NtpTimestamp::from` subtracts
+    // sntpc 0.11 already converts to the Unix epoch (`NtpTimestamp::from` subtracts
     // the 1900→1970 delta internally), so `result.seconds` IS Unix time. The old
     // code subtracted that delta a SECOND time, underflowing every real timestamp
     // (~1.7e9) past zero → `saturating_sub` pinned it to 0 → a 1970 wall clock on
     // every "successful" sync. Use it directly, and reject implausible values.
-    let unix = result.seconds as u64;
+    let unix = result.seconds;
     (unix >= NTP_MIN_PLAUSIBLE).then_some(unix)
 }
 

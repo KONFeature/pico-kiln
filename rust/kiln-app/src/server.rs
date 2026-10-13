@@ -506,19 +506,19 @@ mod web {
     const MSG_CAP: usize = 96;
     /// Per-response JSON render buffer used inside `write_to`. picoserve's serve
     /// future holds several of these un-overlapped (the recursive router + the
-    /// `Response`/`Typed` move chain), so the size is multiplied across the worker.
+    /// `Response` move chain), so the size is multiplied across the worker.
     /// Sized to match the `config_post` canonical buffer (2 KiB): a config with
     /// maxed string fields can exceed 1.5 KiB, and `GET /api/config` must never
     /// emit a silently truncated body.
     const RENDER_CAP: usize = 2048;
 
-    /// Router-construction props implementing picoserve 0.18's [`AppBuilder`].
+    /// Router-construction props implementing picoserve 0.20's [`AppBuilder`].
     /// Using the trait (rather than a bare module-level `type Foo = impl ...`)
     /// gives the opaque router type a single defining use inside `build_app`, so
     /// the `#[embassy_executor::task]` [`web_task`] — which must name the router
     /// type — does not form a type-resolution cycle with the alias. The shared
     /// [`AppState`] is baked in via `with_state`, leaving the stateless
-    /// `Router<P>` that picoserve 0.18's `Server` serves.
+    /// `Router<P>` that picoserve 0.20's `Server` serves.
     pub struct AppProps {
         pub state: AppState,
     }
@@ -575,7 +575,7 @@ mod web {
                         .delete(file_delete)
                         .options(cors_preflight_file),
                 )
-                // Bake the shared state in: picoserve 0.18 serves a stateless
+                // Bake the shared state in: picoserve 0.20 serves a stateless
                 // `Router<P>`, with the state carried inside the router itself.
                 .with_state(self.state)
         }
@@ -594,7 +594,7 @@ mod web {
 
     /// CORS preflight responder: 200 with an empty body; the CORS headers are
     /// added by [`ApiResponse`]'s `IntoResponse` (the `Text` arm), matching the
-    /// reference's blanket OPTIONS handler. picoserve 0.18 requires a method
+    /// reference's blanket OPTIONS handler. picoserve 0.20 requires a method
     /// handler to accept the route's path parameters, so the three arities get
     /// distinct (parameter-ignoring) entry points.
     async fn cors_preflight() -> impl IntoResponse {
@@ -1088,24 +1088,6 @@ mod web {
         ("Access-Control-Allow-Headers", "Content-Type"),
     ];
 
-    /// A [`Content`] wrapper that overrides the Content-Type. picoserve 0.18's
-    /// `Response::new` derives the Content-Type from the body's `Content` impl
-    /// (e.g. `&str` → `text/plain`); wrapping lets us set the exact type once,
-    /// without emitting a duplicate `Content-Type` header.
-    struct Typed<C: Content>(C, &'static str);
-
-    impl<C: Content> Content for Typed<C> {
-        fn content_type(&self) -> &'static str {
-            self.1
-        }
-        fn content_length(&self) -> usize {
-            self.0.content_length()
-        }
-        async fn write_content<W: picoserve::io::Write>(self, writer: W) -> Result<(), W::Error> {
-            self.0.write_content(writer).await
-        }
-    }
-
     /// Send `body` as a CORS response with `content_type` and `status`. One place
     /// for every JSON/text/asset arm of [`ApiResponse::write_to`]; the render
     /// buffers it is handed are locals of `write_to`, so one per connection.
@@ -1121,7 +1103,8 @@ mod web {
         W: picoserve::response::ResponseWriter<Error = R::Error>,
         C: Content,
     {
-        picoserve::response::Response::new(status, Typed(body, content_type))
+        picoserve::response::Response::new(status, body)
+            .with_content_type(content_type)
             .with_headers(CORS)
             .write_to(connection, response_writer)
             .await
@@ -1611,9 +1594,9 @@ mod web {
     /// each worker serves on `port` (the configured `WEB_SERVER_PORT`, default
     /// 80 — editing it in `config.json` now takes effect). On a single-NIC
     /// embassy-net stack there is no per-host bind, so `WEB_SERVER_HOST` is
-    /// inherently "all interfaces"; only the port is actionable. picoserve 0.18
-    /// replaces the free `listen_and_serve_with_state` function with the
-    /// `Server` builder.
+    /// inherently "all interfaces"; only the port is actionable. Since 0.18,
+    /// picoserve serves through the `Server` builder (the free
+    /// `listen_and_serve_with_state` function is gone).
     #[embassy_executor::task(pool_size = WEB_TASK_POOL_TOTAL)]
     pub async fn web_task(
         id: usize,

@@ -413,7 +413,7 @@ async fn core0_main(
     spawner.spawn(kiln_app::logging::log_drain_task().unwrap());
     spawner.spawn(kiln_app::logging::flash_flush_task(storage, clock).unwrap());
 
-    // `make_app` bakes the shared `AppState` into the router; picoserve 0.18 then
+    // `make_app` bakes the shared `AppState` into the router; picoserve 0.20 then
     // serves the stateless `Router<P>` aliased as `AppRouter`, stored in a
     // StaticCell so the `#[task]` web_task stays non-generic. (`AppState` is `Copy`,
     // so `state` stays usable for recovery below.) One router, shared across stacks.

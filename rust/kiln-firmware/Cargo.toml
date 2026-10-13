@@ -34,7 +34,7 @@ embassy-futures = "0.1"
 cyw43 = { version = "0.7", features = ["firmware-logs", "log"] }
 cyw43-pio = "0.10"
 
-picoserve = { version = "0.18", features = ["embassy", "log"] }
+picoserve = { version = "0.20", features = ["embassy", "log"] }
 
 embedded-hal = "1.0"
 embedded-hal-bus = "0.3"
@@ -44,37 +44,43 @@ embedded-hal-bus = "0.3"
 # cargo unifies it to a single pac instance (no second copy).
 rp-pac = { version = "7", features = ["rp235x"] }
 static_cell = "2"
-heapless = "0.8"
-# embassy-net / cyw43 0.7 use heapless 0.9 internally; this alias lets us build
-# the `StaticConfigV4.dns_servers` Vec in their version. The rest of the crate
-# (and the kiln-app/-core boundary) stays on 0.8.
-heapless_v09 = { package = "heapless", version = "0.9" }
+heapless = "0.9"
+# 0.9 matches embassy-net / cyw43 0.7, so `StaticConfigV4.dns_servers` is built
+# with this same crate (no alias). picoserve 0.20 and usb-device still pull 0.8
+# internally; none of our code touches those types.
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
 
 # NTP wall clock (Oracle Q4) and the flash filesystem (Oracle Q2). The exact
 # crate APIs are device-verified; pinned here as the intended dependencies.
-sntpc = { version = "0.10", default-features = false }
+sntpc = { version = "0.11", default-features = false }
 # littlefs2 is the flash filesystem for config + profiles + logs (one mount over
 # the reserved top partition, see platform.rs). littlefs2-sys compiles the
 # bundled C `littlefs`, so the build needs `arm-none-eabi-gcc` on PATH (cc-rs
 # selects it for the thumbv8m target). `c-stubs` provides the `strcpy` that
 # `lfs.c` references at link time, since this bare-metal image links no libc.
-littlefs2 = { version = "0.7", features = ["c-stubs"] }
+littlefs2 = { version = "0.8", features = ["c-stubs"] }
+# littlefs2-sys 0.4 stopped shipping `strchr`/`strlen`/`strcspn`/`strspn` and
+# makes them opt-in via `tinyrlibc` (lfs.c references them; this image links no
+# libc). littlefs2 doesn't re-export the feature, so enable it on the sys crate
+# directly — cargo unifies it with the copy littlefs2 pulls in. (`c-stubs` above
+# still supplies `strcpy`.)
+littlefs2-sys = { version = "0.4", features = ["tinyrlibc"] }
 
 # USB device stack for CDC-NCM (USB ethernet) — the always-on wired provisioning
-# + file-access interface. 0.5.x is the release that uses `embassy-usb-driver`
-# **0.2.2** (the exact version embassy-rp 0.10 implements, so they unify) and
-# `embassy-net` 0.9.1 (ours). Do NOT bump to 0.6 without re-checking the driver
-# version — a mismatch makes `embassy_rp::usb::Driver` unusable with the Builder.
+# + file-access interface. 0.6.x still uses `embassy-usb-driver` **0.2.2** (the
+# exact version embassy-rp 0.10 implements, so they unify) and embassy-sync 0.8 /
+# `embassy-net-driver-channel` 0.4 (same as cyw43 + embassy-net 0.9.1 — one copy
+# of each). Re-check the driver version on every embassy-usb / embassy-rp bump: a
+# mismatch makes `embassy_rp::usb::Driver` unusable with the Builder.
 # `embassy-net-driver-channel` is NOT a direct dep — it is re-exported via
-# `embassy_usb::class::cdc_ncm::embassy_net`. (cargo-verified 2026-06-05.)
-embassy-usb = "0.5"
+# `embassy_usb::class::cdc_ncm::embassy_net`. (cargo-verified 2026-10-14.)
+embassy-usb = "0.6"
 # Instance-based DHCP server (one `DhcpServer` value per stack) so the fallback
-# SoftAP and the USB-NCM stack can each lease addresses at the same time. 0.5.x
+# SoftAP and the USB-NCM stack can each lease addresses at the same time. 0.6.x
 # resolves against embassy-net 0.9.1 + smoltcp 0.13.1 (ours) — a single net
-# stack, no duplicate. (0.2.x pulled embassy-net 0.7; cargo-verified 2026-06-05.)
-leasehund = "0.5"
+# stack, no duplicate. (0.2.x pulled embassy-net 0.7; cargo-verified 2026-10-14.)
+leasehund = "0.6"
 
 # NOTE: no `panic-halt` — `main.rs` defines its own `#[panic_handler]` that
 # de-energises the SSR before halting (two handlers would collide).
@@ -104,7 +110,9 @@ stack-debug = []
 # sp=0x20056468, below _stack_end=0x20057B98). `-O2` restores stack-slot colouring
 # + inlining that collapses picoserve's nesting, cutting the poll's stack far below
 # the limit. Flash cost (~+150 KiB) is irrelevant against the 2560 KiB region.
-# Re-measure stack headroom if the route table or picoserve version changes.
+# Re-measure stack headroom if the route table or picoserve version changes
+# (last bumped to picoserve 0.20 on 2026-10-14 — NOT yet re-measured on device:
+# flash a `stack-debug` image and read the high-water log before shipping).
 [profile.release]
 opt-level = 2
 lto = "fat"

@@ -42,7 +42,7 @@ now-complete `FlashStorage` (Group B) did.
 
 All of `impl Storage for FlashStorage` (`read_chunk`/`size`/`for_each`/`append`/
 `remove`/`remove_all`/`upload_*`/`read_config`/`write_config`) is now backed by a
-real **littlefs2 0.7** mount over the reserved top 1.5 MiB partition — one engine
+real **littlefs2 0.8** mount over the reserved top 1.5 MiB partition — one engine
 for `config.json`, `profiles/*.json`, and `logs/*.csv`. Each call mounts
 (`mount_and_then`), runs the op, unmounts; write paths go through the existing
 `flash_handshake`. `attempt_recovery()` is now live (its `for_each`/`size`/
