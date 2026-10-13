@@ -85,7 +85,13 @@ fn main() -> ! {
     // for the `config.py` the MicroPython build imported. Mount storage and parse
     // `config.json` before the split so both cores share the same `KilnConfig`.
     let storage = platform::init_storage(p.FLASH);
-    let config = platform::load_config(storage);
+    // `load_config` never falls back silently: a missing/unreadable/invalid file
+    // boots with network up but FIRING LOCKED (enforced on Core 1, surfaced by
+    // the web API and the status error).
+    let boot = platform::load_config(storage);
+    let config: &'static KilnConfig = &boot.config;
+    let firing_lock = boot.lock;
+    kiln_app::server::set_firing_lock(firing_lock);
 
     // Install the global logger BEFORE the core split so both cores can log from
     // the outset. The wall clock is bound later (in `core0_main`, once it exists);
@@ -97,6 +103,23 @@ fn main() -> ! {
     log::info!(target: "boot", "pico-kiln starting");
     // Surface any panic/hardfault captured by the previous boot (see FaultRecord).
     report_prior_fault();
+    if platform::FS_FORMATTED_AT_BOOT.load(core::sync::atomic::Ordering::Relaxed) {
+        log::error!(target: "boot", "flash filesystem did not mount and was REFORMATTED: config.json, profiles and logs were lost");
+    }
+    match (firing_lock, boot.issue) {
+        (None, _) => log::info!(target: "boot", "config.json valid"),
+        (Some(lock), Some(issue)) => log::error!(
+            target: "boot",
+            "FIRING LOCKED ({:?}): config.json: {} \u{2014} other keys applied; fix it via the Config page and reboot",
+            lock,
+            issue
+        ),
+        (Some(lock), None) => log::error!(
+            target: "boot",
+            "FIRING LOCKED ({:?}): running on built-in defaults \u{2014} save the configuration via the Config page and reboot",
+            lock
+        ),
+    }
     log::debug!(
         target: "boot",
         "config: log={} wifi_cfg={} watchdog={} ssr_pins={:?} tc_type={:?} lcd={}",
@@ -149,7 +172,9 @@ fn main() -> ! {
             // embassy-executor 0.10: a `#[task]` fn returns `Result<SpawnToken, _>`
             // (pool exhaustion is fallible) and `Spawner::spawn` returns `()`, so
             // the `unwrap` moves inside.
-            spawner.spawn(control_task(core1_periphs, config, cmd_rx, status_tx).unwrap())
+            spawner.spawn(
+                control_task(core1_periphs, config, firing_lock, cmd_rx, status_tx).unwrap(),
+            )
         });
     });
 
@@ -238,6 +263,7 @@ struct Core1Periphs {
 async fn control_task(
     p: Core1Periphs,
     config: &'static KilnConfig,
+    firing_lock: Option<kiln_core::state::FiringLock>,
     commands: embassy_sync::channel::Receiver<
         'static,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
@@ -257,12 +283,32 @@ async fn control_task(
     Timer::after(Duration::from_millis(500)).await;
 
     // build_kiln_io logs the sensor / SSR / watchdog detail it sets up.
-    let (sensor, ssr, watchdog) = platform::build_kiln_io(p, config);
+    let (mut sensor, ssr, watchdog) = platform::build_kiln_io(p, config);
+
+    // Wait (bounded) for the MAX31856's first continuous conversion before the
+    // loop's first read, as the reference does (`hardware.py` polls up to 1.5 s for
+    // a nonzero reading). Until then the LTC registers hold their all-zero reset
+    // value, which the driver reports as NotReady — a fault that, before any
+    // valid reading, would latch SensorNotInitialized. 16-sample averaging at 50 Hz
+    // needs well under 1 s; 3 s covers it with margin. A sensor still not ready
+    // (dead chip) is left to the loop, which faults it and keeps the SSR off.
+    let mut sensor_ready = false;
+    for _ in 0..30 {
+        if let Ok(true) = sensor.first_conversion_ready() {
+            sensor_ready = true;
+            break;
+        }
+        Timer::after(Duration::from_millis(100)).await;
+    }
+    if !sensor_ready {
+        log::error!(target: "ctrl", "max31856: no conversion after 3 s \u{2014} sensor will fault");
+    }
+
     let mut controller = Controller::new(
         sensor,
         ssr,
         watchdog,
-        platform::control_params_from(config),
+        platform::control_params_from(config, firing_lock),
         Instant::now().as_millis(),
     );
 
@@ -462,7 +508,16 @@ async fn core0_main(
     // mode lets a transient Core-1 hang + watchdog reset recover the run on the next
     // healthy boot. Recovery returns the interrupted run's log file so the CSV logger
     // continues it (append + RECOVERY row) rather than starting fresh.
-    let recovery = if ready {
+    // Also skipped while firing is LOCKED by an untrusted config: Core 1 would
+    // refuse the resume anyway, and declining here would consume the pointer.
+    let locked = kiln_app::server::firing_lock().is_some();
+    if ready && locked {
+        log::warn!(
+            target: "boot",
+            "recovery: skipped while firing is locked (an interrupted firing, if any, stays recorded and is re-evaluated at the next unlocked boot)"
+        );
+    }
+    let recovery = if ready && !locked {
         platform::attempt_recovery(&state).await
     } else {
         None

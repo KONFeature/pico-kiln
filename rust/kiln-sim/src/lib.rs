@@ -65,7 +65,20 @@ pub struct SimResult {
 
 /// Run `profile` (named `name`) through the real control loop for `ticks` outer
 /// iterations against `model`, returning the trace.
-pub fn simulate(name: &str, profile: Profile, ticks: u32, mut model: ThermalModel) -> SimResult {
+pub fn simulate(name: &str, profile: Profile, ticks: u32, model: ThermalModel) -> SimResult {
+    simulate_with_probe(name, profile, ticks, model, |_, true_temp| true_temp as f32)
+}
+
+/// [`simulate`] with a fault-injectable thermocouple: `probe(t_s, true_temp)`
+/// returns what the sensor reports, so a test can model a probe that slips out
+/// of the chamber, shorts, or freezes while the real kiln keeps heating.
+pub fn simulate_with_probe(
+    name: &str,
+    profile: Profile,
+    ticks: u32,
+    mut model: ThermalModel,
+    probe: impl Fn(f64, f64) -> f32,
+) -> SimResult {
     let params = ControlParams::default();
     let dt_s = params.temp_read_interval_ms as f64 / 1000.0;
     let mut c = Controller::new(
@@ -101,7 +114,7 @@ pub fn simulate(name: &str, profile: Profile, ticks: u32, mut model: ThermalMode
         now_ms += params.temp_read_interval_ms;
         wall = now_ms as f64 / 1000.0;
 
-        c.sensor_mut().set_temp(model.temp as f32);
+        c.sensor_mut().set_temp(probe(wall, model.temp));
         let _ = c.iterate(None, now_ms, (now_ms / 1000) as i64);
 
         let mut on_count = 0u32;
@@ -133,11 +146,46 @@ pub fn simulate(name: &str, profile: Profile, ticks: u32, mut model: ThermalMode
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kiln_core::profile::Step;
+    use kiln_core::profile::{Step, MAX_HOLD_DURATION_S};
+
+    #[test]
+    fn probe_slipping_out_mid_hold_is_caught_by_the_heat_watch() {
+        // Hold 300 C; after 4 h the thermocouple slips out of the chamber and
+        // reads 30 C from then on. Every legacy guard trusts that reading (in
+        // range, no fault bit, hold steps have no stall check), so before the
+        // heat watch the loop drove the relay at 100 % until the hold ended.
+        let slip_at = 4.0 * 3600.0;
+        let profile = Profile::new(&[Step::hold(300.0, MAX_HOLD_DURATION_S)]).unwrap();
+        let r = simulate_with_probe("slip", profile, 7 * 3600, ThermalModel::kiln(), |t, real| {
+            if t >= slip_at {
+                30.0
+            } else {
+                real as f32
+            }
+        });
+        let before = r.samples.iter().find(|s| s.t_s >= slip_at - 1.0).unwrap();
+        assert!((before.temp - 300.0).abs() < 10.0, "held 300 C before the slip, got {:.1}", before.temp);
+        let trip = r
+            .samples
+            .iter()
+            .find(|s| s.state == KilnState::Error)
+            .expect("heat watch must trip");
+        assert!(
+            trip.t_s - slip_at <= 15.0 * 60.0 + 2.0,
+            "tripped {:.0}s after the slip",
+            trip.t_s - slip_at
+        );
+        let peak = r.samples.iter().map(|s| s.temp).fold(0.0_f64, f64::max);
+        assert!(peak < 340.0, "real kiln peaked at {peak:.1}C before the trip");
+        // After the trip the relay stays off: the real kiln cools.
+        let last = r.samples.last().unwrap();
+        assert_eq!(last.ssr, 0.0);
+        assert!(last.temp < trip.temp);
+    }
 
     #[test]
     fn closed_loop_reaches_and_holds_setpoint() {
-        let profile = Profile::new(&[Step::hold(150.0, 1.0e9)]).unwrap();
+        let profile = Profile::new(&[Step::hold(150.0, MAX_HOLD_DURATION_S)]).unwrap();
         let r = simulate("holdtest", profile, 8_000, ThermalModel::kiln());
 
         let last = r.samples.last().unwrap();

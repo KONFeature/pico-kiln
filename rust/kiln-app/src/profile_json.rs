@@ -13,7 +13,12 @@
 //! presentation-only `temp_units`/`description` (and any extra keys), matching
 //! `dict.get` / unused fields.
 
-use kiln_core::profile::{Profile, ProfileError, Step, StepKind, MAX_STEPS};
+use core::fmt::{self, Write};
+
+use kiln_core::profile::{
+    Profile, ProfileError, Step, StepIssue, StepKind, StepProblem, MAX_HOLD_DURATION_S,
+    MAX_RAMP_RATE, MAX_STEPS, MIN_TARGET_TEMP,
+};
 
 /// Why parsing a profile failed. The reference raises and the web layer turns any
 /// exception into a 400; these typed variants preserve the cause.
@@ -35,6 +40,12 @@ pub enum ProfileJsonError {
     MissingDuration,
     /// More than [`MAX_STEPS`] steps.
     TooManySteps,
+    /// `temp_units` is not Celsius. The controller runs every number as °C, so
+    /// a Fahrenheit profile (which the web editor can produce) would fire at
+    /// the wrong temperatures, e.g. a 200 °F candling hold at 200 °C.
+    UnsupportedUnits,
+    /// A step fails the safety bounds ([`Profile::validate`]).
+    Invalid(StepIssue),
 }
 
 impl From<ProfileError> for ProfileJsonError {
@@ -46,10 +57,72 @@ impl From<ProfileError> for ProfileJsonError {
     }
 }
 
+/// Parse AND safety-check a profile for running: [`parse_profile`] plus
+/// [`Profile::validate`] against the configured `max_temp`. Use this at every
+/// entry point (upload, run, schedule, recovery).
+pub fn parse_runnable(json: &str, max_temp: f32) -> Result<Profile, ProfileJsonError> {
+    let p = parse_profile(json)?;
+    p.validate(max_temp).map_err(ProfileJsonError::Invalid)?;
+    Ok(p)
+}
+
+/// Validate the raw bytes of an uploaded profile file before it is committed
+/// to flash (UTF-8, JSON shape, and the [`parse_runnable`] bounds).
+pub fn check_upload(bytes: &[u8], max_temp: f32) -> Result<(), ProfileJsonError> {
+    let text = core::str::from_utf8(bytes).map_err(|_| ProfileJsonError::Syntax)?;
+    parse_runnable(text, max_temp).map(|_| ())
+}
+
+/// Human-readable reason (short, ASCII, no quotes — it is sent as an HTTP
+/// error body behind an `Invalid profile: ` prefix).
+pub fn write_error<W: Write>(w: &mut W, e: &ProfileJsonError, max_temp: f32) -> fmt::Result {
+    match e {
+        ProfileJsonError::Syntax => w.write_str("malformed JSON"),
+        ProfileJsonError::MissingName => w.write_str("name is required"),
+        ProfileJsonError::MissingSteps => w.write_str("steps is required"),
+        ProfileJsonError::EmptySteps => w.write_str("needs at least one step"),
+        ProfileJsonError::BadStepType => w.write_str("step type must be ramp, hold or cooling"),
+        ProfileJsonError::MissingTargetTemp => w.write_str("a ramp step needs target_temp"),
+        ProfileJsonError::MissingDuration => w.write_str("a hold step needs duration"),
+        ProfileJsonError::TooManySteps => write!(w, "more than {MAX_STEPS} steps"),
+        ProfileJsonError::UnsupportedUnits => {
+            w.write_str("temp_units must be c (the controller runs in Celsius)")
+        }
+        ProfileJsonError::Invalid(issue) => {
+            let kind = match issue.kind {
+                StepKind::Ramp => "ramp",
+                StepKind::Hold => "hold",
+                StepKind::Cooling => "cooling",
+            };
+            write!(w, "step {} ({}): ", issue.step + 1, kind)?;
+            match issue.problem {
+                StepProblem::TargetOutOfRange => write!(
+                    w,
+                    "target_temp must be between {} and {}",
+                    MIN_TARGET_TEMP, max_temp
+                ),
+                StepProblem::HoldWithoutTarget => w.write_str("target_temp is required"),
+                StepProblem::RateOutOfRange => {
+                    write!(w, "desired_rate must be above 0 and at most {}", MAX_RAMP_RATE)
+                }
+                StepProblem::MinRateOutOfRange => {
+                    w.write_str("min_rate must be between 0 and desired_rate")
+                }
+                StepProblem::DurationOutOfRange => {
+                    write!(w, "duration must be between 0 and {} s", MAX_HOLD_DURATION_S)
+                }
+            }
+        }
+    }
+}
+
 /// Parse a profile JSON document into a [`Profile`]. The profile's `name` is
 /// validated for presence (as the reference requires) but not returned: the
 /// Rust port carries the *filename* as the running profile's identity (see
 /// `kiln_core::protocol`), supplied alongside this parsed profile.
+///
+/// Shape only (plus Celsius units); see [`parse_runnable`] for the safety
+/// bounds.
 pub fn parse_profile(json: &str) -> Result<Profile, ProfileJsonError> {
     let mut p = Reader::new(json);
     p.skip_ws();
@@ -63,7 +136,7 @@ pub fn parse_profile(json: &str) -> Result<Profile, ProfileJsonError> {
     if !p.try_consume(b'}') {
         loop {
             p.skip_ws();
-            let key = p.parse_string()?;
+            let key = p.parse_key()?;
             p.skip_ws();
             p.expect(b':')?;
             p.skip_ws();
@@ -76,6 +149,13 @@ pub fn parse_profile(json: &str) -> Result<Profile, ProfileJsonError> {
                 "steps" => {
                     n_steps = p.parse_steps(&mut steps)?;
                     have_steps = true;
+                }
+                // Rust-only: the reference ignores the units and fires the
+                // numbers as °C. Absent means Celsius (the reference default).
+                "temp_units" => {
+                    if !matches!(p.parse_string()?, "c" | "C") {
+                        return Err(ProfileJsonError::UnsupportedUnits);
+                    }
                 }
                 _ => p.skip_value(0)?,
             }
@@ -153,6 +233,17 @@ impl<'a> Reader<'a> {
     /// past (so a closing quote is found correctly) but not decoded — profile
     /// keys and `type`/`name` values are plain text, and the slice is only ever
     /// compared, never re-emitted.
+    /// An object key. Keys are matched undecoded, so an escaped spelling of a
+    /// real key (`"temp_\u0075nits": "f"`) would be skipped as unknown and a
+    /// Fahrenheit profile would run as Celsius: no real key needs an escape.
+    fn parse_key(&mut self) -> Result<&'a str, ProfileJsonError> {
+        let key = self.parse_string()?;
+        if key.contains('\\') {
+            return Err(ProfileJsonError::Syntax);
+        }
+        Ok(key)
+    }
+
     fn parse_string(&mut self) -> Result<&'a str, ProfileJsonError> {
         self.expect(b'"')?;
         let start = self.i;
@@ -227,7 +318,7 @@ impl<'a> Reader<'a> {
         if !self.try_consume(b'}') {
             loop {
                 self.skip_ws();
-                let key = self.parse_string()?;
+                let key = self.parse_key()?;
                 self.skip_ws();
                 self.expect(b':')?;
                 self.skip_ws();
@@ -456,6 +547,118 @@ mod tests {
             // Never panics; always a typed Err.
             assert!(parse_profile(bad).is_err());
         }
+    }
+
+    #[test]
+    fn shipped_profiles_are_runnable() {
+        for (name, text) in [
+            ("biscuit_faience", include_str!("../../../profiles/biscuit_faience.json")),
+            ("test_ramp", include_str!("../../../profiles/test_ramp.json")),
+        ] {
+            assert!(parse_runnable(text, 1300.0).is_ok(), "{name}");
+            assert!(check_upload(text.as_bytes(), 1300.0).is_ok(), "{name}");
+        }
+    }
+
+    #[test]
+    fn audit_h3_uploads_are_rejected() {
+        let bad = |steps: &str| {
+            parse_runnable(&format!(r#"{{"name":"x","steps":[{steps}]}}"#), 1300.0).unwrap_err()
+        };
+        let problem = |steps: &str| match bad(steps) {
+            ProfileJsonError::Invalid(i) => i.problem,
+            other => panic!("expected Invalid, got {other:?}"),
+        };
+        assert_eq!(
+            problem(r#"{"type":"ramp","target_temp":600,"desired_rate":0}"#),
+            StepProblem::RateOutOfRange
+        );
+        assert_eq!(
+            problem(r#"{"type":"ramp","target_temp":600,"desired_rate":-100}"#),
+            StepProblem::RateOutOfRange
+        );
+        assert_eq!(
+            problem(r#"{"type":"ramp","target_temp":5000}"#),
+            StepProblem::TargetOutOfRange
+        );
+        // 1e999 overflows f64 to +inf.
+        assert_eq!(
+            problem(r#"{"type":"ramp","target_temp":1e999}"#),
+            StepProblem::TargetOutOfRange
+        );
+        assert_eq!(
+            problem(r#"{"type":"hold","target_temp":600,"duration":1e999}"#),
+            StepProblem::DurationOutOfRange
+        );
+        assert_eq!(
+            problem(r#"{"type":"hold","duration":600}"#),
+            StepProblem::HoldWithoutTarget
+        );
+        assert_eq!(
+            problem(r#"{"type":"ramp","target_temp":600,"min_rate":-1}"#),
+            StepProblem::MinRateOutOfRange
+        );
+        // Fahrenheit is refused outright; Celsius (either case) or absent is fine.
+        let f = r#"{"name":"x","temp_units":"f","steps":[{"type":"cooling"}]}"#;
+        assert_eq!(parse_profile(f), Err(ProfileJsonError::UnsupportedUnits));
+        for units in [r#""c","#, r#""C","#, ""] {
+            let json = if units.is_empty() {
+                r#"{"name":"x","steps":[{"type":"cooling"}]}"#.to_string()
+            } else {
+                format!(r#"{{"name":"x","temp_units":{units}"steps":[{{"type":"cooling"}}]}}"#)
+            };
+            assert!(parse_runnable(&json, 1300.0).is_ok(), "{json}");
+        }
+        // An escaped key cannot smuggle Fahrenheit past the check.
+        let sneaky = r#"{"name":"x","temp_\u0075nits":"f","steps":[{"type":"cooling"}]}"#;
+        assert_eq!(parse_profile(sneaky), Err(ProfileJsonError::Syntax));
+        // Non-UTF-8 upload bytes are a syntax error, not a panic.
+        assert_eq!(check_upload(&[0xff, 0xfe], 1300.0), Err(ProfileJsonError::Syntax));
+    }
+
+    #[test]
+    fn error_messages_fit_the_http_buffer() {
+        let mut errs = vec![
+            ProfileJsonError::Syntax,
+            ProfileJsonError::MissingName,
+            ProfileJsonError::MissingSteps,
+            ProfileJsonError::EmptySteps,
+            ProfileJsonError::BadStepType,
+            ProfileJsonError::MissingTargetTemp,
+            ProfileJsonError::MissingDuration,
+            ProfileJsonError::TooManySteps,
+            ProfileJsonError::UnsupportedUnits,
+        ];
+        for problem in [
+            StepProblem::TargetOutOfRange,
+            StepProblem::HoldWithoutTarget,
+            StepProblem::RateOutOfRange,
+            StepProblem::MinRateOutOfRange,
+            StepProblem::DurationOutOfRange,
+        ] {
+            errs.push(ProfileJsonError::Invalid(StepIssue {
+                step: 15,
+                kind: StepKind::Cooling,
+                problem,
+            }));
+        }
+        for e in errs {
+            let mut m = String::from("Invalid profile: ");
+            write_error(&mut m, &e, 1400.0).unwrap();
+            assert!(m.len() <= 96 && m.is_ascii() && !m.contains('"'), "{m}");
+        }
+        let mut m = String::new();
+        write_error(
+            &mut m,
+            &ProfileJsonError::Invalid(StepIssue {
+                step: 1,
+                kind: StepKind::Hold,
+                problem: StepProblem::DurationOutOfRange,
+            }),
+            1300.0,
+        )
+        .unwrap();
+        assert_eq!(m, "step 2 (hold): duration must be between 0 and 259200 s");
     }
 
     #[test]

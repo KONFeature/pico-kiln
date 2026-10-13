@@ -107,6 +107,41 @@ impl Step {
     }
 }
 
+/// Fastest ramp a runnable profile may request (°C/h). Far above what any
+/// electric kiln can do, so the common "as fast as possible" convention (9999)
+/// still fits; the bound exists to reject absurd and non-finite rates.
+pub const MAX_RAMP_RATE: f32 = 10_000.0;
+/// Longest hold a runnable profile may request (72 h, in seconds).
+pub const MAX_HOLD_DURATION_S: f32 = 72.0 * 3600.0;
+/// Lowest target temperature a runnable profile may request (°C).
+pub const MIN_TARGET_TEMP: f32 = 0.0;
+
+/// Why a step fails [`Profile::validate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepProblem {
+    /// `target_temp` is not finite or outside `[MIN_TARGET_TEMP, max_temp]`.
+    TargetOutOfRange,
+    /// A hold without `target_temp`: the state machine would hold at 0 °C,
+    /// i.e. silently switch the kiln off for the whole hold.
+    HoldWithoutTarget,
+    /// A ramp's `desired_rate` is not in `(0, MAX_RAMP_RATE]`. Zero never moves
+    /// the setpoint (the run never ends); negative moves it the wrong way and
+    /// disables the stall check.
+    RateOutOfRange,
+    /// A ramp's `min_rate` is not in `[0, desired_rate]`.
+    MinRateOutOfRange,
+    /// A hold's `duration` is not finite or outside `[0, MAX_HOLD_DURATION_S]`.
+    DurationOutOfRange,
+}
+
+/// The first failing step of [`Profile::validate`] (`step` is 0-based).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepIssue {
+    pub step: usize,
+    pub kind: StepKind,
+    pub problem: StepProblem,
+}
+
 /// Why building a [`Profile`] failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProfileError {
@@ -143,6 +178,53 @@ impl Profile {
         };
         p.duration = p.calculate_duration();
         Ok(p)
+    }
+
+    /// Safety bounds for a profile that is about to be run (Rust-only; the
+    /// reference accepts anything). [`Profile::new`] stays a faithful port of
+    /// the Python constructor, so this is a separate gate, applied wherever a
+    /// profile enters the system: upload, run/schedule, crash recovery, and
+    /// again on Core 1 before a run command is accepted. Every comparison is
+    /// written so NaN fails.
+    pub fn validate(&self, max_temp: f32) -> Result<(), StepIssue> {
+        for (step, s) in self.steps().iter().enumerate() {
+            let bad = |problem| {
+                Err(StepIssue {
+                    step,
+                    kind: s.kind,
+                    problem,
+                })
+            };
+            if let Some(t) = s.target_temp {
+                if !(MIN_TARGET_TEMP..=max_temp).contains(&t) {
+                    return bad(StepProblem::TargetOutOfRange);
+                }
+            }
+            match s.kind {
+                StepKind::Ramp => {
+                    let rate = s.desired_rate_or_default();
+                    if !(rate > 0.0 && rate <= MAX_RAMP_RATE) {
+                        return bad(StepProblem::RateOutOfRange);
+                    }
+                    if let Some(m) = s.min_rate {
+                        if !(0.0..=rate).contains(&m) {
+                            return bad(StepProblem::MinRateOutOfRange);
+                        }
+                    }
+                }
+                StepKind::Hold => {
+                    if s.target_temp.is_none() {
+                        return bad(StepProblem::HoldWithoutTarget);
+                    }
+                    let d = s.duration.unwrap_or(0.0);
+                    if !(0.0..=MAX_HOLD_DURATION_S).contains(&d) {
+                        return bad(StepProblem::DurationOutOfRange);
+                    }
+                }
+                StepKind::Cooling => {}
+            }
+        }
+        Ok(())
     }
 
     /// The active steps.
@@ -270,6 +352,57 @@ mod tests {
         assert_eq!(p.progress(5000.0), 100.0); // clamped
         assert!(!p.is_complete(999.0));
         assert!(p.is_complete(1000.0));
+    }
+
+    #[test]
+    fn validate_accepts_real_profiles() {
+        let p = Profile::new(&[
+            Step::ramp(600.0, Some(150.0), Some(80.0)),
+            Step::ramp(1050.0, Some(100.0), Some(50.0)),
+            Step::hold(1050.0, 600.0),
+            Step::ramp(100.0, None, None),
+            Step::cooling(None),
+        ])
+        .unwrap();
+        assert_eq!(p.validate(1300.0), Ok(()));
+        // min_rate 0 is an explicit opt-out of the stall check; allowed.
+        let p = Profile::new(&[Step::ramp(600.0, Some(100.0), Some(0.0))]).unwrap();
+        assert_eq!(p.validate(1300.0), Ok(()));
+    }
+
+    #[test]
+    fn validate_rejects_the_audit_h3_profiles() {
+        let issue = |steps: &[Step]| Profile::new(steps).unwrap().validate(1300.0).unwrap_err();
+        let hold = |t: Option<f32>, d: f32| Step {
+            kind: StepKind::Hold,
+            target_temp: t,
+            desired_rate: None,
+            min_rate: None,
+            duration: Some(d),
+        };
+        use StepProblem::*;
+        assert_eq!(issue(&[Step::ramp(600.0, Some(0.0), None)]).problem, RateOutOfRange);
+        assert_eq!(issue(&[Step::ramp(600.0, Some(-50.0), None)]).problem, RateOutOfRange);
+        assert_eq!(issue(&[Step::ramp(600.0, Some(f32::NAN), None)]).problem, RateOutOfRange);
+        assert_eq!(issue(&[Step::ramp(600.0, Some(20_000.0), None)]).problem, RateOutOfRange);
+        // "As fast as possible" (9999) is a legitimate convention.
+        assert!(Profile::new(&[Step::ramp(600.0, Some(9999.0), None)]).unwrap().validate(1300.0).is_ok());
+        assert_eq!(issue(&[Step::ramp(5000.0, Some(100.0), None)]).problem, TargetOutOfRange);
+        assert_eq!(issue(&[Step::ramp(f32::INFINITY, None, None)]).problem, TargetOutOfRange);
+        assert_eq!(issue(&[Step::ramp(-10.0, None, None)]).problem, TargetOutOfRange);
+        assert_eq!(issue(&[Step::ramp(600.0, Some(100.0), Some(-1.0))]).problem, MinRateOutOfRange);
+        assert_eq!(issue(&[Step::ramp(600.0, Some(100.0), Some(150.0))]).problem, MinRateOutOfRange);
+        assert_eq!(issue(&[hold(None, 600.0)]).problem, HoldWithoutTarget);
+        assert_eq!(issue(&[hold(Some(600.0), f32::INFINITY)]).problem, DurationOutOfRange);
+        assert_eq!(issue(&[hold(Some(600.0), -1.0)]).problem, DurationOutOfRange);
+        assert_eq!(issue(&[Step::cooling(Some(1e9))]).problem, TargetOutOfRange);
+        // The index points at the failing step.
+        let i = issue(&[Step::hold(100.0, 60.0), Step::ramp(600.0, Some(0.0), None)]);
+        assert_eq!((i.step, i.kind), (1, StepKind::Ramp));
+        // The max_temp bound is the caller's MAX_TEMP.
+        let p = Profile::new(&[Step::ramp(1250.0, None, None)]).unwrap();
+        assert!(p.validate(1300.0).is_ok());
+        assert!(p.validate(1200.0).is_err());
     }
 
     #[test]

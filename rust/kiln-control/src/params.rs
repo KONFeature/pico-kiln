@@ -2,7 +2,8 @@
 //! already in [`ControllerConfig`]. Defaults match `config.example.py`.
 
 use kiln_core::gain_schedule::Gains;
-use kiln_core::state::ControllerConfig;
+use kiln_core::heat_watch::HeatWatchConfig;
+use kiln_core::state::{ControllerConfig, FiringLock};
 
 /// Status publish cadence — `STATUS_UPDATE_INTERVAL = 5 s`, in milliseconds.
 pub const DEFAULT_STATUS_INTERVAL_MS: u64 = 5_000;
@@ -32,6 +33,12 @@ pub struct ControlParams {
     pub temp_read_interval_ms: u64,
     /// SSR sub-tick period (`SSR_UPDATE_INTERVAL`), milliseconds (10 Hz default).
     pub ssr_update_interval_ms: u64,
+    /// Heating-response watchdog thresholds (`HEAT_WATCH_WINDOW` /
+    /// `HEAT_WATCH_MIN_RISE`; Rust-only).
+    pub heat_watch: HeatWatchConfig,
+    /// `Some` when the boot configuration cannot be trusted: the loop still reads
+    /// and reports temperature but refuses every command that would heat.
+    pub firing_lock: Option<FiringLock>,
 }
 
 impl Default for ControlParams {
@@ -48,6 +55,8 @@ impl Default for ControlParams {
             watchdog_timeout_ms: 8_000,
             temp_read_interval_ms: 1_000,
             ssr_update_interval_ms: 100,
+            heat_watch: HeatWatchConfig::default(),
+            firing_lock: None,
         }
     }
 }

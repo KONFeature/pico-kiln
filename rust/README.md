@@ -115,8 +115,11 @@ fixtures — in **[TESTING.md](TESTING.md)**.
 
 ## Configuration
 
-`kiln-firmware` reads `config.json` from the device's littlefs root at boot,
-falling back to defaults on any error. Keys mirror the MicroPython
+`kiln-firmware` reads `config.json` from the device's littlefs root at boot.
+Every value is range-checked; if the file is missing, unreadable or invalid the
+board still boots (network up) but **firing stays locked** until a valid config
+is saved and the board rebooted (see `/api/logs` for the offending key). Keys
+mirror the MicroPython
 `config.example.py` UPPER_SNAKE names; see
 [`config.example.json`](config.example.json). Edit live via `GET`/`POST`/`PATCH
 /api/config` (changes persist to flash, apply on reboot).

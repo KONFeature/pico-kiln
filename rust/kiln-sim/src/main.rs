@@ -1,12 +1,12 @@
 //! Run a firing on the host and print the transcript — the real control loop
 //! against the software thermal model. See the library crate for the harness.
 
-use kiln_core::profile::{Profile, Step};
+use kiln_core::profile::{Profile, Step, MAX_HOLD_DURATION_S};
 use kiln_sim::{simulate, ThermalModel};
 
 fn main() {
     // Heat to a 150 °C hold and track it — closed-loop setpoint tracking.
-    let profile = Profile::new(&[Step::hold(150.0, 1.0e9)]).unwrap();
+    let profile = Profile::new(&[Step::hold(150.0, MAX_HOLD_DURATION_S)]).unwrap();
     let result = simulate("demo", profile, 8_000, ThermalModel::kiln());
 
     println!("  t(min)    temp   target    ssr%   state");

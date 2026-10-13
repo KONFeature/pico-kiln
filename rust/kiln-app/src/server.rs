@@ -25,6 +25,7 @@ use embassy_sync::signal::Signal;
 use embassy_sync::watch::Watch;
 use kiln_core::profile::Profile;
 use kiln_core::protocol::{Command, ProfileName, Status};
+use kiln_core::state::FiringLock;
 
 use crate::api::{self, Directory};
 use crate::config::KilnConfig;
@@ -56,6 +57,51 @@ pub fn set_controller_ready() {
 /// Whether Core 1 is up and able to control the kiln (gates the start endpoints).
 fn controller_ready() -> bool {
     CONTROLLER_READY.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// The boot-time firing lock (`config::evaluate_boot`), encoded for an atomic:
+/// 0 = unlocked, 1 = missing, 2 = unreadable, 3 = invalid. Core 1 enforces the
+/// lock itself; this copy only lets the start endpoints answer 503 with the
+/// reason instead of a misleading "started".
+static FIRING_LOCK: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Firmware hook: publish the boot config's firing lock (call once at boot).
+pub fn set_firing_lock(lock: Option<FiringLock>) {
+    let v = match lock {
+        None => 0,
+        Some(FiringLock::ConfigMissing) => 1,
+        Some(FiringLock::ConfigUnreadable) => 2,
+        Some(FiringLock::ConfigInvalid) => 3,
+    };
+    FIRING_LOCK.store(v, core::sync::atomic::Ordering::Release);
+}
+
+/// The boot-time firing lock published by [`set_firing_lock`].
+pub fn firing_lock() -> Option<FiringLock> {
+    match FIRING_LOCK.load(core::sync::atomic::Ordering::Acquire) {
+        0 => None,
+        1 => Some(FiringLock::ConfigMissing),
+        2 => Some(FiringLock::ConfigUnreadable),
+        _ => Some(FiringLock::ConfigInvalid),
+    }
+}
+
+/// The config saved by `POST /api/config` during this boot (it applies on the
+/// next reboot). `GET /api/config` serves it and the next POST merges onto it,
+/// so successive sparse edits accumulate instead of each one silently
+/// reverting the previous edit back to the boot-time values. Core 0 only; held
+/// just long enough to clone in or out (never while formatting or awaiting).
+static SAVED_CONFIG: embassy_sync::blocking_mutex::Mutex<
+    CriticalSectionRawMutex,
+    core::cell::RefCell<Option<KilnConfig>>,
+> = embassy_sync::blocking_mutex::Mutex::new(core::cell::RefCell::new(None));
+
+/// The config `GET /api/config` shows and `POST /api/config` merges onto: the
+/// last saved one this boot, else the boot config.
+fn current_config(boot: &KilnConfig) -> KilnConfig {
+    SAVED_CONFIG
+        .lock(|c| c.borrow().clone())
+        .unwrap_or_else(|| boot.clone())
 }
 /// picoserve worker pool size for the *primary* interface (WiFi STA) — the
 /// reference's `MAX_CONCURRENT_CONNECTIONS`.
@@ -164,6 +210,11 @@ pub trait Storage {
     fn upload_commit(&self, dir: Directory, name: &str) -> Result<(), StorageError>;
     /// Discard an aborted/partial upload.
     fn upload_abort(&self);
+    /// Show the staged (not yet committed) upload to `check`: `Some(bytes)` when
+    /// the whole upload is still buffered in RAM (implementations must buffer
+    /// at least the 2 KiB profile cap), `None` otherwise. Lets the handler
+    /// validate a profile BEFORE it reaches flash.
+    fn inspect_upload(&self, check: &mut dyn FnMut(Option<&[u8]>));
     /// A compiled-in static asset (`index.html`, …), if present.
     fn static_asset(&self, name: &str) -> Option<&'static [u8]>;
     /// Read the whole `config.json` root file into `buf`, returning the byte
@@ -655,6 +706,32 @@ mod web {
         }
     }
 
+    /// Config gate: reject a start-firing request while the boot configuration
+    /// locks firing (missing / unreadable / invalid `config.json`). Core 1 would
+    /// ignore the command anyway; this tells the operator why.
+    fn reject_if_firing_locked() -> Option<ApiResponse> {
+        firing_lock().map(|lock| {
+            ApiResponse::error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                crate::errors::firing_lock_message(lock),
+            )
+        })
+    }
+
+    /// Error gate: an ERROR (heat-watch, over-temp, stall, sensor) must be
+    /// acknowledged with Clear Error before a new firing or tuning starts. Core 1
+    /// refuses the command anyway; this tells the operator why.
+    fn reject_if_in_error(state: &AppState) -> Option<ApiResponse> {
+        if state.latest().state == kiln_core::state::KilnState::Error {
+            Some(ApiResponse::error(
+                StatusCode::CONFLICT,
+                "The kiln is in ERROR: read the error, then Clear Error before starting",
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Pre-run flash headroom gate. Returns the rejection `ApiResponse` when free
     /// space is below [`api::MIN_FREE_BYTES_FOR_RUN`], or when the free-space query
     /// itself fails (fail closed). `None` means there is room to start a firing.
@@ -695,9 +772,28 @@ mod web {
     }
 
     async fn config_post(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
-        let merged = match config::parse_over(state.config.clone(), body.as_str()) {
+        // Merge onto the last config saved this boot (not the boot config), then
+        // range-check the RESULT: an out-of-range value never reaches flash, so it
+        // can never lock firing (or panic the watchdog driver) on the next boot.
+        let base = current_config(state.config);
+        // While firing is locked the base is the defaults (or the file minus its
+        // rejected keys): the save must state the hardware keys itself, or it
+        // would write e.g. thermocouple type K and unlock on it at reboot.
+        let merged = if firing_lock().is_some() {
+            config::apply_patch_confirming(base, body.as_str())
+        } else {
+            config::apply_patch(base, body.as_str())
+        };
+        let merged = match merged {
             Ok(c) => c,
-            Err(_) => return ApiResponse::error(StatusCode::BAD_REQUEST, "Invalid configuration"),
+            Err(inv) => {
+                let mut msg = heapless::String::<MSG_CAP>::new();
+                let _ = write!(msg, "Invalid config: {}", inv);
+                return ApiResponse::Rejected {
+                    status: StatusCode::BAD_REQUEST,
+                    message: msg,
+                };
+            }
         };
         let mut canonical = heapless::String::<2048>::new();
         if merged.write_json(&mut canonical).is_err() {
@@ -707,6 +803,7 @@ mod web {
             );
         }
         if state.storage.write_config(canonical.as_bytes()).is_ok() {
+            SAVED_CONFIG.lock(|c| *c.borrow_mut() = Some(merged));
             ApiResponse::static_json(
                 StatusCode::OK,
                 "{\"message\":\"Config saved. Reboot to apply.\"}",
@@ -718,6 +815,12 @@ mod web {
 
     async fn run(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
         if let Some(reject) = reject_if_controller_offline() {
+            return reject;
+        }
+        if let Some(reject) = reject_if_firing_locked() {
+            return reject;
+        }
+        if let Some(reject) = reject_if_in_error(&state) {
             return reject;
         }
         if !state.clock_synced() {
@@ -745,6 +848,12 @@ mod web {
 
     async fn schedule(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
         if let Some(reject) = reject_if_controller_offline() {
+            return reject;
+        }
+        if let Some(reject) = reject_if_firing_locked() {
+            return reject;
+        }
+        if let Some(reject) = reject_if_in_error(&state) {
             return reject;
         }
         if !state.clock_synced() {
@@ -785,6 +894,12 @@ mod web {
 
     async fn tuning_start(State(state): State<AppState>, body: JsonBody) -> impl IntoResponse {
         if let Some(reject) = reject_if_controller_offline() {
+            return reject;
+        }
+        if let Some(reject) = reject_if_firing_locked() {
+            return reject;
+        }
+        if let Some(reject) = reject_if_in_error(&state) {
             return reject;
         }
         if !state.clock_synced() {
@@ -843,11 +958,52 @@ mod web {
         let text = core::str::from_utf8(&buf[..n]).map_err(|_| {
             ApiResponse::error(StatusCode::BAD_REQUEST, "Profile is not valid UTF-8")
         })?;
-        let parsed = profile_json::parse_profile(text)
-            .map_err(|_| ApiResponse::error(StatusCode::BAD_REQUEST, "Invalid profile"))?;
+        // Shape AND safety bounds (rate, targets vs MAX_TEMP, hold duration,
+        // Celsius): files written before upload validation existed are caught
+        // here, before Core 1 ever sees them.
+        let max_temp = state.config.max_temp as f32;
+        let parsed = profile_json::parse_runnable(text, max_temp)
+            .map_err(|e| invalid_profile(&e, max_temp))?;
         let profile = ProfileName::new(&path)
             .map_err(|_| ApiResponse::error(StatusCode::BAD_REQUEST, "Profile name too long"))?;
         Ok((profile, parsed))
+    }
+
+    /// `400 Invalid profile: <reason>`.
+    fn invalid_profile(e: &profile_json::ProfileJsonError, max_temp: f32) -> ApiResponse {
+        let mut msg = heapless::String::<MSG_CAP>::new();
+        let _ = msg.push_str("Invalid profile: ");
+        let _ = profile_json::write_error(&mut msg, e, max_temp);
+        ApiResponse::Rejected {
+            status: StatusCode::BAD_REQUEST,
+            message: msg,
+        }
+    }
+
+    /// Validate a staged upload to `profiles/` before it is committed: it must be
+    /// small enough to ever be loaded (`PROFILE_READ_CAP`) and pass
+    /// [`profile_json::check_upload`] against the configured MAX_TEMP. Nothing
+    /// that could not be run safely is ever written to the profiles directory.
+    fn validate_profile_upload(state: &AppState, written: usize) -> Result<(), ApiResponse> {
+        if written > PROFILE_READ_CAP {
+            return Err(ApiResponse::error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Profile too large (max 2048 bytes)",
+            ));
+        }
+        let max_temp = state.config.max_temp as f32;
+        let mut verdict = None;
+        state.storage.inspect_upload(&mut |staged| {
+            verdict = staged.map(|bytes| profile_json::check_upload(bytes, max_temp));
+        });
+        match verdict {
+            Some(Ok(())) => Ok(()),
+            Some(Err(e)) => Err(invalid_profile(&e, max_temp)),
+            None => Err(ApiResponse::error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not validate the uploaded profile",
+            )),
+        }
     }
 
     /// Shared file-op preconditions (`_file_guard`): IDLE (403), valid dir (400),
@@ -924,6 +1080,12 @@ mod web {
         };
         match upload.outcome {
             UploadOutcome::Ok(written) => {
+                if directory == Directory::Profiles {
+                    if let Err(resp) = validate_profile_upload(&state, written) {
+                        state.storage.upload_abort();
+                        return resp;
+                    }
+                }
                 if state.storage.upload_commit(directory, &file).is_ok() {
                     // `{message, filename, size}` — the upload
                     // envelope (the web app's ProfileEditor reads `filename`/`size`).
@@ -1053,6 +1215,13 @@ mod web {
             status: StatusCode,
             body: &'static str,
         },
+        /// A plain-text error with an owned (dynamic) message, e.g. the
+        /// offending key of a rejected config or profile. Same size class as
+        /// `Message`, so it does not grow the enum.
+        Rejected {
+            status: StatusCode,
+            message: heapless::String<MSG_CAP>,
+        },
         /// A compiled-in asset (HTML), served verbatim.
         Asset {
             bytes: &'static [u8],
@@ -1175,7 +1344,12 @@ mod web {
                 }
                 ApiResponse::Config(state) => {
                     let mut b = heapless::String::<RENDER_CAP>::new();
-                    let _ = state.config.write_json(&mut b);
+                    {
+                        // Show what applies on the next boot (the last save, if
+                        // any). The clone is dropped before the await below.
+                        let shown = current_config(state.config);
+                        let _ = shown.write_json(&mut b);
+                    }
                     respond(
                         StatusCode::OK,
                         "application/json",
@@ -1226,6 +1400,9 @@ mod web {
                 }
                 ApiResponse::Text { status, body } => {
                     respond(status, "text/plain", body, connection, response_writer).await
+                }
+                ApiResponse::Rejected { status, message } => {
+                    respond(status, "text/plain", message, connection, response_writer).await
                 }
                 ApiResponse::Asset {
                     bytes,

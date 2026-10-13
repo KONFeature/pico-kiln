@@ -321,6 +321,337 @@ mod tests {
         );
     }
 
+    // ---- K1: sensor reading low-but-plausible --------------------------
+
+    /// Warm-up read at `t0_s`, then start `profile`. Returns the next tick time.
+    fn start(
+        c: &mut Controller<MockSensor, MockSsr, CountingWatchdog>,
+        profile: Profile,
+    ) -> u64 {
+        c.iterate(None, 500, 0);
+        c.iterate(
+            Some(Command::RunProfile {
+                profile: name("k1.json"),
+                parsed: profile,
+            }),
+            1_000,
+            1,
+        );
+        assert_eq!(c.state(), KilnState::Running);
+        2
+    }
+
+    #[test]
+    fn hold_with_sensor_stuck_low_errors_within_one_window() {
+        // The audit's K1 reproduction: a 1000 C hold while the amplifier reads a
+        // constant, fault-free 0.0 C. Before the heat watch this ran the relay at
+        // 100 % for the full 4 h hold with no error and the watchdog fed.
+        let mut c = new_controller();
+        c.sensor_mut().set_temp(0.0);
+        let t = start(&mut c, Profile::new(&[Step::hold(1000.0, 4.0 * 3600.0)]).unwrap());
+        let mut tripped_at = None;
+        for s in t..4 * 3600 {
+            let o = c.iterate(None, s * 1_000, s as i64);
+            if c.state() == KilnState::Error {
+                tripped_at = Some(s);
+                assert!(o.publish.is_some(), "the Error transition must be published");
+                assert!(!o.faulted, "soft error: watchdog keeps being fed");
+                break;
+            }
+        }
+        let s = tripped_at.expect("must not heat blind for the whole hold");
+        assert!(s <= 2 + 900 + 1, "tripped at {s}s, expected within one 15 min window");
+        let snap = c.snapshot(s * 1_000, s as i64);
+        assert!(matches!(snap.error, Some(KilnError::NoHeatResponse { .. })));
+        assert_eq!(snap.ssr_output, 0.0);
+        assert!(c.ssr().force_off_count > 0, "relay forced off");
+    }
+
+    #[test]
+    fn tuning_with_sensor_stuck_low_errors() {
+        // HIGH_TEMP tuning with the reading stuck at 25 C previously ran 5820 s of
+        // relay-on and "completed".
+        let mut c = new_controller();
+        c.iterate(
+            Some(Command::StartTuning {
+                mode: TuningMode::HighTemp,
+                max_temp: None,
+            }),
+            1_000,
+            1,
+        );
+        assert_eq!(c.state(), KilnState::Tuning);
+        let mut tripped_at = None;
+        for s in 2..6_000u64 {
+            c.iterate(None, s * 1_000, s as i64);
+            if c.state() == KilnState::Error {
+                tripped_at = Some(s);
+                break;
+            }
+        }
+        let s = tripped_at.expect("open-loop tuning must not heat blind");
+        assert!(s <= 1_000, "tripped at {s}s");
+        let snap = c.snapshot(s * 1_000, s as i64);
+        assert!(matches!(snap.error, Some(KilnError::NoHeatResponse { .. })));
+        assert!(snap.tuning.is_none(), "tuner dropped");
+    }
+
+    #[test]
+    fn real_heating_does_not_trip_the_heat_watch() {
+        // Same 1000 C hold, but the kiln responds (+60 C/h while short of the
+        // setpoint): no error for two hours.
+        let mut c = new_controller();
+        c.sensor_mut().set_temp(800.0);
+        let t = start(&mut c, Profile::new(&[Step::hold(1000.0, 4.0 * 3600.0)]).unwrap());
+        for s in t..2 * 3600 {
+            c.sensor_mut().set_temp(800.0 + s as f32 * 60.0 / 3600.0);
+            c.iterate(None, s * 1_000, s as i64);
+            assert_eq!(c.state(), KilnState::Running, "false trip at {s}s");
+        }
+    }
+
+    #[test]
+    fn recovery_hold_with_sensor_stuck_low_errors() {
+        // After a power cut the controller resumes into a recovery hold at the
+        // last logged temperature (700 C); the reading is stuck at 600 C.
+        let mut c = new_controller();
+        c.sensor_mut().set_temp(600.0);
+        c.iterate(None, 500, 0);
+        c.iterate(
+            Some(Command::ResumeProfile {
+                profile: name("k1.json"),
+                parsed: Profile::new(&[Step::ramp(1000.0, Some(100.0), None)]).unwrap(),
+                elapsed_seconds: 3_600.0,
+                last_logged_temp: Some(700.0),
+                current_temp: Some(600.0),
+                step_index: Some(0),
+            }),
+            1_000,
+            1,
+        );
+        assert_eq!(c.state(), KilnState::Running);
+        assert!(c.snapshot(1_000, 1).is_recovering, "recovery hold active");
+        let mut tripped_at = None;
+        for s in 2..3_600u64 {
+            c.iterate(None, s * 1_000, s as i64);
+            if c.state() == KilnState::Error {
+                tripped_at = Some(s);
+                break;
+            }
+        }
+        let s = tripped_at.expect("the recovery hold must not heat blind");
+        assert!(s <= 2 + 900 + 1, "tripped at {s}s");
+        assert!(matches!(
+            c.snapshot(s * 1_000, s as i64).error,
+            Some(KilnError::NoHeatResponse { .. })
+        ));
+    }
+
+    #[test]
+    fn holding_within_the_band_never_trips() {
+        // A kiln 5 C short of its hold target at saturated output (a tired kiln
+        // near its ceiling) is inside the 10 C arrival band: no error.
+        let mut c = new_controller();
+        c.sensor_mut().set_temp(995.0);
+        let t = start(&mut c, Profile::new(&[Step::hold(1000.0, 4.0 * 3600.0)]).unwrap());
+        for s in t..3 * 3600 {
+            c.iterate(None, s * 1_000, s as i64);
+            assert_eq!(c.state(), KilnState::Running, "false trip at {s}s");
+            assert!(!c.heat_watch_armed());
+        }
+    }
+
+    #[test]
+    fn completing_the_profile_disarms_the_heat_watch() {
+        // Armed during a short hold far below target; the hold ends, the
+        // profile completes, the controller idles and the watch is disarmed.
+        let mut c = new_controller();
+        c.sensor_mut().set_temp(100.0);
+        let t = start(&mut c, Profile::new(&[Step::hold(500.0, 120.0)]).unwrap());
+        c.iterate(None, t * 1_000, t as i64);
+        assert!(c.heat_watch_armed());
+        let mut s = t + 1;
+        while c.state() == KilnState::Running && s < 600 {
+            c.iterate(None, s * 1_000, s as i64);
+            s += 1;
+        }
+        // Complete on the tick the hold ends (already disarmed), Idle on the next.
+        assert_eq!(c.state(), KilnState::Complete, "profile completed");
+        assert!(!c.heat_watch_armed());
+        c.iterate(None, s * 1_000, s as i64);
+        assert_eq!(c.state(), KilnState::Idle);
+        assert!(!c.heat_watch_armed());
+    }
+
+    /// Run a 1000 C hold with the reading stuck at 0 C until the heat watch
+    /// trips; returns the controller and the next free tick.
+    fn tripped_controller() -> (Controller<MockSensor, MockSsr, CountingWatchdog>, u64) {
+        let mut c = new_controller();
+        c.sensor_mut().set_temp(0.0);
+        let mut s = start(&mut c, Profile::new(&[Step::hold(1000.0, 4.0 * 3600.0)]).unwrap());
+        while c.state() != KilnState::Error {
+            c.iterate(None, s * 1_000, s as i64);
+            s += 1;
+            assert!(s < 2_000);
+        }
+        (c, s)
+    }
+
+    #[test]
+    fn an_error_must_be_cleared_before_anything_heats_again() {
+        let (mut c, mut s) = tripped_controller();
+        let profile = Profile::new(&[Step::hold(1000.0, 3600.0)]).unwrap();
+        let cmds = [
+            Command::RunProfile {
+                profile: name("again.json"),
+                parsed: profile.clone(),
+            },
+            Command::ResumeProfile {
+                profile: name("again.json"),
+                parsed: profile.clone(),
+                elapsed_seconds: 10.0,
+                last_logged_temp: None,
+                current_temp: None,
+                step_index: Some(0),
+            },
+            Command::ScheduleProfile {
+                profile: name("again.json"),
+                parsed: profile.clone(),
+                start_time: s + 5,
+            },
+            Command::StartTuning {
+                mode: TuningMode::Safe,
+                max_temp: None,
+            },
+        ];
+        for cmd in cmds {
+            c.iterate(Some(cmd), s * 1_000, s as i64);
+            assert_eq!(c.state(), KilnState::Error);
+            assert!(matches!(
+                c.snapshot(s * 1_000, s as i64).error,
+                Some(KilnError::NoHeatResponse { .. })
+            ));
+            assert!(c.snapshot(s * 1_000, s as i64).scheduled.is_none());
+            s += 1;
+        }
+        // Acknowledged: Run works again.
+        c.iterate(Some(Command::ClearError), s * 1_000, s as i64);
+        assert_eq!(c.state(), KilnState::Idle);
+        s += 1;
+        c.iterate(
+            Some(Command::RunProfile {
+                profile: name("again.json"),
+                parsed: profile,
+            }),
+            s * 1_000,
+            s as i64,
+        );
+        assert_eq!(c.state(), KilnState::Running);
+    }
+
+    // ---- K2: firing lock on an untrusted config ------------------------
+
+    fn locked_controller() -> Controller<MockSensor, MockSsr, CountingWatchdog> {
+        Controller::new(
+            MockSensor::new(25.0),
+            MockSsr::new(),
+            CountingWatchdog::new(),
+            ControlParams {
+                firing_lock: Some(kiln_core::state::FiringLock::ConfigMissing),
+                ..ControlParams::default()
+            },
+            0,
+        )
+    }
+
+    #[test]
+    fn firing_lock_refuses_every_heating_command() {
+        let mut c = locked_controller();
+        let lock = Some(KilnError::FiringLocked(
+            kiln_core::state::FiringLock::ConfigMissing,
+        ));
+        assert_eq!(c.snapshot(0, 0).error, lock, "lock visible from boot");
+        let profile = Profile::new(&[Step::ramp(200.0, Some(100.0), None)]).unwrap();
+        let cmds = [
+            Command::RunProfile {
+                profile: name("a.json"),
+                parsed: profile.clone(),
+            },
+            Command::ResumeProfile {
+                profile: name("a.json"),
+                parsed: profile.clone(),
+                elapsed_seconds: 10.0,
+                last_logged_temp: Some(25.0),
+                current_temp: Some(25.0),
+                step_index: Some(0),
+            },
+            Command::StartTuning {
+                mode: TuningMode::Safe,
+                max_temp: None,
+            },
+            Command::ScheduleProfile {
+                profile: name("a.json"),
+                parsed: profile,
+                start_time: 5,
+            },
+            Command::ClearError,
+            Command::Stop,
+        ];
+        let mut s = 1u64;
+        for cmd in cmds {
+            let o = c.iterate(Some(cmd), s * 1_000, s as i64);
+            assert!(!o.faulted);
+            assert_eq!(c.state(), KilnState::Error);
+            assert_eq!(c.snapshot(s * 1_000, s as i64).error, lock);
+            assert_eq!(c.snapshot(s * 1_000, s as i64).ssr_output, 0.0);
+            s += 1;
+        }
+        // The (refused) schedule never fires either.
+        for _ in 0..10 {
+            c.iterate(None, s * 1_000, s as i64);
+            assert_eq!(c.state(), KilnState::Error);
+            s += 1;
+        }
+        // Still reading temperature and feeding the watchdog while locked.
+        assert!(c.watchdog().feeds >= 15);
+    }
+
+    #[test]
+    fn a_sensor_fault_does_not_mask_the_firing_lock() {
+        let mut c = locked_controller();
+        let lock = Some(KilnError::FiringLocked(
+            kiln_core::state::FiringLock::ConfigMissing,
+        ));
+        c.sensor_mut().set_fault(true);
+        for s in 1..5u64 {
+            c.iterate(None, s * 1_000, s as i64);
+            assert_eq!(c.state(), KilnState::Error);
+            assert_eq!(c.snapshot(s * 1_000, s as i64).error, lock);
+        }
+    }
+
+    #[test]
+    fn core1_refuses_an_out_of_bounds_profile() {
+        // A rate-0 ramp (never ends) and an above-MAX_TEMP target are refused
+        // even if they reach Core 1 without Core 0's validation.
+        for profile in [
+            Profile::new(&[Step::ramp(600.0, Some(0.0), None)]).unwrap(),
+            Profile::new(&[Step::ramp(5000.0, Some(100.0), None)]).unwrap(),
+        ] {
+            let mut c = new_controller();
+            c.iterate(None, 500, 0);
+            c.iterate(
+                Some(Command::RunProfile {
+                    profile: name("bad.json"),
+                    parsed: profile,
+                }),
+                1_000,
+                1,
+            );
+            assert_eq!(c.state(), KilnState::Idle);
+        }
+    }
+
     #[test]
     fn scheduled_profile_fires_when_due() {
         let mut c = new_controller();

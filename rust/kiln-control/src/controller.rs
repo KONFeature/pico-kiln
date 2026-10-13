@@ -18,6 +18,7 @@
 //!   start-time comparison and the status `timestamp` only.
 
 use kiln_core::gain_schedule::GainSchedule;
+use kiln_core::heat_watch::{HeatWatch, NoHeatResponse};
 use kiln_core::pid::Pid;
 use kiln_core::profile::Profile;
 use kiln_core::protocol::{Command, ProfileName, ScheduledSnapshot, Status, TuningSnapshot};
@@ -31,7 +32,7 @@ use kiln_hal::platform::{SsrOutput, TempSensor, Watchdog};
 use crate::params::ControlParams;
 
 /// Median-filter capacity (covers `TEMP_MEDIAN_WINDOW` up to 8; default 3).
-const MEDIAN_CAP: usize = 8;
+const MEDIAN_CAP: usize = kiln_core::temp_filter::MAX_MEDIAN_WINDOW;
 
 /// A scheduled profile waiting to start: its filename plus the Core-0-parsed
 /// [`Profile`] (Core 1 never reads the filesystem — see [`Command::RunProfile`]).
@@ -67,6 +68,7 @@ pub struct Controller<S, O, W> {
     ssr_sched: SsrSchedule,
     scheduler: ScheduledProfileQueue<ScheduledItem>,
     tuner: Option<ZieglerNicholsTuner>,
+    heat_watch: HeatWatch,
 
     current_profile: Option<ProfileName>,
     last_status_ms: u64,
@@ -95,17 +97,24 @@ where
         let gains = GainSchedule::new(params.pid_base, params.thermal_h, params.thermal_t_ambient);
         let filter = TempFilter::new(params.thermocouple_offset, params.median_window);
         let ssr_sched = SsrSchedule::new(params.ssr_cycle_time_s, now_ms);
+        let mut state = KilnController::new(params.controller);
+        // An untrusted boot configuration latches the lock error from the first
+        // status on, so the UI shows why firing is refused.
+        if let Some(lock) = params.firing_lock {
+            state.set_error(KilnError::FiringLocked(lock));
+        }
         Controller {
             sensor,
             ssr_out,
             wdt,
-            state: KilnController::new(params.controller),
+            state,
             pid,
             gains,
             filter,
             ssr_sched,
             scheduler: ScheduledProfileQueue::new(),
             tuner: None,
+            heat_watch: HeatWatch::new(params.heat_watch),
             current_profile: None,
             last_status_ms: 0,
             published: false,
@@ -154,6 +163,13 @@ where
         if let Some(c) = cmd {
             self.handle_command(c, now_ms, wall_s);
         }
+        // Firing lock: `Stop` may have dropped the latched lock error back to
+        // Idle; re-latch it (no heating command can be accepted while locked).
+        if let Some(lock) = self.params.firing_lock {
+            if self.state.state != KilnState::Error {
+                self.state.set_error(KilnError::FiringLocked(lock));
+            }
+        }
 
         let mut pending: Option<Status> = None;
 
@@ -178,7 +194,11 @@ where
                 self.ssr_sched.force_off();
                 let _ = self.ssr_out.force_off();
                 let was_error = self.state.state == KilnState::Error;
-                self.state.set_error(self.last_temp_error);
+                // While firing is locked keep the lock as THE error: it is what
+                // the operator must fix, and only Stop would otherwise restore it.
+                if self.params.firing_lock.is_none() {
+                    self.state.set_error(self.last_temp_error);
+                }
                 // Publish the Error transition (once). A faulted tick returns here,
                 // before the normal status_due check, so without this the Error is
                 // never published: Core 0 never logs the terminal ERROR row and
@@ -203,7 +223,7 @@ where
         let was_error = self.state.state == KilnState::Error;
         let target = self.state.update(temp, mono_ms);
 
-        let ssr_output = if self.state.state == KilnState::Running {
+        let mut ssr_output = if self.state.state == KilnState::Running {
             if let Some(g) = self.gains.update(temp) {
                 self.pid.set_gains(Some(g.kp), Some(g.ki), Some(g.kd));
             }
@@ -212,6 +232,24 @@ where
             self.pid.reset();
             0.0
         };
+
+        // Heating-response watchdog (Rust-only): full power, short of the
+        // setpoint, and the reading is not rising → the thermocouple reads low
+        // or the elements are dead. Covers holds and the recovery hold, which
+        // the ramp-only stall check never looks at.
+        if self.state.state == KilnState::Running {
+            if let Err(e) = self
+                .heat_watch
+                .update(mono_ms, temp, ssr_output, Some(target))
+            {
+                self.state.set_error(no_heat_error(e));
+                self.heat_watch.reset();
+                self.pid.reset();
+                ssr_output = 0.0;
+            }
+        } else {
+            self.heat_watch.reset();
+        }
 
         self.state.ssr_output = ssr_output;
         self.ssr_sched.set_output(ssr_output);
@@ -289,6 +327,26 @@ where
         }
 
         let (ssr_output, continue_tuning) = self.tuner.as_mut().unwrap().update(temp, mono_ms);
+
+        // Heating-response watchdog: the tuner runs open loop at fixed duty, so
+        // nothing else notices a reading that stays low at 100 % power.
+        if continue_tuning {
+            if let Err(e) = self.heat_watch.update(mono_ms, temp, ssr_output, None) {
+                self.state.set_error(no_heat_error(e));
+                self.state.ssr_output = 0.0;
+                self.tuner = None;
+                self.heat_watch.reset();
+                self.ssr_sched.force_off();
+                let _ = self.ssr_out.force_off();
+                let publish = Some(self.publish_now(now_ms, wall_s));
+                self.wdt.feed();
+                return IterationOutcome {
+                    publish,
+                    faulted: false,
+                };
+            }
+        }
+
         self.state.ssr_output = ssr_output;
         self.state.target_temp = self
             .tuner
@@ -365,6 +423,46 @@ where
 
     fn handle_command(&mut self, cmd: Command, _now_ms: u64, wall_s: i64) {
         let mono_ms = _now_ms as i64;
+        // Locked: refuse everything that could heat, and the error clear that
+        // would otherwise hide the lock. Stop/Shutdown/Ping/CancelScheduled stay.
+        if self.params.firing_lock.is_some()
+            && matches!(
+                cmd,
+                Command::RunProfile { .. }
+                    | Command::ResumeProfile { .. }
+                    | Command::StartTuning { .. }
+                    | Command::ScheduleProfile { .. }
+                    | Command::ClearError
+            )
+        {
+            return;
+        }
+        // An error must be acknowledged (ClearError, or Stop) before anything can
+        // heat again: otherwise one Run after a NoHeatResponse / over-temp /
+        // stall would restart the firing with the fault unexamined. (Rust-only;
+        // the reference's run_profile accepted ERROR.) Core 0 answers 409 first.
+        if self.state.state == KilnState::Error
+            && matches!(
+                cmd,
+                Command::RunProfile { .. }
+                    | Command::ResumeProfile { .. }
+                    | Command::StartTuning { .. }
+                    | Command::ScheduleProfile { .. }
+            )
+        {
+            return;
+        }
+        // Defense in depth: Core 0 validates every profile it sends (upload,
+        // run, schedule, recovery), but Core 1 never trusts it to have done so.
+        let max_temp = self.params.controller.max_temp;
+        if let Command::RunProfile { parsed, .. }
+        | Command::ResumeProfile { parsed, .. }
+        | Command::ScheduleProfile { parsed, .. } = &cmd
+        {
+            if parsed.validate(max_temp).is_err() {
+                return;
+            }
+        }
         match cmd {
             Command::RunProfile { profile, parsed } => {
                 if matches!(self.state.state, KilnState::Running | KilnState::Tuning) {
@@ -373,6 +471,7 @@ where
                 if self.state.run_profile(parsed, mono_ms) {
                     self.current_profile = Some(profile);
                     self.pid.reset();
+                    self.heat_watch.reset();
                 }
             }
             Command::ResumeProfile {
@@ -393,6 +492,7 @@ where
                 ) {
                     self.current_profile = Some(profile);
                     self.pid.reset();
+                    self.heat_watch.reset();
                 }
             }
             Command::Stop | Command::Shutdown => {
@@ -408,6 +508,7 @@ where
                 let mut t = ZieglerNicholsTuner::new(mode, max_temp);
                 t.start(mono_ms);
                 self.tuner = Some(t);
+                self.heat_watch.reset();
                 self.state.state = KilnState::Tuning;
             }
             Command::StopTuning => {
@@ -445,6 +546,11 @@ where
     }
 
     // ---- helpers ---------------------------------------------------------
+
+    /// Whether the heating-response watchdog currently has a window open.
+    pub fn heat_watch_armed(&self) -> bool {
+        self.heat_watch.armed()
+    }
 
     /// Read the thermocouple with the reference's fault tolerance: check the
     /// fault register first (a bus error counts as a fault), else read the
@@ -550,5 +656,14 @@ where
             scheduled,
             tuning,
         }
+    }
+}
+
+/// The typed error for a failed heating-response window.
+fn no_heat_error(e: NoHeatResponse) -> KilnError {
+    KilnError::NoHeatResponse {
+        rise: e.rise,
+        window_s: e.window_s,
+        avg_output: e.avg_output,
     }
 }

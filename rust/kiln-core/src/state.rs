@@ -33,7 +33,9 @@ pub const TEMP_LOSS_THRESHOLD: f32 = 5.0;
 /// Start temperature assumed by `_find_step_for_elapsed` (note: differs from the
 /// duration estimator, which seeds from `steps[0].target_temp`).
 const FIND_START_TEMP: f32 = 20.0;
-const RATE_HISTORY_CAP: usize = 60;
+/// Samples kept for the measured-rate window (the reference's
+/// `TempHistory(capacity=60)`); config validation bounds the window by it.
+pub const RATE_HISTORY_CAP: usize = 60;
 
 /// Controller state. Integer values match the reference `KilnState` constants
 /// (IDLE=0 … ERROR=4) so traces can be compared directly.
@@ -65,6 +67,32 @@ pub enum KilnError {
     /// A sensor fault arrived before any valid reading
     /// (`temp_filter::TempError::NotInitialized`).
     SensorNotInitialized,
+    /// Rust-only: heating at (near) full power without the temperature rising
+    /// (`heat_watch`). Either the thermocouple reads low-but-plausible (shorted,
+    /// degraded, out of the chamber, wrong type, frozen amplifier) or the
+    /// elements are not heating. `rise` °C in `window_s` seconds at
+    /// `avg_output` % average power.
+    NoHeatResponse {
+        rise: f32,
+        window_s: f32,
+        avg_output: f32,
+    },
+    /// Rust-only: heating is locked at boot because the configuration cannot be
+    /// trusted. Not clearable by `ClearError`; fixed by saving a valid config and
+    /// rebooting.
+    FiringLocked(FiringLock),
+}
+
+/// Why firing is locked (see [`KilnError::FiringLocked`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FiringLock {
+    /// No `config.json` on flash (fresh board, or the filesystem was reformatted):
+    /// the built-in defaults (e.g. thermocouple type K) may not match this kiln.
+    ConfigMissing,
+    /// `config.json` exists but could not be read or parsed.
+    ConfigUnreadable,
+    /// `config.json` parsed but a value is out of its safe range.
+    ConfigInvalid,
 }
 
 /// Safety/rate-control parameters (from `config.py`, with the same defaults as

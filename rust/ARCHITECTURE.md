@@ -128,7 +128,7 @@ halves, so the traits cost no extra crate.
 
 | Rust module | Python source | What it does |
 |-------------|---------------|--------------|
-| `max31856` ✅ | `kiln/hardware.py:24-205` + `adafruit_max31856` | configure (notch + averaging), `start_autoconverting`, non-blocking 19-bit read → raw °C, decoded `Faults` |
+| `max31856` ✅ | `kiln/hardware.py:24-205` + `adafruit_max31856` | configure (notch + averaging), `start_autoconverting`, non-blocking 19-bit read → raw °C, decoded `Faults`; Rust-only: `configure()` reads CR0/CR1/MASK back every tick (a dead or reset chip reads as a plausible 0 °C with no fault bit) and rewrites them on mismatch, reporting a fault, and the TempSensor read is `NotReady` until the first conversion |
 | `ssr` ✅ | `kiln/hardware.py:209-318` (`pin.value()` calls) | GPIO on/off; SSR-off-on-`Drop` safety guard |
 | `lcd` (optional) | `server/lcd_manager.py` (hardware init/draw) | display driver (over `embedded-hal` I2C) |
 | `platform` (traits) ✅ | — (new; replaces direct `embassy-rp` use in the halves) | the abstractions the halves are generic over — `Watchdog`, `TempSensor`, `SsrOutput` (+ `NoopWatchdog`); `kiln-firmware` implements them for the RP2350 |
@@ -155,6 +155,28 @@ what lets `kiln-sim` run the real loop — see below.)
 | profile load + retry | `kiln/control_thread.py` `load_profile_with_retry` (187-220) |
 | watchdog feed | `kiln/control_thread.py:373-381` (`WDT`) |
 | thread entry | `kiln/control_thread.py` `start_control_thread` (679-694) |
+
+**Rust-only safety rules** (no Python counterpart; `kiln-core` stays the golden
+mirror, these live in `kiln-control` or in new `kiln-core` modules):
+
+- **Heating-response watch** (`kiln-core::heat_watch`): while more than 10 °C
+  short of the setpoint (always, in open-loop tuning) at an average of ≥ 90 %
+  output, the reading must rise ≥ `HEAT_WATCH_MIN_RISE` (5 °C) per
+  `HEAT_WATCH_WINDOW` (15 min), else `KilnError::NoHeatResponse` and the relay
+  goes off. It catches a thermocouple reading low but plausible (shorted, out of
+  the chamber, wrong type, frozen below the setpoint) and dead elements, which
+  every other guard misses because they all trust the reading. It also stops a
+  hold the kiln cannot physically reach. Replayed against real firings in
+  `kiln-core/tests/replay_heat_watch.rs` (fixture: `tools/gen_heat_watch_fixture.py`).
+  Blind spot: a reading frozen within 10 °C of a hold target.
+- **Errors must be acknowledged**: from `Error`, Run/Resume/Schedule/StartTuning
+  are refused until Clear Error (or Stop); the API answers 409. The reference
+  restarted a firing straight from ERROR.
+- **Profiles are validated on Core 1 too** (`Profile::validate(MAX_TEMP)`), in
+  addition to Core 0's checks at upload, run, schedule and recovery.
+- **Firing lock** (`ControlParams::firing_lock`, from the boot config decision
+  below): latched as `KilnError::FiringLocked`; every heating command and Clear
+  Error are refused.
 
 ### `kiln-app` — Core 2 application layer (status: pure modules done ✅ — json/csv/recovery_io/api/profile_json/config/timefmt/errors/tuning_names host-tested; embassy glue `server.rs` written, device-only)
 
@@ -183,12 +205,23 @@ WiFi-chip bring-up (the cyw43 firmware blob, PIO+DMA) and hands the finished
 `kiln-app::config` ports every `config.py` knob to a flat `KilnConfig` whose JSON
 keys are the *same UPPER_SNAKE names*; `kiln-firmware` reads `config.json` from
 littlefs at boot ([`load_config`]) and parses it with the host-tested hand-rolled
-reader (no `serde`), falling back to `KilnConfig::default()` (the
-`config.example.py` values) on any error so the kiln always boots. `KilnConfig` is
-the single source of truth: `main` derives Core 1's `ControlParams` from it
-(`control_params_from`), selects `MaybeWatchdog` for `ENABLE_WATCHDOG`, and threads
-the recovery delta / sensor / SSR settings through. `GET/POST /api/config` serve
-and `PATCH`-merge it (`parse_over`); edits persist to flash and apply on reboot
+reader (no `serde`). Every value is range-checked (`KilnConfig::validate`). The boot
+decision is the host-tested `config::evaluate_boot`: the kiln always boots, but a
+**missing, unreadable, unparseable or out-of-range `config.json` locks firing**
+(`FiringLock`). The defaults are not trusted to fire a kiln: thermocouple type K read
+from an S probe shows ~236 °C at a real 1000 °C, and a littlefs mount failure
+reformats the flash and silently deletes the file. While locked, the network comes up
+(with the file's valid keys, so WiFi still joins), Core 1 latches
+`KilnError::FiringLocked` and refuses every heating command, the start endpoints
+answer 503, and crash recovery is skipped. Saving a valid config and rebooting
+unlocks; while locked, a save must state `THERMOCOUPLE_TYPE`, `SSR_PIN`,
+`MAINS_FREQUENCY` and `MAX_TEMP` explicitly (`apply_patch_confirming`), since the
+merge base is then the defaults and a sparse save would quietly persist them. `KilnConfig` is the single source of truth: `main` derives Core 1's
+`ControlParams` from it (`control_params_from`), selects `MaybeWatchdog` for
+`ENABLE_WATCHDOG`, and threads the recovery delta / sensor / SSR settings through.
+`GET/POST /api/config` serve and `PATCH`-merge it (`apply_patch`: merge onto the last
+config saved this boot, then validate; an invalid result is rejected with the key and
+its limits and never written); edits persist to flash and apply on reboot
 (pins/SPI/WiFi/watchdog are bound once at boot, so live re-pointing is not offered).
 
 ### `kiln-firmware` — the shim (status: written, device-only — excluded from the host workspace; compiles on thumbv8m with `memory.x` + cyw43 blobs)

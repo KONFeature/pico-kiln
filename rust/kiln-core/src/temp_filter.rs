@@ -24,6 +24,10 @@ const COLD_START_TEMP_THRESHOLD: f32 = 100.0;
 const TEMP_MIN_RANGE: f32 = -50.0;
 const TEMP_MAX_RANGE: f32 = 1500.0;
 
+/// Largest median window the control loop provisions (`kiln-control`'s
+/// filter capacity); `TEMP_MEDIAN_WINDOW` is validated against it.
+pub const MAX_MEDIAN_WINDOW: usize = 8;
+
 /// A read that the filter cannot recover from; the control loop must shut down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TempError {

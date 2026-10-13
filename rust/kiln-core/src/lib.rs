@@ -13,6 +13,7 @@
 
 pub mod diag;
 pub mod gain_schedule;
+pub mod heat_watch;
 pub mod pid;
 pub mod profile;
 pub mod protocol;
@@ -25,8 +26,9 @@ pub mod temp_filter;
 pub mod tuner;
 
 pub use gain_schedule::{GainSchedule, Gains};
+pub use heat_watch::{HeatWatch, HeatWatchConfig, NoHeatResponse};
 pub use pid::{Pid, PidStats};
-pub use profile::{Profile, ProfileError, Step, StepKind};
+pub use profile::{Profile, ProfileError, Step, StepIssue, StepKind, StepProblem};
 pub use protocol::{
     Command, ProfileName, ProtocolError, ScheduledSnapshot, Status, TuningSnapshot,
 };
@@ -34,6 +36,6 @@ pub use rate_monitor::TempHistory;
 pub use recovery::{check_recovery, LastLogEntry, RecoveryDecision};
 pub use scheduler::ScheduledProfileQueue;
 pub use ssr_schedule::SsrSchedule;
-pub use state::{ControllerConfig, KilnController, KilnError, KilnState};
+pub use state::{ControllerConfig, FiringLock, KilnController, KilnError, KilnState};
 pub use temp_filter::{TempError, TempFilter};
 pub use tuner::{TuningMode, TuningStage, ZieglerNicholsTuner};

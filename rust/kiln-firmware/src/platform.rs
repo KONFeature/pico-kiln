@@ -21,11 +21,11 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_time::{Duration, Instant};
 use kiln_app::api::Directory;
-use kiln_app::config::KilnConfig;
+use kiln_app::config::{evaluate_boot, BootConfig, ConfigSource, KilnConfig};
 use kiln_app::server::{AppState, BatchWrite, Clock, Display, RebootSignal, Storage, StorageError};
 use kiln_control::ControlParams;
 use kiln_core::protocol::{Command, ProfileName, Status};
-use kiln_core::state::KilnState;
+use kiln_core::state::{FiringLock, KilnState};
 
 use crate::flash_handshake;
 use crate::{Core0Periphs, Core1Periphs, LcdPeriphs};
@@ -119,27 +119,30 @@ pub fn raw_ssr_off() {
 
 // === Config (config.json → KilnConfig) ======================================
 
-/// Read `config.json` from flash at boot and parse it — the runtime replacement
-/// for the `config.py` the MicroPython build `import`ed. Any failure (absent
-/// file, malformed JSON, non-UTF-8) falls back to [`KilnConfig::default`] so the
-/// kiln always boots. The parse/fallback is the host-tested `kiln_app::config`;
-/// only the flash read ([`FlashStorage::read_config`]) is device I/O.
-pub fn load_config(storage: &'static FlashStorage) -> &'static KilnConfig {
-    static CONFIG: StaticCell<KilnConfig> = StaticCell::new();
+/// Read `config.json` from flash at boot and decide the boot configuration —
+/// the runtime replacement for the `config.py` the MicroPython build `import`ed.
+/// The decision itself is the host-tested [`kiln_app::config::evaluate_boot`]:
+/// a missing, unreadable, unparseable or out-of-range file still boots (network
+/// up so it can be fixed) but LOCKS FIRING; only the flash read is device I/O.
+pub fn load_config(storage: &'static FlashStorage) -> &'static BootConfig {
+    static BOOT: StaticCell<BootConfig> = StaticCell::new();
     let mut buf = [0u8; 4096];
-    let cfg = match storage.read_config(&mut buf) {
-        Ok(n) if n > 0 => core::str::from_utf8(&buf[..n])
-            .ok()
-            .and_then(|text| kiln_app::config::parse(text).ok())
-            .unwrap_or_default(),
-        _ => KilnConfig::default(),
+    let boot = match storage.read_config(&mut buf) {
+        Ok(0) => evaluate_boot(ConfigSource::Missing),
+        // A file that fills the whole buffer was truncated: unreadable.
+        Ok(n) if n >= buf.len() => evaluate_boot(ConfigSource::Unreadable),
+        Ok(n) => match core::str::from_utf8(&buf[..n]) {
+            Ok(text) => evaluate_boot(ConfigSource::Text(text)),
+            Err(_) => evaluate_boot(ConfigSource::Unreadable),
+        },
+        Err(_) => evaluate_boot(ConfigSource::Unreadable),
     };
-    CONFIG.init(cfg)
+    BOOT.init(boot)
 }
 
 /// Map the loaded [`KilnConfig`] to the Core 1 [`ControlParams`] — pure data, so
 /// the safety/PID/timing knobs the control loop reads come from one place.
-pub fn control_params_from(cfg: &KilnConfig) -> ControlParams {
+pub fn control_params_from(cfg: &KilnConfig, firing_lock: Option<FiringLock>) -> ControlParams {
     ControlParams {
         controller: cfg.controller_config(),
         pid_base: cfg.pid_base(),
@@ -152,6 +155,8 @@ pub fn control_params_from(cfg: &KilnConfig) -> ControlParams {
         watchdog_timeout_ms: cfg.watchdog_timeout,
         temp_read_interval_ms: cfg.temp_read_interval_ms(),
         ssr_update_interval_ms: cfg.ssr_update_interval_ms(),
+        heat_watch: cfg.heat_watch_config(),
+        firing_lock,
     }
 }
 
@@ -214,28 +219,34 @@ pub fn build_kiln_io(
     let dev = ExclusiveDevice::new_no_delay(spi, cs).unwrap();
 
     let mut sensor = kiln_hal::Max31856::new(dev);
-    // init: mask off all fault asserts + open-circuit detection + the thermocouple
-    // type; then hardware averaging and the mains notch; then START AUTOCONVERTING
-    // (REQUIRED — hardware.py:84). Without it the chip stays one-shot and the LTCB
-    // registers read 0, so the loop would see a constant 0 °C. Invalid config
-    // values fall back to the kiln defaults (8 samples / 60 Hz), matching the
-    // reference's `unwrap_or_default` behaviour.
-    if sensor.init(cfg.thermocouple_type).is_err() {
-        log::warn!(target: "ctrl", "max31856: init (CR0/CR1) write failed — sensor may read faulted");
-    }
-    let _ = sensor
-        .set_averaging(Averaging::from_samples(cfg.thermocouple_averaging).unwrap_or_default());
-    let _ = sensor.set_noise_filter(NoiseFilter::from_hz(cfg.mains_frequency).unwrap_or_default());
-    if sensor.start_autoconverting().is_err() {
-        log::warn!(target: "ctrl", "max31856: start_autoconverting failed — temp may read 0 \u{b0}C");
-    } else {
-        log::debug!(
+    // One-shot configuration (MASK, CR1 type+averaging, then CR0 notch +
+    // open-circuit detection + CONTINUOUS CONVERSION — REQUIRED, hardware.py:84;
+    // without it the chip stays one-shot and the LTCB registers read 0) plus a
+    // register read-back. `configure` also arms the per-tick liveness check: a
+    // dead chip, broken MISO (pads pull low → every read is 0x00, which the
+    // fault register reports as "no fault" and LTC decodes as 0.0 °C) or a
+    // brown-out reset now surfaces as a sensor FAULT, never as a plausible
+    // temperature. `KilnConfig::validate` guarantees the averaging / mains values
+    // are legal, so the `unwrap_or_default` fallbacks only cover the locked
+    // (invalid-config) boot.
+    let sensor_cfg = kiln_hal::max31856::SensorConfig {
+        thermocouple: cfg.thermocouple_type,
+        averaging: Averaging::from_samples(cfg.thermocouple_averaging).unwrap_or_default(),
+        noise_filter: NoiseFilter::from_hz(cfg.mains_frequency).unwrap_or_default(),
+    };
+    match sensor.configure(sensor_cfg) {
+        Ok(()) => log::debug!(
             target: "ctrl",
-            "max31856: tc={:?} avg={} mains={}Hz, autoconvert on",
+            "max31856: tc={:?} avg={} mains={}Hz, autoconvert on, read-back OK",
             cfg.thermocouple_type,
             cfg.thermocouple_averaging,
             cfg.mains_frequency,
-        );
+        ),
+        Err(e) => log::error!(
+            target: "ctrl",
+            "max31856: configuration did not read back ({:?}) \u{2014} chip absent or SPI broken; the sensor will report FAULT",
+            e
+        ),
     }
 
     // Select the configured SSR pins from the reserved pool, in config order.
@@ -566,6 +577,9 @@ const UPLOAD_FLUSH: usize = 8 * 1024;
 struct UploadBuf {
     data: [u8; UPLOAD_FLUSH],
     len: usize,
+    /// True once any part of the current upload went to `upload.tmp`: the RAM
+    /// buffer then no longer holds the whole file (see `inspect_upload`).
+    flushed: bool,
 }
 
 /// The single littlefs mount, behind a `RefCell` because `mount_and_then` needs
@@ -751,7 +765,11 @@ impl kiln_app::server::Storage for FlashStorage {
     }
 
     fn upload_begin(&self) -> Result<(), StorageError> {
-        self.upload.borrow_mut().len = 0; // discard any stale partial upload
+        {
+            let mut acc = self.upload.borrow_mut();
+            acc.len = 0; // discard any stale partial upload
+            acc.flushed = false;
+        }
         self.with_flash_paused(|| {
             self.with_fs(|fs| {
                 fs.open_file_with_options_and_then(
@@ -772,6 +790,7 @@ impl kiln_app::server::Storage for FlashStorage {
             let len = acc.len;
             self.flush_upload(&acc.data[..len])?;
             acc.len = 0;
+            acc.flushed = true;
         }
         let len = acc.len;
         acc.data[len..len + bytes.len()].copy_from_slice(bytes);
@@ -791,6 +810,17 @@ impl kiln_app::server::Storage for FlashStorage {
         self.with_flash_paused(|| self.with_fs(|fs| fs.rename(path!("upload.tmp"), &dest)))
     }
 
+    fn inspect_upload(&self, check: &mut dyn FnMut(Option<&[u8]>)) {
+        // Uploads up to UPLOAD_FLUSH (8 KiB) never leave RAM before commit, which
+        // covers the 2 KiB profile cap the handler enforces first.
+        let acc = self.upload.borrow();
+        if acc.flushed {
+            check(None);
+        } else {
+            check(Some(&acc.data[..acc.len]));
+        }
+    }
+
     fn upload_abort(&self) {
         self.upload.borrow_mut().len = 0;
         let _ = self.with_flash_paused(|| self.with_fs(|fs| fs.remove(path!("upload.tmp"))));
@@ -806,11 +836,17 @@ impl kiln_app::server::Storage for FlashStorage {
     }
 
     fn read_config(&self, buf: &mut [u8]) -> Result<usize, StorageError> {
-        // Absent/unreadable config → 0 bytes, so `load_config` falls back to
-        // KilnConfig::default() (the graceful-default boot the reference lacks).
-        Ok(self
-            .with_fs(|fs| fs.open_file_and_then(path!("config.json"), |file| file.read(buf)))
-            .unwrap_or(0))
+        // Absent → Ok(0) (`load_config` locks firing: ConfigMissing); any other
+        // littlefs error → Err (locks firing: ConfigUnreadable). The two used to
+        // collapse into a silent fall-back to the defaults.
+        let mut dev = self.dev.borrow_mut();
+        match Filesystem::mount_and_then(&mut *dev, |fs| {
+            fs.open_file_and_then(path!("config.json"), |file| file.read(buf))
+        }) {
+            Ok(n) => Ok(n),
+            Err(littlefs2::io::Error::NO_SUCH_ENTRY) => Ok(0),
+            Err(_) => Err(StorageError),
+        }
     }
 
     fn write_config(&self, bytes: &[u8]) -> Result<(), StorageError> {
@@ -1468,14 +1504,21 @@ pub fn init_usb_ncm(
 /// run without the flash handshake (which would deadlock waiting for a PARK that
 /// never comes); Core 0 erases its own flash safely because embassy-rp runs the
 /// erase/program from RAM.
+/// Set when `init_storage` had to format the filesystem (logged by `main`).
+pub static FS_FORMATTED_AT_BOOT: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 pub fn init_storage(flash: Peri<'static, FLASH>) -> &'static FlashStorage {
     static STORAGE: StaticCell<FlashStorage> = StaticCell::new();
     let mut dev = LfsFlash {
         flash: Flash::new_blocking(flash),
     };
     // Probe the filesystem; format on first boot or after a corrupting power loss.
+    // A format wipes config.json, so boot then locks firing (ConfigMissing); the
+    // flag lets `main` say why once the logger is up.
     if Filesystem::mount_and_then(&mut dev, |_fs| Ok(())).is_err() {
         let _ = Filesystem::format(&mut dev);
+        FS_FORMATTED_AT_BOOT.store(true, core::sync::atomic::Ordering::Relaxed);
     }
     // Ensure the profiles/ and logs/ and diag/ directories exist (idempotent across boots).
     let _ = Filesystem::mount_and_then(&mut dev, |fs| {
@@ -1489,6 +1532,7 @@ pub fn init_storage(flash: Peri<'static, FLASH>) -> &'static FlashStorage {
         upload: RefCell::new(UploadBuf {
             data: [0; UPLOAD_FLUSH],
             len: 0,
+            flushed: false,
         }),
     })
 }
@@ -1736,15 +1780,18 @@ async fn recover_from_pointer(state: &AppState) -> RecoveryOutcome {
             return RecoveryOutcome::Decline;
         }
     };
+    // Same safety bounds as run/schedule (an old, never-validated file is
+    // declined rather than resumed).
+    let max_temp = state.config.max_temp as f32;
     let parsed = match core::str::from_utf8(&pbuf[..pn])
         .ok()
-        .and_then(|t| kiln_app::profile_json::parse_profile(t).ok())
+        .and_then(|t| kiln_app::profile_json::parse_runnable(t, max_temp).ok())
     {
         Some(p) => p,
         None => {
             log::warn!(
                 target: "boot",
-                "recovery: declined — profile \"{}\" corrupt (parse failed)",
+                "recovery: declined — profile \"{}\" corrupt or out of bounds",
                 fname.as_str()
             );
             return RecoveryOutcome::Decline;
