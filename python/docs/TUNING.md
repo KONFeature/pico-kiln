@@ -482,7 +482,7 @@ After updating `config.py`:
 **Best for:** General-purpose control, faster response
 **Characteristics:** ~25% overshoot, may oscillate
 **Formula:**
-- Kp = 1.2 × (T / L)
+- Kp = 1.2 × T / (K × L)
 - Ki = Kp / (2L)
 - Kd = Kp × (0.5L)
 
@@ -490,17 +490,23 @@ After updating `config.py`:
 
 #### 2. Cohen-Coon
 
-**Best for:** Systems with high dead time (L/T > 0.3)
-**Characteristics:** Faster than Z-N, better disturbance rejection
-**Formula:** More complex, optimized for L/T ratio
+**Best for:** Systems with sizeable dead time (L/T > 0.3)
+**Characteristics:** Quarter-amplitude-decay disturbance rejection; *aggressive* (high Kp, oscillatory) when L/T is small, as it is for kilns
+**Formula (PID, r = L/T):**
+- Kp = (1/K) × (T/L) × (4/3 + r/4)
+- Ti = L × (32 + 6r) / (13 + 8r)
+- Td = 4L / (11 + 2r)
 
-**When to use:** Slow-responding systems with significant lag
+**When to use:** Plants where L/T is not small; treat with caution on kilns
 
 #### 3. AMIGO (Recommended) ⭐
 
-**Best for:** Kilns and systems requiring minimal overshoot
-**Characteristics:** <5% overshoot, very stable, smooth response
-**Formula:** Conservative tuning optimized for M-constraint
+**Best for:** Kilns and systems where a conservative, robust tuning is wanted
+**Characteristics:** Robust (Ms ≈ 1.4), well damped; overshoot is *not* guaranteed to be below any fixed percentage
+**Formula:**
+- Kp = (1/K) × (0.2 + 0.45 T/L)
+- Ti = L × (0.4L + 0.8T) / (L + 0.1T)
+- Td = 0.5 L T / (0.3L + T)
 
 **When to use:** Pottery kilns, glass kilns, any application where overshoot can damage work
 

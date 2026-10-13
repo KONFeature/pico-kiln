@@ -8,6 +8,13 @@
 
 ---
 
+> **Correction (analyser fix):** the numbers below predate the AMIGO/Cohen-Coon formula fixes and the
+> least-squares FOPDT identification in `scripts/analyzer`. The old AMIGO Ti was wrong (Ki ~17x too
+> small), Cohen-Coon mixed PI/PID forms, and K/τ were window-limited artefacts. For L=14 s, τ=760 s,
+> K=4.03: AMIGO is Kp=6.1, Ti=95.4 s (Ki≈0.064), Td=7.0 s. Also, the analyser no longer substitutes
+> `THERMAL_H = 0.0001` when there is not enough data: it reports "gain scheduling disabled —
+> insufficient data" and emits `THERMAL_H = 0.0`; fitted h is clamped to the firmware range 0..0.01.
+
 ## ✅ Implementation Validation: **PASSED**
 
 ### What Was Tested
@@ -172,7 +179,7 @@ If you know your kiln's heat loss characteristics from experience:
 ### Code Review Checklist
 
 - ✅ **thermal.py:** Correctly detects no plateau phases
-- ✅ **thermal.py:** Falls back to default h=0.0001
+- ✅ **thermal.py:** With no usable plateau data, disables gain scheduling (h=0.0) instead of fabricating h
 - ✅ **thermal.py:** Uses heating phase for base gain (correct)
 - ✅ **pid.py:** Continuous gain scaling formula correct
 - ✅ **control_thread.py:** Runtime gain scaling works

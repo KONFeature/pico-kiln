@@ -17,7 +17,8 @@ class Phase:
     """Represents a detected phase in the tuning data."""
     def __init__(self, start_idx: int, end_idx: int, phase_type: str,
                  avg_ssr: float, temp_start: float, temp_end: float,
-                 step_name: Optional[str] = None, step_index: Optional[int] = None):
+                 step_name: Optional[str] = None, step_index: Optional[int] = None,
+                 rate_per_min: float = 0.0, tail_rate_per_min: float = 0.0):
         self.start_idx = start_idx
         self.end_idx = end_idx
         self.phase_type = phase_type  # 'heating', 'cooling', 'plateau'
@@ -26,6 +27,8 @@ class Phase:
         self.temp_end = temp_end
         self.step_name = step_name  # Name of the tuning step (e.g., "heat_60pct_to_100C")
         self.step_index = step_index  # Index of the tuning step (0, 1, 2, ...)
+        self.rate_per_min = rate_per_min  # Average temperature rate over the whole phase (°C/min)
+        self.tail_rate_per_min = tail_rate_per_min  # Regression slope over the phase tail (°C/min)
 
     def __repr__(self):
         step_info = f", step={self.step_name}" if self.step_name else ""
@@ -114,6 +117,33 @@ def load_tuning_data(csv_file: str) -> Dict:
 # Phase Detection
 # =============================================================================
 
+TAIL_FRACTION = 0.25  # Fraction of a phase used to measure its end-of-phase slope
+MIN_TAIL_SECONDS = 60.0  # Lower bound on the tail window so the slope is not noise
+
+
+def _slope_per_min(time: List[float], temp: List[float], start_idx: int, end_idx: int) -> float:
+    """Least-squares temperature slope (°C/min) over time[start_idx..end_idx]."""
+    n = end_idx - start_idx + 1
+    if n < 2:
+        return 0.0
+    mean_t = sum(time[start_idx:end_idx + 1]) / n
+    mean_y = sum(temp[start_idx:end_idx + 1]) / n
+    var_t = sum((time[i] - mean_t) ** 2 for i in range(start_idx, end_idx + 1))
+    if var_t < 1e-9:
+        return 0.0
+    cov = sum((time[i] - mean_t) * (temp[i] - mean_y) for i in range(start_idx, end_idx + 1))
+    return cov / var_t * 60.0
+
+
+def _tail_start_index(time: List[float], start_idx: int, end_idx: int) -> int:
+    """First index of the phase tail window (last 25% of the phase, at least 60 s)."""
+    duration = time[end_idx] - time[start_idx]
+    tail_seconds = min(duration, max(duration * TAIL_FRACTION, MIN_TAIL_SECONDS))
+    tail_start = end_idx
+    while tail_start > start_idx and time[end_idx] - time[tail_start - 1] <= tail_seconds:
+        tail_start -= 1
+    return tail_start
+
 def detect_phases(data: Dict, plateau_threshold: float = 0.5, ssr_change_threshold: float = 10.0) -> List[Phase]:
     """
     Detect different test phases from the data using physics-based measurement analysis.
@@ -134,8 +164,11 @@ def detect_phases(data: Dict, plateau_threshold: float = 0.5, ssr_change_thresho
 
     Phase Classification Logic:
         - COOLING: SSR < 5% (natural cooling, no heat input)
-        - HEATING: SSR >= 5% AND temp_rate > plateau_threshold
-        - PLATEAU: SSR >= 5% AND |temp_rate| <= plateau_threshold (steady-state hold)
+        - HEATING: SSR >= 5% AND tail temp_rate > plateau_threshold
+        - PLATEAU: SSR >= 5% AND |tail temp_rate| <= plateau_threshold (steady-state hold)
+
+    The rate used for classification is the slope over the END of the phase (tail), not
+    the phase average, so a step that heats and then flattens is labelled plateau.
     """
     phases = []
     time = data['time']
@@ -183,13 +216,16 @@ def detect_phases(data: Dict, plateau_threshold: float = 0.5, ssr_change_thresho
             rate_per_min = (temp_change / phase_duration) * 60 if phase_duration > 0 else 0
 
             # Classify phase type based purely on measurements (physics, not names!)
+            tail_start = _tail_start_index(time, phase_start, phase_end)
+            tail_rate = _slope_per_min(time, temp, tail_start, phase_end)
+
             if avg_ssr < 5.0:
                 # No heat input → natural cooling
                 phase_type = 'cooling'
-            elif rate_per_min > plateau_threshold:
-                # Heating with SSR on and temp rising
+            elif tail_rate > plateau_threshold:
+                # Heating with SSR on and temp still rising at the end of the phase
                 phase_type = 'heating'
-            elif abs(rate_per_min) <= plateau_threshold:
+            elif abs(tail_rate) <= plateau_threshold:
                 # SSR on but temp stable → plateau/hold
                 phase_type = 'plateau'
             else:
@@ -201,7 +237,8 @@ def detect_phases(data: Dict, plateau_threshold: float = 0.5, ssr_change_thresho
             step_index = step_indices[phase_start] if has_step_data and phase_start < len(step_indices) else None
 
             phases.append(Phase(phase_start, phase_end, phase_type, avg_ssr,
-                              temp_start, temp_end, step_name, step_index))
+                              temp_start, temp_end, step_name, step_index,
+                              rate_per_min, tail_rate))
 
             # Move to next phase
             if not is_end:

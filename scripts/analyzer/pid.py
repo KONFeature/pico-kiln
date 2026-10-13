@@ -41,7 +41,9 @@ def calculate_ziegler_nichols(model: ThermalModel) -> PIDParams:
     """
     Ziegler-Nichols Classic PID tuning.
 
-    Fast response, moderate overshoot (~25%), good for general purpose.
+    Ziegler-Nichols open-loop (reaction curve) PID: Kp = 1.2 T/(K L), Ti = 2L, Td = L/2.
+
+    Fast response; typically ~25% overshoot on FOPDT plants with small L/T.
     """
     L = model.dead_time_s
     T = model.time_constant_s
@@ -71,7 +73,12 @@ def calculate_cohen_coon(model: ThermalModel) -> PIDParams:
     """
     Cohen-Coon PID tuning.
 
-    Better for systems with significant dead time (L/T > 0.3).
+    Cohen-Coon PID (consistent PID set, r = L/T):
+        Kp = (1/K)(T/L)(4/3 + r/4), Ti = L(32 + 6r)/(13 + 8r), Td = 4L/(11 + 2r)
+
+    Designed for quarter-amplitude-decay disturbance rejection on FOPDT plants with
+    sizeable dead time. For small L/T (like a kiln) it is very aggressive: Kp scales
+    as T/(K L) and the loop has little phase margin.
     """
     L = model.dead_time_s
     T = model.time_constant_s
@@ -87,16 +94,16 @@ def calculate_cohen_coon(model: ThermalModel) -> PIDParams:
     theta = L
     ratio = theta / tau
 
-    Kp = (1 / K) * (tau / theta) * (1.0 + theta / (12 * tau))
-    Ti = theta * (30 + 3 * ratio) / (9 + 20 * ratio)
+    Kp = (1 / K) * (tau / theta) * (4.0 / 3.0 + ratio / 4.0)
+    Ti = theta * (32 + 6 * ratio) / (13 + 8 * ratio)
     Td = theta * 4 / (11 + 2 * ratio)
 
     Ki = Kp / Ti if Ti > 0 else 0
     Kd = Kp * Td
 
     characteristics = (
-        "Optimized for systems with significant dead time (L/T > 0.3). "
-        "Faster response than Z-N with similar overshoot. Better disturbance rejection."
+        "Quarter-amplitude-decay design for disturbance rejection. Aggressive when L/T is "
+        "small (high Kp, oscillatory, overshoot of 20%+ is typical); most sensible when L/T > 0.3."
     )
 
     return PIDParams(Kp, Ki, Kd, "Cohen-Coon", characteristics)
@@ -106,7 +113,11 @@ def calculate_amigo(model: ThermalModel) -> PIDParams:
     """
     AMIGO (Approximate M-constrained Integral Gain Optimization) tuning.
 
-    Very conservative, minimal overshoot (<5%), smooth response.
+    Åström–Hägglund AMIGO PID for FOPDT:
+        Kp = (1/K)(0.2 + 0.45 T/L), Ti = L(0.4L + 0.8T)/(L + 0.1T), Td = 0.5 L T/(0.3L + T)
+
+    Robustness-oriented (maximum sensitivity Ms ~ 1.4); overshoot depends on the
+    set-point weighting used and is not guaranteed to be small.
     """
     L = model.dead_time_s
     T = model.time_constant_s
@@ -119,15 +130,15 @@ def calculate_amigo(model: ThermalModel) -> PIDParams:
 
     # AMIGO formulas
     Kp = (0.2 + 0.45 * (T / L)) / K if K > 0 else 0.45 * (T / L)
-    Ti = (0.4 * L + 0.8 * T) * (L + 0.3 * T) / (L + 0.1 * T) if L + 0.1 * T > 0 else L
-    Td = 0.5 * L * T / (0.3 * L + T) if 0.3 * L + T > 0 else 0.5 * L
+    Ti = L * (0.4 * L + 0.8 * T) / (L + 0.1 * T)
+    Td = 0.5 * L * T / (0.3 * L + T)
 
     Ki = Kp / Ti if Ti > 0 else 0
     Kd = Kp * Td
 
     characteristics = (
-        "Very conservative tuning with minimal overshoot (<5%). "
-        "Smooth, stable response. Excellent for preventing temperature overshoot in kilns."
+        "Robust (Ms ~ 1.4) tuning: typically the most conservative of the three methods (lowest Kp for small L/T), with a "
+        "well-damped response. Overshoot is not guaranteed; check on a real firing."
     )
 
     return PIDParams(Kp, Ki, Kd, "AMIGO", characteristics)

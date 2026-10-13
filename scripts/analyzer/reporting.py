@@ -21,10 +21,13 @@ def assess_test_quality(data: Dict, phases: List[Phase], model: ThermalModel) ->
     """
     Assess the quality of the tuning test data.
 
+    Based on the FOPDT fit (RMSE, steady state reached, L/tau plausibility) plus data
+    coverage. A LOW-confidence identification is always 'POOR'.
+
     Returns: 'EXCELLENT', 'GOOD', or 'POOR'
     """
     score = 0
-    max_score = 6
+    max_score = 8
 
     # Check 1: Sufficient data points
     if len(data['time']) > 500:
@@ -52,13 +55,25 @@ def assess_test_quality(data: Dict, phases: List[Phase], model: ThermalModel) ->
     elif len(heating_phases) >= 1:
         score += 0.5
 
-    # Check 5: Reasonable thermal parameters
-    if 5 <= model.dead_time_s <= 60 and 30 <= model.time_constant_s <= 600:
-        score += 1
-    elif 1 <= model.dead_time_s <= 120 and 10 <= model.time_constant_s <= 1200:
-        score += 0.5
+    # Check 5: Fit RMSE relative to the temperature rise of the identification step
+    if model.fit_rmse is not None and model.fit_step_duration_s > 0:
+        rise = max(data['temp']) - min(data['temp'])
+        rmse_fraction = model.fit_rmse / rise if rise > 0 else 1.0
+        if rmse_fraction <= 0.03:
+            score += 1
+        elif rmse_fraction <= 0.08:
+            score += 0.5
 
-    # Check 6: Test duration
+    # Check 6: Identification reached steady state (tau observed, not extrapolated)
+    if model.steady_state_reached:
+        score += 1
+
+    # Check 7: dead time / time constant plausibility (0 < L < tau)
+    if 0 < model.dead_time_s < model.time_constant_s and model.dead_time_s / model.time_constant_s <= 1.0 \
+            and model.fit_rmse is not None:
+        score += 1
+
+    # Check 8: Test duration
     duration = data['time'][-1] - data['time'][0]
     if duration > 1800:  # 30 minutes
         score += 1
@@ -67,6 +82,10 @@ def assess_test_quality(data: Dict, phases: List[Phase], model: ThermalModel) ->
 
     # Classify based on score
     percentage = (score / max_score) * 100
+
+    # Data that does not pin down tau and K cannot give a trustworthy tuning
+    if model.gain_confidence == 'LOW':
+        return 'POOR'
 
     if percentage >= 80:
         return 'EXCELLENT'
@@ -102,7 +121,15 @@ def generate_results_json(data: Dict, phases: List[Phase], model: ThermalModel,
             'gain_vs_temp': model.gain_vs_temp,
             'gain_method': model.gain_method,
             'gain_confidence': model.gain_confidence,
-            'heat_loss_method': model.heat_loss_method
+            'heat_loss_method': model.heat_loss_method,
+            'gain_scheduling_enabled': model.gain_scheduling_enabled,
+            'heat_loss_note': model.heat_loss_note,
+            'fit_rmse': None if model.fit_rmse is None else round(model.fit_rmse, 3),
+            'fit_step_duration_s': round(model.fit_step_duration_s, 1),
+            'fit_step_ssr': round(model.fit_step_ssr, 1),
+            'steady_state_reached': model.steady_state_reached,
+            'identification_confidence': model.gain_confidence,
+            'warnings': model.identification_warnings
         },
         'pid_methods': {name: pid.to_dict() for name, pid in pid_methods.items()},
         'recommended': recommended_method,
@@ -138,8 +165,16 @@ def print_beautiful_report(data: Dict, phases: List[Phase], model: ThermalModel,
     print(f"│  L/τ Ratio:            {model.dead_time_s/model.time_constant_s if model.time_constant_s > 0 else 0:8.3f}")
     print(f"│  Base Gain (K):        {model.steady_state_gain:8.4f} °C per % SSR (from {model.gain_method})")
     print(f"│  Gain Confidence:      {model.gain_confidence}")
-    print(f"│  Heat Loss Coeff (h):  {model.heat_loss_coefficient:8.6f} (from {model.heat_loss_method})")
+    if model.fit_rmse is not None:
+        print(f"│  Fit RMSE:             {model.fit_rmse:8.2f} °C (step {model.fit_step_duration_s:.0f}s @ {model.fit_step_ssr:.0f}% SSR)")
+    print(f"│  Steady State Reached: {'yes' if model.steady_state_reached else 'NO'}")
+    if model.gain_scheduling_enabled:
+        print(f"│  Heat Loss Coeff (h):  {model.heat_loss_coefficient:8.6f} (from {model.heat_loss_method})")
+    else:
+        print(f"│  Heat Loss Coeff (h):  {model.heat_loss_coefficient:8.6f} ({model.heat_loss_note})")
     print(f"│  Ambient Temp:         {model.ambient_temp:8.1f}°C")
+    for warning in model.identification_warnings:
+        print(f"│  ⚠ {warning}")
     print("└" + "─" * 79)
 
     # Gain Scheduling
@@ -252,7 +287,12 @@ def generate_config_snippet():
     print(f"PID_KD_BASE = {pid['kd']:.3f}  # Base derivative gain")
     print()
     print("# Continuous Gain Scheduling (compensates for heat loss at high temps)")
-    print(f"THERMAL_H = {thermal_model.get('heat_loss_coefficient', 0.0001):.6f}  # Heat loss coefficient")
+    h_value = thermal_model.get('heat_loss_coefficient', 0.0)
+    if thermal_model.get('gain_scheduling_enabled', h_value > 0):
+        print(f"THERMAL_H = {h_value:.6f}  # Heat loss coefficient (firmware accepts 0..0.01)")
+    else:
+        note = thermal_model.get('heat_loss_note', 'gain scheduling disabled — insufficient data')
+        print(f"THERMAL_H = 0.0  # {note}")
     print(f"THERMAL_T_AMBIENT = {thermal_model.get('ambient_temp', 25.0):.1f}  # Ambient temperature (°C)")
 
     print("-" * 80)
@@ -277,7 +317,7 @@ def generate_config_snippet():
     print("- More memory efficient (a few floats vs arrays)")
     print("- Physically accurate model of kiln heat loss")
     print("\nEXAMPLE:")
-    h = thermal_model.get('heat_loss_coefficient', 0.0001)
+    h = thermal_model.get('heat_loss_coefficient', 0.0)
     t_amb = thermal_model.get('ambient_temp', 25.0)
     kp_base = pid['kp']
     for temp in [100, 400, 700, 1000]:
